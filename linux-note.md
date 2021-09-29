@@ -48,13 +48,13 @@
 
 3. 更换vultr的配置之后，用“ssh-keygen -R "66.42.99.19"来重新配置本地的密钥。
 
-4. 连接服务器：ssh [root@66.42.99.19](mailto:root@66.42.99.19) ，密码：[Z5v$S4z@gPPt8](mailto:Z5v$S4z@gPPt8)*z{
+4. 连接服务器：ssh [root@66.42.99.19](mailto:root@66.42.99.19) ，密码：
 
 5. 外网访问公司服务器：
 
    先在frp中运行frpc：./frpc &
 
-   然后帐号：ssh -p 16901 [lgs@localhos](mailto:lgs@localhost)[t](mailto:lgs@localhost)  密码：731124396liu
+   然后帐号：ssh -p 16901 [lgs@localhos](mailto:lgs@localhost)[t](mailto:lgs@localhost)  密码：
 
 6. 尽量不要使用su进入root用户，可以设置sudo不要密码。
 
