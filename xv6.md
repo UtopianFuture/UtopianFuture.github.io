@@ -2560,4 +2560,9 @@ Score: 100/100
 
 关键：这个实验比较简单，但是需要看的资料比较多，题目说的manual章节不需要所有细节都看，看个大概就行，最主要的的弄清楚存储数据用的是buf，而descriptor是用来描述buf的。所有涉及到这两部的章节要看，然后很多寄存器，如`E1000_RDT`，`E1000_TDT`等，要弄明白是干什么的。
 
-住：若代码跑不同，可以看我的github，上传了源码。
+## 注
+
+（1）若代码跑不通，可以看我的[https://github.com/UtopianFuture/xv6-labs](https://github.com/UtopianFuture/xv6-labs)，上传了源码。
+
+（2）xv6调试没有好的办法，遇到bug用printf打印出关键变量。
+
