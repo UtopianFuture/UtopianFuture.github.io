@@ -37,9 +37,11 @@
       uname -a
    ```
 
-6. xclip可以复制标准输出到粘贴板，fish可以自动联想指令。这两个工具的使用还需要进一步探索。
+6. xclip可以复制标准输出到粘贴板，具体使用待探索。
 
-7. stat 查看文件的状态
+7. fish能自动联想指令，安装过程很简单，sudo apt install fish，之后直接`fish`即可使用。亦可将其作为默认shell。
+
+8. stat 查看文件的状态
 
    ```
    Display file and filesystem information.
@@ -57,7 +59,7 @@
       stat -c "%s %n" {{file}}
    ```
 
-8. tar 文件解压
+9. tar 文件解压，最常用的参数是`-xvf`
 
    ```
    - [c]reate an archive and write it to a [f]ile:
@@ -78,7 +80,7 @@
       tar xf {{source.tar}} --wildcards "{{*.html}}"
    ```
 
-9. tmux工具可以用来分屏，常用的快捷键：
+10. tmux工具可以用来分屏，常用的快捷键：
 
    Ctrl+a %：划分左右两个窗格；
 
@@ -94,7 +96,7 @@
 
    Ctrl+a c：创建一个新窗口，状态栏会显示多个窗口的信息。
 
-   tmux的配置主要是修改~/.tmux/tmux.conf来完成的，修改完后用tmux source ~/.tmux/tmux.conf来更新配置。
+   tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tmux source ~/.tmux/tmux.conf`来更新配置。
 
    按下PREFIX+[快捷键进入复制模式，在复制模式下按下q字符退出复制模式。
 
@@ -102,20 +104,33 @@
 
    在复制模式下crtl + s进入查找模式，同样按q退出。
 
-10. Termux arm中使用终端。
+11. termux: arm中使用的终端。
 
-11. 输入输出重定向是
+12. 输入输出重定向是
 
-    ![img](/home/guanshun/Pictures/notes picture/image2.png)
+    ```
+    missing:~$ echo hello > hello.txt
+    missing:~$ cat hello.txt
+    hello
+    missing:~$ cat < hello.txt
+    hello
+    missing:~$ cat < hello.txt > hello2.txt
+    missing:~$ cat hello2.txt
+    hello
      通过“>” “<”完成的。
+    ```
 
-12. history程序可以查询所有用过的指令。
+13. history程序可以查询所有用过的指令。
 
-13. split可以将文件分为大小不同的块。如split -l 1000000 latx_log -d -a 4 latx_log_，-l表示每个文件多少行，也可以按比特分；-d表示后缀用数字表示，-a 4表示后缀是4位数字。
+14. split可以将文件分为大小不同的块。如split -l 1000000 latx_log -d -a 4 latx_log_，-l表示每个文件多少行，也可以按比特分；-d表示后缀用数字表示，-a 4表示后缀是4位数字。
 
-14. rsync可以用来在不同机器上同步文件，注意host和target文件名最后不加斜杠表示同步整个文件夹到目的文件夹中。
+15. rsync可以用来在不同机器上同步文件，注意host和target文件名最后不加斜杠表示同步整个文件夹到目的文件夹中。
 
-15. vim   
+    ```
+    rsync -avzP /home/guanshun/gitlab/latx/target guanshun:/home/guanshun/gitlab/latx-x64
+    ```
+
+16. vim   
 
     ​	v         字符选
 
@@ -137,27 +152,66 @@
 
     ​	$  --------选中当前行，光标位置到行尾（或者使用键盘的END键）
 
-16. pkill：杀进程，-9强制杀死
+17. pkill：杀进程，-9强制杀死
 
-17. diff和vimdiff可以以行为单位对比两个文件的不同。
+    ```
+     - Kill all processes which match:
+       pkill -9 "{{process_name}}"
+    
+     - Kill all processes which match their full command instead of just the process name:
+       pkill -9 --full "{{command_name}}"
+    ```
 
-18. lsblk - list block devices
+18. diff和vimdiff可以以行为单位对比两个文件的不同。
 
-19. mmap, munmap - map or unmap files or devices into memory
+19. lsblk - list block devices
 
-20. cat file1 file2 file3… > file将多个文件合并成同一个文件。
+20. mmap, munmap - map or unmap files or devices into memory
 
-21. truncate可以设置文件的大小，如truncate --size 50M qemu_log，超过50M的就会截断。
+21. cat file1 file2 file3… > file将多个文件合并成同一个文件。
 
-22. sed可以删除文件的任意行，sed ‘n, md’ filename；或者删除含有某个字符的行，将结果输出到指定文件，sed ‘/xxx/d’  filename1 > filename2,，删除不包 含某一字符的行，sed ‘/xxx/!d’  filename1 > filename2。
+22. truncate可以设置文件的大小，如`truncate --size 50M qemu_log`，超过50M的就会截断。
 
-23. du查看文件大小。
+23. sed可以删除文件的任意行，`sed ‘n, md’ filename`；或者删除含有某个字符的行，将结果输出到指定文件，`sed ‘/xxx/d’  filename1 > filename2`，删除不包含某一字符的行，`sed ‘/xxx/!d’  filename1 > filename2`。
 
-24. df查看磁盘使用情况。
+24. du查看文件大小
 
-25. wc -l 查看文件行数。
+    ```
+    - List the sizes of a directory and any subdirectories, in the given unit (B/KB/MB):
+       du -{{b|k|m}} {{path/to/directory}}
+    
+     - List the sizes of a directory and any subdirectories, in human-readable form (i.e. auto-selecting the appropriate unit for each size):
+       du -h {{path/to/directory}}
+    
+     - Show the size of a single directory, in human readable units:
+       du -sh {{path/to/directory}}
+    
+     - List the human-readable sizes of a directory and of all the files and directories within it:
+       du -ah {{path/to/directory}}
+    ```
 
-26. Loongarch下的gdb不能查看浮点寄存器，将
+25. df查看磁盘使用情况。
+
+    ```
+    - Display all filesystems and their disk usage:
+       df
+    
+     - Display all filesystems and their disk usage in human readable form:
+       df -h
+    
+     - Display the filesystem and its disk usage containing the given file or directory:
+       df {{path/to/file_or_directory}}
+    
+     - Display statistics on the number of free inodes:
+       df -i
+    
+     - Display filesystems but exclude the specified types:
+       df -x {{squashfs}} -x {{tmpfs}}
+    ```
+
+26. wc -l 查看文件行数。
+
+27. Loongarch下的gdb不能查看浮点寄存器，将
 
     ​	gdb/features/loongarch/lbt64.c
 
@@ -169,7 +223,7 @@
 
     ​	中的lasx等变量修改成NULL，然后重新编译，记得修改环境变量。
 
-27. gdb显示数据的不同格式：
+28. gdb显示数据的不同格式：
 
     ​	x  按十六进制格式显示变量。
 
@@ -187,7 +241,7 @@
 
     ​	f  按浮点数格式显示变量。
 
-28. gdb使用examine命令（简写是x）来查看内存地址中的值。x命令的语法如下所示：
+29. gdb使用examine命令（简写是x）来查看内存地址中的值。x命令的语法如下所示：
 
     ​	x/<n/f/u> <addr>  n、f、u是可选的参数。
 
@@ -203,6 +257,6 @@
 
     ​	命令：x/8xb 0x54320 表示，从内存地址0x54320读取内容，b表示以字节为一个单位，8表示八个单位，x表示按十六进制显示。
 
-29. sensor能够查看硬件温度，psensor能够gui显示。
+30. sensor能够查看硬件温度，psensor能够gui显示。
 
-30. vscode 中alt + 方向键能交换相邻行。
+31. vscode 中alt + 方向键能交换相邻行。
