@@ -8,5 +8,5 @@
 
 # linux
 
-[linux notes](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/linux-note.md)
+[linux notes](https://github.com/UtopianFuture/UtopianFuture.github.io/tree/master/linux-note)
 
