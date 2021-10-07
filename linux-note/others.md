@@ -106,3 +106,12 @@ The **flags** argument determines whether updates to the mapping are visible to 
 
 The `munmap()` system call deletes the mappings for the specified address range, and causes further references to addresses within the range to generate invalid memory references. If the process has modified the memory and has it mapped `MAP_SHARED`, the modifications should first be written to the file.
 
+### Difference between `#include <>` and `#include "bar"`
+
+Usually, the `#include <xxx>` makes it look into system folders first, like `/usr/local/include`, `/usr/include`, the `#include "xxx"` makes it look into the current or custom folders first.
+
+### 交叉编译
+
+在x86机器上编译x86的可执行文件叫本地编译， 即在当前编译平台下，编译出来的程序只能放到当前平台下运行。
+
+交叉编译可以理解为，在当前编译平台下，编译出来的程序能运行在不同体系结构的机器上，但是编译平台本身却不能运行该程序。比如，我们在 x86 平台上，编译能运行在 loongarch 机器的程序，编译得到的可执行文件在 x86 平台上是不能运行的，必须放到 loongarch机器上才能运行。

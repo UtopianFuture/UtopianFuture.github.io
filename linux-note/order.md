@@ -35,3 +35,21 @@
 15. | 操作符允许我们将一个程序的输出和另外一个程序的输入连接起来。
 
 16. mount可以查看磁盘的挂载情况，unmount + dir 可以解挂某个扇区，mount + dir可以挂载某个扇区。linux读取windows的文件系统，在windows重启进入linux时文件系统时只读的，而开机直接进入linux时文件系统是可写的。
+
+17. qemu-img -V查看qemu版本
+
+    ```
+    guanshun@Jack-ubuntu /dev> qemu-img -V
+    qemu-img version 5.1.0
+    Copyright (c) 2003-2020 Fabrice Bellard and the QEMU Project developers
+    ```
+
+    按照qemu安装方法安装之后的版本
+
+    ```
+    guanshun@Jack-ubuntu ~/r/b/qemu-6.0.0> qemu-img -V
+    qemu-img version 6.0.0
+    Copyright (c) 2003-2021 Fabrice Bellard and the QEMU Project developers
+    ```
+
+18. 
