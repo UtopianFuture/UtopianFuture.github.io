@@ -207,7 +207,7 @@ struct kvm_userspace_memory_region {
 
    每个PCI设备都需要实现一个配置空间(configuration space)的结构，用来存储设备的基本信息和中断信息。系统初始化时BIOS（或者UEFI）将把PCI设备的配置空间映射到处理器的I/O地址空间，之后OS通过I/O端口访问配置空间中的寄存器。
 
-   新的PCI设备会自动向OS申请需要的地址空间大小等，然后将这些需求即如在配置空间的寄存器BAR中。在系统初始化时BIOS会查询所有设备的BAR寄存器，统一为PCI设备分配地址空间。
+   新的PCI设备会**自动**向OS申请需要的地址空间大小等，然后将这些需求即如在配置空间的寄存器BAR中。在系统初始化时BIOS会查询所有设备的BAR寄存器，统一为PCI设备分配地址空间。
 
    PCI总线通过PCI host bridge和CPU总线相连，PCI host bridge和PCI设备之间通过PCI总线通信。PCI host bridge内部有两个寄存器用于系统软件访问PCI设备的配置空间，一个是`CONFIG_ADDRESS`，另一个是`CONFIG_DATA`。当系统软件访问PCI设备配置空间中的寄存器时，首先将目标地址写入寄存器`CONFIG_ADDRESS`中，然后向寄存器`CONFIG_DATA`发起访问操作。当PCI host bridge接收到访问`CONFIG_DATA`的信号，其将`CONFIG_ADDRESS`中的地址转换成PCI总线地址格式，根据地址信息片选PCI设备，然后根据其中的功能号和寄存器号发送到PCI总线上。目标PCI设备在接收到信息后，发送数据。
 

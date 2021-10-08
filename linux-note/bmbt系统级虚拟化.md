@@ -44,10 +44,10 @@ VMM对物理资源的虚拟可以归结为三个主要任务：处理器虚拟�
 
 问题：
 
-1. bmbt如何达到这一功能，即让ubuntu运行在LoongArch架构的CPU上运行却察觉不到和x86架构有区别？
-2. 如何解决虚拟寄存器，上下文切换和虚拟处理器？之前看《LINUX系统虚拟化》了解到，虚拟CPU就是定义一个结构体来表示，之后所有的操作都是对这个结构体进行操作，bmbt也是这样实现的么？
+1. bmbt如何达到这一功能，即让ubuntu运行在LoongArch架构的CPU上运行却察觉不到和x86架构有区别？仿照QEMU？
+2. 如何解决虚拟寄存器，上下文切换和虚拟处理器？之前看《LINUX系统虚拟化》了解到，虚拟CPU就是定义一个结构体来表示，如KVM中的VMCS，QEMU中的X86State等，之后所有的操作都是对这个结构体进行操作，bmbt也是这样实现的么？
 3. 当guest要访问敏感资源时，要陷入到VMM，如何陷入？
-4. latx目前是用户级的翻译器，只负责翻译，识别不了敏感指令，用QEMU的tcg么？
+4. 二进制翻译是用latx还是用QEMU的tcg？
 
 #### 3. 内存虚拟化(见[linux系统虚拟化](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/linux-note/linux%E7%B3%BB%E7%BB%9F%E8%99%9A%E6%8B%9F%E5%8C%96.md))
 
@@ -58,4 +58,8 @@ VMM对物理资源的虚拟可以归结为三个主要任务：处理器虚拟�
 #### 4. I/O虚拟化(见[linux系统虚拟化](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/linux-note/linux%E7%B3%BB%E7%BB%9F%E8%99%9A%E6%8B%9F%E5%8C%96.md))
 
 ​	现实中I/O资源是有限的额，为了满足多个gues对I/O的访问需求，VMM必须通过I/O虚拟化的方式复用有限的I/O资源。
+
+问题：
+
+（1）I/O虚拟化的设计思想是什么？目前进展怎么样？
 
