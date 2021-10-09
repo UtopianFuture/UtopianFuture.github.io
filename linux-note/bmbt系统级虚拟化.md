@@ -63,3 +63,255 @@ VMM对物理资源的虚拟可以归结为三个主要任务：处理器虚拟�
 
 （1）I/O虚拟化的设计思想是什么？目前进展怎么样？
 
+### 一、调试LA内核
+
+#### 1. 内核启动过程
+
+主核的执行入口（PC寄存器的初始值）是编译内核时决定的，运行时由BIOS或者BootLoader传递给内核。内核的初始入口是`kernel_entry`。LA的`kernel_entry`和mips的类似，进行.bss段的清0（为什么要清0），保存a0~a3等操作。之后就进入到第二入口`start_kernel()`。
+
+通过gdb单步调试看LA内核是怎样初始化的。但是遇到一个问题，内核使用`-O2`优化项，在单步调试时很多值都是`optimized out`，同时设置断点也不会顺序执行，是跳着执行的，给阅读代码带来困难。后来请教师兄，这是正常的，start_kernel()部分的代码可以直接看源码，不用单步调试。
+
+2. 
+
+### 二、源码阅读
+
+#### 1. start_kernel()
+
+start_kernel()中一级节点中，先从架构相关的`setup_arch()`开始看。代码中涉及的技术都在之后有介绍。
+
+##### 1.1 setup_arch()
+
+架构相关，代码和mips类似，下为代码树展开。
+
+```
+setup_arch()
+| -- cpu_probe(); // 探测cpu类型，写入cputype中
+|
+| -- plat_early_init(); // 解析bios传入的参数
+|	| -- fw_init_cmdline(); // 获取参数
+|	| -- prom_init_env(); // 根据参数设置环境变量
+|
+| -- init_initrd(); // 主要是检查initrd_start和initrd_end是否正确，将其映射到虚拟地址
+|
+| -- prom_init(); // 初始化io空间的基址、ACPI表、loongarch使用的numa存储等
+|	| -- set_io_port_base();
+|	| -- if(efi_bp){} // efi_bp是在prom_init_env()中用bios传递的_fw_envp赋值的，之后进行ACPI初始化
+|	| -- prom_init_numa_memory();
+|
+|
+|
+|
+|
+|
+|
+```
+
+
+
+###### 1.1.1 cpu_probe()
+
+源码分析：
+
+```
+void cpu_probe(void) // probe CPU type, LOONGARCH's processor_id should be 0
+{
+	struct cpuinfo_loongarch *c = &current_cpu_data; // current_cpu_data指向当前cpu信息
+	unsigned int cpu = smp_processor_id(); // 获取当前cpu编号
+
+	/*
+	 * Set a default elf platform, cpu probe may later
+	 * overwrite it with a more precise value
+	 */
+	set_elf_platform(cpu, "loongarch");
+
+	c->cputype	= CPU_UNKNOWN; // 初始化当前cpu的信息
+	c->processor_id = read_cpucfg(LOONGARCH_CPUCFG0); // 有多个CPUCFG，这些CFG是干嘛用的，同时read_cpucfd()好像返回的都是0，怎么回事
+	c->fpu_vers	= (read_cpucfg(LOONGARCH_CPUCFG2) >> 3) & 0x3;
+	c->writecombine = _CACHE_SUC;
+
+	c->fpu_csr31	= FPU_CSR_RN;
+	c->fpu_msk31	= FPU_CSR_RSVD | FPU_CSR_ABS2008 | FPU_CSR_NAN2008;
+
+	switch (c->processor_id & PRID_COMP_MASK) {
+	case PRID_COMP_LOONGSON:
+		cpu_probe_loongson(c, cpu); // 通过这个函数探测CPU类型
+		break;
+	}
+
+	BUG_ON(!__cpu_family[cpu]);
+	BUG_ON(c->cputype == CPU_UNKNOWN);
+
+	/*
+	 * Platform code can force the cpu type to optimize code
+	 * generation. In that case be sure the cpu type is correctly
+	 * manually setup otherwise it could trigger some nasty bugs.
+	 */
+	BUG_ON(current_cpu_type() != c->cputype);
+
+	if (loongarch_fpu_disabled)
+		c->options &= ~LOONGARCH_CPU_FPU;
+
+	if (c->options & LOONGARCH_CPU_FPU)
+		cpu_set_fpu_opts(c);
+	else
+		cpu_set_nofpu_opts(c);
+
+	if (cpu_has_lsx)
+		elf_hwcap |= HWCAP_LOONGARCH_LSX;
+
+	if (cpu_has_lasx)
+		elf_hwcap |= HWCAP_LOONGARCH_LASX;
+
+	if (cpu_has_lvz && IS_ENABLED(CONFIG_KVM_LOONGARCH_VZ)) {
+		cpu_probe_lvz(c);
+		elf_hwcap |= HWCAP_LOONGARCH_LVZ;
+	}
+
+	elf_hwcap |= HWCAP_LOONGARCH_CRC32;
+
+	cpu_probe_vmbits(c);
+
+#ifdef CONFIG_64BIT
+	if (cpu == 0)
+		__ua_limit = ~((1ull << cpu_vmbits) - 1);
+#endif
+}
+```
+
+###### 1.1.2 plat_early_init()
+
+源码分析：
+
+```
+void __init fw_init_cmdline(void)
+{
+	int i;
+
+	fw_argc = fw_arg0; // 参数个数
+	_fw_argv = (long *)fw_arg1; // 参数的字符串数组
+	_fw_envp = (long *)fw_arg2; // 环境变量
+
+	arcs_cmdline[0] = '\0';
+	for (i = 1; i < fw_argc; i++) {
+		strlcat(arcs_cmdline, fw_argv(i), COMMAND_LINE_SIZE);
+		if (i < (fw_argc - 1))
+			strlcat(arcs_cmdline, " ", COMMAND_LINE_SIZE);
+	}
+}
+```
+
+```
+void __init prom_init_env(void)
+{
+	efi_bp = (struct bootparamsinterface *)_fw_envp;
+
+	loongson_regaddr_set(smp_group, 0x800000001fe01000, 16); // 设置smp_gropu寄存器，但不知道为什么要设置这些寄存器
+
+	loongson_sysconf.ht_control_base = 0x80000EFDFB000000;
+
+	loongson_regaddr_set(loongson_chipcfg, 0x800000001fe00180, 16);
+
+	loongson_regaddr_set(loongson_chiptemp, 0x800000001fe0019c, 16);
+	loongson_regaddr_set(loongson_freqctrl, 0x800000001fe001d0, 16);
+
+	loongson_regaddr_set(loongson_tempinthi, 0x800000001fe01460, 16);
+	loongson_regaddr_set(loongson_tempintlo, 0x800000001fe01468, 16);
+	loongson_regaddr_set(loongson_tempintsta, 0x800000001fe01470, 16);
+	loongson_regaddr_set(loongson_tempintup, 0x800000001fe01478, 16);
+
+	loongson_sysconf.io_base_irq = LOONGSON_PCH_IRQ_BASE;
+	loongson_sysconf.io_last_irq = LOONGSON_PCH_IRQ_BASE + 256;
+	loongson_sysconf.msi_base_irq = LOONGSON_PCI_MSI_IRQ_BASE;
+	loongson_sysconf.msi_last_irq = LOONGSON_PCI_MSI_IRQ_BASE + 192;
+	loongson_sysconf.msi_address_hi = 0;
+	loongson_sysconf.msi_address_lo = 0x2FF00000;
+	loongson_sysconf.dma_mask_bits = LOONGSON_DMA_MASK_BIT;
+
+	loongson_sysconf.pcie_wake_enabled =
+		!(readw(LS7A_PM1_ENA_REG) & ACPI_PCIE_WAKEUP_STATUS);
+	if (list_find(efi_bp->extlist))
+		printk("Scan bootparm failed\n");
+}
+```
+
+###### 1.1.3 prom_init()
+
+源码分析：
+
+```
+void __init prom_init(void)
+{
+	/* init base address of io space */
+	set_io_port_base((unsigned long) // ioremap()获取到io base的物理地址后set_io_port_base将其赋值给全局变量loongarch_io_port_base
+		ioremap(LOONGSON_LIO_BASE, LOONGSON_LIO_SIZE));
+
+	if (efi_bp) { // efi_bp是在prom_init_env()中用bios传递的_fw_envp赋值的
+		efi_init(); // 为什么要初始化efi，efi和acpi有什么关系？
+#if defined(CONFIG_ACPI) && defined(CONFIG_BLK_DEV_INITRD)
+		acpi_table_upgrade(); // don't understand
+#endif
+#ifdef CONFIG_ACPI
+		acpi_gbl_use_default_register_widths = false;
+		acpi_boot_table_init();
+		acpi_boot_init();
+#endif
+		if (!cpu_has_hypervisor)
+			loongarch_pci_ops = &ls7a_pci_ops;
+		else
+			loongarch_pci_ops = &virt_pci_ops;
+	}
+
+	if (nr_pch_pics == 0)
+		register_pch_pic(0, LS7A_PCH_REG_BASE,
+				LOONGSON_PCH_IRQ_BASE);
+
+#ifdef CONFIG_NUMA
+	prom_init_numa_memory();
+#else
+	prom_init_memory();
+#endif
+	if (efi_bp) {
+		dmi_scan_machine();
+		if (dmi_available) {
+			dmi_set_dump_stack_arch_desc();
+			smbios_parse();
+		}
+	}
+	pr_info("The BIOS Version: %s\n", b_info.bios_version);
+
+	efi_runtime_init();
+
+	register_smp_ops(&loongson3_smp_ops);
+	loongson_acpi_init();
+}
+```
+
+
+
+### 三、相关知识
+
+1. [BSS段清0](https://www.cnblogs.com/lvzh/p/12079365.html)
+
+   BSS段是保存全局变量和静态局部变量的，因为这两种数据的位置是固定的，所有可以直接保存在BSS里，局部变量是保存在栈上。在初始化内核时一次性将BSS所有变量初始化为0更方便。
+
+2. efi
+
+   EFI系统分区（EFI system partition，ESP），是一个[FAT](https://zh.wikipedia.org/wiki/FAT)或[FAT32](https://zh.wikipedia.org/wiki/FAT32)格式的磁盘分区。UEFI固件可从ESP加载EFI启动程式或者EFI应用程序。
+
+3. NUMA
+
+4. initrd
+
+   Initrd ramdisk或者initrd是指一个临时文件系统，它在启动阶段被Linux内核调用。initrd主要用于当“根”文件系统被[挂载](https://zh.wikipedia.org/wiki/Mount_(Unix))之前，进行准备工作。
+
+5. 设备树（fds）
+
+6. SWIOTLB
+
+7. IOMMU
+
+8. 
+
+问题：
+
+（1）正常在LA架构上运行LA内核是这样的，那如果在LA架构上运行x86内核是怎样的，BootLoader直接传递x86内核的入口地址么。bios要怎样把LA内核拉起来。
