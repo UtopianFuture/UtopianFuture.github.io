@@ -274,3 +274,58 @@
     -exec：固定写法
     rm -rf：强制删除文件，包括目录
      {} \; ：固定写法，一对大括号+空格+/+;
+
+33. vim中能够画代码树的插件——[DrawIt](http://www.drchip.org/astronaut/vim/index.html#DRAWIT)
+
+下载后用vim打开DrawIt.vba.gz
+
+```
+vim DrawIt.vba.gz
+```
+
+然后使用 `:so %` 进行解压，最后 `:q` 退出 `vim`，`DrawIt` 就安装完成。
+
+进入vim后用`\di`，`\ds`即可进入，退出DrawIt。
+
+```
+\di to start DrawIt，
+\ds to stop  DrawIt.
+```
+
+```
+Supported Features
+   <left>       move and draw left
+   <right>      move and draw right, inserting lines/space as needed
+   <up>         move and draw up, inserting lines/space as needed
+   <down>       move and draw down, inserting lines/space as needed
+   <s-left>     move left
+   <s-right>    move right, inserting lines/space as needed
+   <s-up>       move up, inserting lines/space as needed
+   <s-down>     move down, inserting lines/space as needed
+   <space>      toggle into and out of erase mode
+   >            draw -> arrow
+   <            draw <- arrow
+   ^            draw ^  arrow
+   v            draw v  arrow
+   <pgdn>       replace with a \, move down and right, and insert a \
+   <end>        replace with a /, move down and left,  and insert a /
+   <pgup>       replace with a /, move up   and right, and insert a /
+   <home>       replace with a \, move up   and left,  and insert a \
+   \>           draw fat -> arrow
+   \<           draw fat <- arrow
+   \^           draw fat ^  arrow
+   \v           draw fat v  arrow
+   \a           draw arrow based on corners of visual-block
+   \b           draw box using visual-block selected region
+   \e           draw an ellipse inside visual-block
+   \f           fill a figure with some character
+   \h           create a canvas for \a \b \e \l
+   \l           draw line based on corners of visual block
+   \s           adds spaces to canvas
+   <leftmouse>  select visual block
+ <s-leftmouse>  drag and draw with current brush (register)
+   \ra ... \rz  replace text with given brush/register
+   \pa ...      like \ra ... \rz, except that blanks are considered
+                to be transparent
+```
+
