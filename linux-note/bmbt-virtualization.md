@@ -309,21 +309,30 @@ void __init prom_init(void)
    archive is extracted into it, the kernel will fall through to the older code to locate and mount a root partition, then exec some variant of /sbin/init
    out of that.
 
-4. NUMA
+4. ACPI（建议浏览一下ACPI[手册](https://uefi.org/sites/default/files/resources/ACPI_6_3_final_Jan30.pdf)）
 
-5. initrd
+   Advanced Configuration and Power Interface (ACPI). Before the development of ACPI, operating systems (OS) primarily used BIOS (Basic Input/
+   Output System) interfaces for **power management and device discovery and configuration**.
+
+   ACPI can first be understood as an architecture-independent power management and configuration framework that forms a subsystem within the host OS. This framework **establishes a hardware register set to define power states** (sleep, hibernate, wake, etc). The hardware register set can accommodate operations on dedicated hardware and general purpose hardware.
+
+   The primary intention of the standard ACPI framework and the hardware register set is to enable power management and system configuration without directly calling firmware natively from the OS. **ACPI serves as an interface layer between the system firmware (BIOS) and the OS**.
+
+5. NUMA
+
+6. initrd
 
    Initrd ramdisk或者initrd是指一个临时文件系统，它在启动阶段被Linux内核调用。initrd主要用于当“根”文件系统被[挂载](https://zh.wikipedia.org/wiki/Mount_(Unix))之前，进行准备工作。
 
-6. initramfs
+7. initramfs
 
-7. 设备树（fds）
+8. 设备树（fds）
 
-8. SWIOTLB
+9. SWIOTLB
 
-9. IOMMU
+10. IOMMU
 
-10. 
+11. 
 
 问题：
 
