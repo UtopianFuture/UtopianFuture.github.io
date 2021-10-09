@@ -248,7 +248,7 @@ void __init prom_init(void)
 	if (efi_bp) { // efi_bp是在prom_init_env()中用bios传递的_fw_envp赋值的
 		efi_init(); // 为什么要初始化efi，efi和acpi有什么关系？
 #if defined(CONFIG_ACPI) && defined(CONFIG_BLK_DEV_INITRD)
-		acpi_table_upgrade(); // don't understand
+		acpi_table_upgrade(); // 这部分初始化看不懂，为什么要从cpio中获取数据
 #endif
 #ifdef CONFIG_ACPI
 		acpi_gbl_use_default_register_widths = false;
@@ -298,19 +298,32 @@ void __init prom_init(void)
 
    EFI系统分区（EFI system partition，ESP），是一个[FAT](https://zh.wikipedia.org/wiki/FAT)或[FAT32](https://zh.wikipedia.org/wiki/FAT32)格式的磁盘分区。UEFI固件可从ESP加载EFI启动程式或者EFI应用程序。
 
-3. NUMA
+3. [cpio](https://unix.stackexchange.com/questions/7276/why-use-cpio-for-initramfs)
 
-4. initrd
+   cpio是UNIX操作系统的一个文件备份程序及文件格式。
+
+   The initial ramdisk needs to be unpacked by the kernel during boot, cpio is used because it is already implemented in kernel code.
+
+   All 2.6 Linux kernels **contain a gzipped "cpio" format archive,** which is extracted into rootfs when the kernel boots up.  After extracting, the kernel
+   checks to see if rootfs contains a file "init", and if so it executes it as PID. If found, this init process is responsible for bringing the system the rest of the way up, including locating and mounting the real root device (if any).  If rootfs does not contain an init program after the embedded cpio
+   archive is extracted into it, the kernel will fall through to the older code to locate and mount a root partition, then exec some variant of /sbin/init
+   out of that.
+
+4. NUMA
+
+5. initrd
 
    Initrd ramdisk或者initrd是指一个临时文件系统，它在启动阶段被Linux内核调用。initrd主要用于当“根”文件系统被[挂载](https://zh.wikipedia.org/wiki/Mount_(Unix))之前，进行准备工作。
 
-5. 设备树（fds）
+6. initramfs
 
-6. SWIOTLB
+7. 设备树（fds）
 
-7. IOMMU
+8. SWIOTLB
 
-8. 
+9. IOMMU
+
+10. 
 
 问题：
 
