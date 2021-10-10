@@ -65,7 +65,11 @@ VMM对物理资源的虚拟可以归结为三个主要任务：处理器虚拟�
 
 ### 一、调试LA内核
 
-#### 1. 内核启动过程
+#### 1. 环境搭建
+
+[在qemu上调试LoongArch内核](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/linux-note/%E5%9C%A8qemu%E4%B8%8A%E8%B0%83%E8%AF%95loongson%E5%86%85%E6%A0%B8.md)
+
+#### 2. 内核启动过程
 
 主核的执行入口（PC寄存器的初始值）是编译内核时决定的，运行时由BIOS或者BootLoader传递给内核。内核的初始入口是`kernel_entry`。LA的`kernel_entry`和mips的类似，进行.bss段的清0（为什么要清0），保存a0~a3等操作。之后就进入到第二入口`start_kernel()`。
 
@@ -100,6 +104,18 @@ setup_arch()
 |		| -- numa_mem_init(); // 初始化numa
 |			| -- numa_default_distance(); // 初始化numa节点的距离矩阵
 |			| -- init_node_memblock(); // 逐个分析内存分布图并将结果通过add_mem_region()保存到loongson_mem_map中
+|	| -- loongson_acpi_init(); // ACPI初始化始终是个大问题，需要进一步了解ACPI才能看懂
+|
+| -- cpu_report(); // 打印一些初始化后CPU的信息
+|
+| -- arch_mem_init(); // 
+|	| -- early_init_dt_scan(); // 早期初始化设备树
+|
+|
+|
+|
+|
+|
 |
 |
 |
@@ -311,8 +327,8 @@ static int __init numa_mem_init(int (*init_func)(void))
 	if (numa_meminfo_cover_memory(&numa_meminfo) == false)
 		return -EINVAL;
 
-	for_each_node_mask(node, node_possible_map) { // 建立逻辑CPU和节点的映射关系
-		node_mem_init(node);
+	for_each_node_mask(node, node_possible_map) { // 建立逻辑CPU和节点的映射关系（CPU拓扑图）
+		node_mem_init(node);					  // 描述哪个核属于哪个节点
 		node_set_online(node);
 		__node_data[(node)]->cpumask = cpus_on_node[node];
 	}
@@ -321,57 +337,161 @@ static int __init numa_mem_init(int (*init_func)(void))
 }
 ```
 
+###### 1.1.4 arch_mem_init()
+
+```
+static void __init arch_mem_init(char **cmdline_p)
+{
+	unsigned int node;
+	unsigned long start_pfn, end_pfn;
+	struct memblock_region *reg;
+	extern void plat_mem_setup(void);
+#ifdef CONFIG_MACH_LOONGSON64
+	bool enable;
+#endif
+
+	/* call board setup routine */
+	plat_mem_setup(); // 初始化系统控制台——哑控制台，同时通过early_init_dt_scan_nodes()进行早期的FDT校验和初始化
+	memblock_set_bottom_up(true);
+
+	early_init_fdt_reserve_self();
+	early_init_fdt_scan_reserved_mem();
+
+	if (loongson_fdt_blob)
+		dt_bootmem_init();
+	else
+		bootmem_init();
+
+	/*
+	 * Prevent memblock from allocating high memory.
+	 * This cannot be done before max_low_pfn is detected, so up
+	 * to this point is possible to only reserve physical memory
+	 * with memblock_reserve; memblock_virt_alloc* can be used
+	 * only after this point
+	 */
+	memblock_set_current_limit(PFN_PHYS(max_low_pfn));
+
+#ifdef CONFIG_PROC_VMCORE
+	if (setup_elfcorehdr && setup_elfcorehdr_size) {
+		printk(KERN_INFO "kdump reserved memory at %lx-%lx\n",
+		       setup_elfcorehdr, setup_elfcorehdr_size);
+		memblock_reserve(setup_elfcorehdr, setup_elfcorehdr_size);
+	}
+#endif
+
+	loongarch_parse_crashkernel();
+#ifdef CONFIG_KEXEC
+	if (crashk_res.start != crashk_res.end)
+		memblock_reserve(crashk_res.start,
+				 crashk_res.end - crashk_res.start + 1);
+#endif
+	for_each_online_node(node) {
+		get_pfn_range_for_nid(node, &start_pfn, &end_pfn);
+		reserve_crashm_region(node, start_pfn, end_pfn);
+		reserve_oldmem_region(node, start_pfn, end_pfn);
+	}
+
+	device_tree_init();
+#ifdef CONFIG_MACH_LOONGSON64
+	enable = memblock_bottom_up();
+	memblock_set_bottom_up(false);
+#endif
+	sparse_init();
+#ifdef CONFIG_MACH_LOONGSON64
+	memblock_set_bottom_up(enable);
+#endif
+	plat_swiotlb_setup();
+
+	dma_contiguous_reserve(PFN_PHYS(max_low_pfn));
+	/* Tell bootmem about cma reserved memblock section */
+	for_each_memblock(reserved, reg)
+		if (reg->size != 0)
+			memblock_reserve(reg->base, reg->size);
+	reserve_nosave_region();
+}
+```
+
+```
+void __init early_init_dt_scan_nodes(void)
+{
+	/* Retrieve various information from the /chosen node */
+	of_scan_flat_dt(early_init_dt_scan_chosen, boot_command_line);
+
+	/* Initialize {size,address}-cells info */
+	of_scan_flat_dt(early_init_dt_scan_root, NULL);
+
+	/* Setup memory, calling early_init_dt_add_memory_arch */
+	of_scan_flat_dt(early_init_dt_scan_memory, NULL);
+}
+```
+
 
 
 ### 三、相关知识
 
-1. [BSS段清0](https://www.cnblogs.com/lvzh/p/12079365.html)
+#### 1. [BSS段清0](https://www.cnblogs.com/lvzh/p/12079365.html)
 
-   BSS段是保存全局变量和静态局部变量的，因为这两种数据的位置是固定的，所有可以直接保存在BSS里，局部变量是保存在栈上。在初始化内核时一次性将BSS所有变量初始化为0更方便。
+BSS段是保存全局变量和静态局部变量的，因为这两种数据的位置是固定的，所有可以直接保存在BSS里，局部变量是保存在栈上。在初始化内核时一次性将BSS所有变量初始化为0更方便。
 
-2. efi
+#### 2. efi
 
-   EFI系统分区（EFI system partition，ESP），是一个[FAT](https://zh.wikipedia.org/wiki/FAT)或[FAT32](https://zh.wikipedia.org/wiki/FAT32)格式的磁盘分区。UEFI固件可从ESP加载EFI启动程式或者EFI应用程序。
+EFI系统分区（EFI system partition，ESP），是一个[FAT](https://zh.wikipedia.org/wiki/FAT)或[FAT32](https://zh.wikipedia.org/wiki/FAT32)格式的磁盘分区。UEFI固件可从ESP加载EFI启动程式或者EFI应用程序。
 
-3. [cpio](https://unix.stackexchange.com/questions/7276/why-use-cpio-for-initramfs)
+#### 3. [cpio](https://unix.stackexchange.com/questions/7276/why-use-cpio-for-initramfs)
 
-   cpio是UNIX操作系统的一个文件备份程序及文件格式。
+cpio是UNIX操作系统的一个文件备份程序及文件格式。
 
-   The initial ramdisk needs to be unpacked by the kernel during boot, cpio is used because it is already implemented in kernel code.
+The initial ramdisk needs to be unpacked by the kernel during boot, cpio is used because it is already implemented in kernel code.
 
-   All 2.6 Linux kernels **contain a gzipped "cpio" format archive,** which is extracted into rootfs when the kernel boots up.  After extracting, the kernel
-   checks to see if rootfs contains a file "init", and if so it executes it as PID. If found, this init process is responsible for bringing the system the rest of the way up, including locating and mounting the real root device (if any).  If rootfs does not contain an init program after the embedded cpio
-   archive is extracted into it, the kernel will fall through to the older code to locate and mount a root partition, then exec some variant of /sbin/init
-   out of that.
+All 2.6 Linux kernels **contain a gzipped "cpio" format archive,** which is extracted into rootfs when the kernel boots up.  After extracting, the kernel
+checks to see if rootfs contains a file "init", and if so it executes it as PID. If found, this init process is responsible for bringing the system the rest of the way up, including locating and mounting the real root device (if any).  If rootfs does not contain an init program after the embedded cpio
+archive is extracted into it, the kernel will fall through to the older code to locate and mount a root partition, then exec some variant of /sbin/init
+out of that.
 
-4. ACPI（建议浏览一下ACPI[手册](https://uefi.org/sites/default/files/resources/ACPI_6_3_final_Jan30.pdf)）
+#### 4. ACPI（建议浏览一下ACPI[手册](https://uefi.org/sites/default/files/resources/ACPI_6_3_final_Jan30.pdf)）
 
-   Advanced Configuration and Power Interface (ACPI). Before the development of ACPI, operating systems (OS) primarily used BIOS (Basic Input/
-   Output System) interfaces for **power management and device discovery and configuration**.
+Advanced Configuration and Power Interface (ACPI). Before the development of ACPI, operating systems (OS) primarily used BIOS (Basic Input/
+Output System) interfaces for **power management and device discovery and configuration**.
 
-   ACPI can first be understood as an architecture-independent power management and configuration framework that forms a subsystem within the host OS. This framework **establishes a hardware register set to define power states** (sleep, hibernate, wake, etc). The hardware register set can accommodate operations on dedicated hardware and general purpose hardware.
+ACPI can first be understood as an architecture-independent power management and configuration framework that forms a subsystem within the host OS. This framework **establishes a hardware register set to define power states** (sleep, hibernate, wake, etc). The hardware register set can accommodate operations on dedicated hardware and general purpose hardware.
 
-   The primary intention of the standard ACPI framework and the hardware register set is to enable power management and system configuration without directly calling firmware natively from the OS. **ACPI serves as an interface layer between the system firmware (BIOS) and the OS**.
+The primary intention of the standard ACPI framework and the hardware register set is to enable power management and system configuration without directly calling firmware natively from the OS. **ACPI serves as an interface layer between the system firmware (BIOS) and the OS**.
 
-5. [NUMA](https://zhuanlan.zhihu.com/p/62795773)
+#### 5. [NUMA](https://zhuanlan.zhihu.com/p/62795773)
 
-   NUMA 指的是针对某个 CPU，内存访问的距离和时间是不一样的。其解决了多 CPU 系统下共享 BUS 带来的性能问题（链接中的图很直观）。
+NUMA 指的是针对某个 CPU，内存访问的距离和时间是不一样的。其解决了多 CPU 系统下共享 BUS 带来的性能问题（链接中的图很直观）。
 
-   NUMA的特点是：被共享的内存物理上是分布式的，所有这些内存的集合就是全局地址空间。所以处理器访问这些内存的时间是不一样的，显然访问本地内存的速度要比访问全局共享内存或远程访问外地内存要快些。
+NUMA的特点是：被共享的内存物理上是分布式的，所有这些内存的集合就是全局地址空间。所以处理器访问这些内存的时间是不一样的，显然访问本地内存的速度要比访问全局共享内存或远程访问外地内存要快些。
 
-6. initrd
+#### 6. initrd
 
-   Initrd ramdisk或者initrd是指一个临时文件系统，它在启动阶段被Linux内核调用。initrd主要用于当“根”文件系统被[挂载](https://zh.wikipedia.org/wiki/Mount_(Unix))之前，进行准备工作。
+Initrd ramdisk或者initrd是指一个临时文件系统，它在启动阶段被Linux内核调用。initrd主要用于当“根”文件系统被[挂载](https://zh.wikipedia.org/wiki/Mount_(Unix))之前，进行准备工作。
 
-7. initramfs
+#### 7. initramfs
 
-8. 设备树（fds）
+#### 8. [设备树（dt）](https://e-mailky.github.io/2019-01-14-dts-1)
 
-9. SWIOTLB
+Device Tree由一系列被命名的结点（node）和属性（property）组成，而结点本身可包含子结点。所谓属性， 其实就是成对出现的name和value。在Device Tree中，可描述的信息包括（原先这些信息大多被hard code到kernel中）：
 
-10. IOMMU
+- CPU的数量和类别
+- 内存基地址和大小
+- 总线和桥
+- 外设连接
+- 中断控制器和中断使用情况
+- GPIO控制器和GPIO使用情况
+- Clock控制器和Clock使用情况
 
-11. 
+它基本上就是画一棵电路板上CPU、总线、设备组成的树，**Bootloader会将这棵树传递给内核**，然后内核可以识别这棵树， 并根据它**展开出Linux内核中的**platform_device、i2c_client、spi_device等**设备**，而这些设备用到的内存、IRQ等资源， 也被传递给了内核，内核会将这些资源绑定给展开的相应的设备。
+
+是否Device Tree要描述系统中的所有硬件信息？答案是否定的。基本上，那些可以动态探测到的设备是不需要描述的， 例如USB device。不过对于SOC上的usb hostcontroller，它是无法动态识别的，需要在device tree中描述。同样的道理， 在computersystem中，PCI device可以被动态探测到，不需要在device tree中描述，但是PCI bridge如果不能被探测，那么就需要描述之。
+
+设备树和ACPI有什么关系？
+
+#### 9. SWIOTLB
+
+#### 10. IOMMU
+
+
 
 问题：
 
