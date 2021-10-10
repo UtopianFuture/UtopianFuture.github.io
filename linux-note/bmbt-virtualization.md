@@ -97,9 +97,9 @@ setup_arch()
 |	| -- set_io_port_base();
 |	| -- if(efi_bp){} // efi_bp是在prom_init_env()中用bios传递的_fw_envp赋值的，之后进行ACPI初始化
 |	| -- prom_init_numa_memory();
-|
-|
-|
+|		| -- numa_mem_init(); // 初始化numa
+|			| -- numa_default_distance(); // 初始化numa节点的距离矩阵
+|			| -- init_node_memblock(); // 逐个分析内存分布图并将结果通过add_mem_region()保存到loongson_mem_map中
 |
 |
 |
@@ -266,7 +266,7 @@ void __init prom_init(void)
 				LOONGSON_PCH_IRQ_BASE);
 
 #ifdef CONFIG_NUMA
-	prom_init_numa_memory();
+	prom_init_numa_memory(); // 
 #else
 	prom_init_memory();
 #endif
@@ -283,6 +283,41 @@ void __init prom_init(void)
 
 	register_smp_ops(&loongson3_smp_ops);
 	loongson_acpi_init();
+}
+```
+
+```
+static int __init numa_mem_init(int (*init_func)(void))
+{
+	int i;
+	int ret;
+	int node;
+
+	for (i = 0; i < CONFIG_NR_CPUS; i++)
+		set_cpuid_to_node(i, NUMA_NO_NODE);
+	nodes_clear(numa_nodes_parsed); // 初始化前先清0
+	nodes_clear(node_possible_map);
+	nodes_clear(node_online_map);
+	memset(&numa_meminfo, 0, sizeof(numa_meminfo));
+	numa_default_distance(); // 初始化节点距离矩阵
+	/* Parse SRAT and SLIT if provided by firmware. */
+	ret = init_func();
+	if (ret < 0)
+		return ret;
+	node_possible_map = numa_nodes_parsed;
+	if (WARN_ON(nodes_empty(node_possible_map)))
+		return -EINVAL;
+	init_node_memblock(); // 逐个分析内存分布图并将结果通过add_mem_region()保存到loongson_mem_map中
+	if (numa_meminfo_cover_memory(&numa_meminfo) == false)
+		return -EINVAL;
+
+	for_each_node_mask(node, node_possible_map) { // 建立逻辑CPU和节点的映射关系
+		node_mem_init(node);
+		node_set_online(node);
+		__node_data[(node)]->cpumask = cpus_on_node[node];
+	}
+	max_low_pfn = PHYS_PFN(memblock_end_of_DRAM());
+	return 0;
 }
 ```
 
@@ -318,7 +353,11 @@ void __init prom_init(void)
 
    The primary intention of the standard ACPI framework and the hardware register set is to enable power management and system configuration without directly calling firmware natively from the OS. **ACPI serves as an interface layer between the system firmware (BIOS) and the OS**.
 
-5. NUMA
+5. [NUMA](https://zhuanlan.zhihu.com/p/62795773)
+
+   NUMA 指的是针对某个 CPU，内存访问的距离和时间是不一样的。其解决了多 CPU 系统下共享 BUS 带来的性能问题（链接中的图很直观）。
+
+   NUMA的特点是：被共享的内存物理上是分布式的，所有这些内存的集合就是全局地址空间。所以处理器访问这些内存的时间是不一样的，显然访问本地内存的速度要比访问全局共享内存或远程访问外地内存要快些。
 
 6. initrd
 
