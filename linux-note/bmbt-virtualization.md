@@ -110,7 +110,7 @@ setup_arch()
 |
 | -- arch_mem_init(); // 
 |	| -- early_init_dt_scan(); // 早期初始化设备树
-|
+|	| -- dt_bootmem_init(); // 建立boot_mem_map内存映射图，boot_mem_map主要给BootMem内存分配器用，只包含系统内存
 |
 |
 |
@@ -487,9 +487,29 @@ Device Tree由一系列被命名的结点（node）和属性（property）组成
 
 设备树和ACPI有什么关系？
 
-#### 9. SWIOTLB
+#### 9. [BootMem内存分配器](https://www.kernel.org/doc/html/v4.19/core-api/boot-time-mm.html#bootmem)
 
-#### 10. IOMMU
+**Bootmem is a boot-time physical memory allocator and configurator**.
+
+It is used early in the boot process before the page allocator is set up.
+
+Bootmem is based on the most basic of allocators, a First Fit allocator which uses a bitmap to represent memory. If a bit is 1, the page is allocated and 0 if unallocated. To satisfy allocations of sizes smaller than a page, the allocator records the **Page Frame Number (PFN)** of the last allocation and the offset the allocation ended at. Subsequent small allocations are merged together and stored on the same page.
+
+The information used by the bootmem allocator is represented by `struct bootmem_data`. An array to hold up to `MAX_NUMNODES` such structures is statically allocated and then it is discarded when the system initialization completes. **Each entry in this array corresponds to a node with memory**. For UMA systems only entry 0 is used.
+
+The bootmem allocator is initialized during early architecture specific setup. Each architecture is required to supply a `setup_arch()` function which, among other tasks, is responsible for acquiring the necessary parameters to initialise the boot memory allocator. These parameters define limits of usable physical memory:
+
+- **min_low_pfn** - the lowest PFN that is available in the system
+- **max_low_pfn** - the highest PFN that may be addressed by low memory (`ZONE_NORMAL`)
+- **max_pfn** - the last PFN available to the system.
+
+After those limits are determined, the `init_bootmem()` or `init_bootmem_node()` function should be called to initialize the bootmem allocator. The UMA case should use the init_bootmem function. It will initialize `contig_page_data` structure that represents the only memory node in the system. In the NUMA case the `init_bootmem_node` function should be called to initialize the bootmem allocator for each node.
+
+Once the allocator is set up, it is possible to use either single node or NUMA variant of the allocation APIs.
+
+#### 10. SWIOTLB
+
+#### 11. IOMMU
 
 
 
