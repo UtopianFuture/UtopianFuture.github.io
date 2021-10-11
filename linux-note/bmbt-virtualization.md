@@ -75,7 +75,7 @@ VMM对物理资源的虚拟可以归结为三个主要任务：处理器虚拟�
 
 通过gdb单步调试看LA内核是怎样初始化的。但是遇到一个问题，内核使用`-O2`优化项，在单步调试时很多值都是`optimized out`，同时设置断点也不会顺序执行，是跳着执行的，给阅读代码带来困难。后来请教师兄，这是正常的，start_kernel()部分的代码可以直接看源码，不用单步调试。
 
-2. 
+2.
 
 ### 二、源码阅读
 
@@ -108,21 +108,19 @@ setup_arch()
 |
 | -- cpu_report(); // 打印一些初始化后CPU的信息
 |
-| -- arch_mem_init(); // 
+| -- arch_mem_init(); //
 |	| -- early_init_dt_scan(); // 早期初始化设备树
 |	| -- dt_bootmem_init(); // 建立boot_mem_map内存映射图，boot_mem_map主要给BootMem内存分配器用，只包含系统内存
+|	| -- device_tree_init(); // 用bios传递的信息初始化设备树节点
+|		| -- unflatten_and_copy_device_tree();
+|			| -- early_init_dt_alloc_memory_arch(); // 先在初始化好的bootmem中分配物理空间
+|			| -- unflatten_device_tree(); // create tree of device_nodes from flat blob
 |
+|	| -- sparse_init(); // 初始化稀疏型内存模型
 |
-|
-|
-|
-|
-|
-|
+|	| -- plat_swiotlb_setup(); // swiotlb为软件中转站，用于让任意设备能够对任意内存地址发起DMA访问
 |
 ```
-
-
 
 ###### 1.1.1 cpu_probe()
 
@@ -282,7 +280,7 @@ void __init prom_init(void)
 				LOONGSON_PCH_IRQ_BASE);
 
 #ifdef CONFIG_NUMA
-	prom_init_numa_memory(); // 
+	prom_init_numa_memory(); //
 #else
 	prom_init_memory();
 #endif
@@ -339,6 +337,8 @@ static int __init numa_mem_init(int (*init_func)(void))
 
 ###### 1.1.4 arch_mem_init()
 
+源码分析：
+
 ```
 static void __init arch_mem_init(char **cmdline_p)
 {
@@ -358,7 +358,7 @@ static void __init arch_mem_init(char **cmdline_p)
 	early_init_fdt_scan_reserved_mem();
 
 	if (loongson_fdt_blob)
-		dt_bootmem_init();
+		dt_bootmem_init(); // 建立boot_mem_map内存映射图
 	else
 		bootmem_init();
 
@@ -391,12 +391,12 @@ static void __init arch_mem_init(char **cmdline_p)
 		reserve_oldmem_region(node, start_pfn, end_pfn);
 	}
 
-	device_tree_init();
+	device_tree_init();// 解析和初始化设备树
 #ifdef CONFIG_MACH_LOONGSON64
 	enable = memblock_bottom_up();
 	memblock_set_bottom_up(false);
 #endif
-	sparse_init();
+	sparse_init(); // 初始化稀疏型内存模型
 #ifdef CONFIG_MACH_LOONGSON64
 	memblock_set_bottom_up(enable);
 #endif
@@ -411,21 +411,7 @@ static void __init arch_mem_init(char **cmdline_p)
 }
 ```
 
-```
-void __init early_init_dt_scan_nodes(void)
-{
-	/* Retrieve various information from the /chosen node */
-	of_scan_flat_dt(early_init_dt_scan_chosen, boot_command_line);
-
-	/* Initialize {size,address}-cells info */
-	of_scan_flat_dt(early_init_dt_scan_root, NULL);
-
-	/* Setup memory, calling early_init_dt_add_memory_arch */
-	of_scan_flat_dt(early_init_dt_scan_memory, NULL);
-}
-```
-
-
+初始化设备树可以看[这里](http://sourcelink.top/2019/09/10/dts-unflatten_device_tree/)，分析的很详细。
 
 ### 三、相关知识
 
@@ -444,8 +430,7 @@ cpio是UNIX操作系统的一个文件备份程序及文件格式。
 The initial ramdisk needs to be unpacked by the kernel during boot, cpio is used because it is already implemented in kernel code.
 
 All 2.6 Linux kernels **contain a gzipped "cpio" format archive,** which is extracted into rootfs when the kernel boots up.  After extracting, the kernel
-checks to see if rootfs contains a file "init", and if so it executes it as PID. If found, this init process is responsible for bringing the system the rest of the way up, including locating and mounting the real root device (if any).  If rootfs does not contain an init program after the embedded cpio
-archive is extracted into it, the kernel will fall through to the older code to locate and mount a root partition, then exec some variant of /sbin/init
+checks to see if rootfs contains a file "init", and if so it executes it as PID. If found, this init process is responsible for bringing the system the rest of the way up, including locating and mounting the real root device (if any).  If rootfs does not contain an init program after the embedded cpio archive is extracted into it, the kernel will fall through to the older code to locate and mount a root partition, then exec some variant of /sbin/init
 out of that.
 
 #### 4. ACPI（建议浏览一下ACPI[手册](https://uefi.org/sites/default/files/resources/ACPI_6_3_final_Jan30.pdf)）
@@ -487,9 +472,9 @@ Device Tree由一系列被命名的结点（node）和属性（property）组成
 
 设备树和ACPI有什么关系？
 
-#### 9. [BootMem内存分配器](https://www.kernel.org/doc/html/v4.19/core-api/boot-time-mm.html#bootmem)
+#### 9. [BootMem内存分配器](https://cloud.tencent.com/developer/article/1376122)
 
-**Bootmem is a boot-time physical memory allocator and configurator**.
+**[Bootmem](https://www.kernel.org/doc/html/v4.19/core-api/boot-time-mm.html#bootmem) is a boot-time physical memory allocator and configurator**.
 
 It is used early in the boot process before the page allocator is set up.
 
@@ -511,7 +496,7 @@ Once the allocator is set up, it is possible to use either single node or NUMA v
 
 #### 11. IOMMU
 
-
+#### 12. 节点
 
 问题：
 
