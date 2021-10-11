@@ -117,17 +117,21 @@ setup_arch()
 |
 |	| -- sparse_init(); // 初始化稀疏型内存模型
 |
-|	| -- plat_swiotlb_setup(); // swiotlb为软件中转站，用于让任意设备能够对任意内存地址发起DMA访问。
+|	| -- plat_swiotlb_setup(); // swiotlb为软件中转站，用于让任意设备能够对任意内存地址发起DMA访问
 | 							   // 要保证弱寻址能力的设备能够访问，所有尽早初始化
 |
 |	| -- resource_init(); // 在已经初始化的bootmem中为code, date, bss段分配空间
 |
 |	| -- plat_smp_setup(); // smp是多对称处理器，这里先配置主核，主要是主核编号，核间中断等
 |
+|	| -- prefill_possible_map(); // 建立合理的逻辑CPU的possible值，possible和present的区别是CPU物理热拔插，
+|								 // 如果物理上移除一个CPU，present就会减1，默认两者像等
 |
+|	| -- cpu_cache_init(); // 三级cache初始化，主要是ways, sets, size
+|		| -- setup_protection_map(); // 建立进程VMA权限到页表权限的映射表（为什么是16个页表？）
 |
-|
-|
+|	| -- paging_init(); // 初始化各个内存页面管理区。设置不同的页面管理区是为访问能力有限的设备服务
+|		| -- free_area_init_nodes(); // Initialise all pg_data_t and zone data, the start_pfn, end_pfn.
 \
 ```
 
@@ -458,6 +462,8 @@ swiotlb_init(int verbose)
 
 LoongArch也使用loongson3_smp_setup()进行初始化。
 
+源码分析：
+
 ```
 const struct plat_smp_ops loongson3_smp_ops = {
 	.send_ipi_single = loongson3_send_ipi_single, // 核间通讯
@@ -519,6 +525,88 @@ static void __init loongson3_smp_setup(void)
 	cpu_set_cluster(&cpu_data[0],
 		     cpu_logical_map(0) / loongson_sysconf.cores_per_package);
 	cpu_data[0].package = cpu_logical_map(0) / loongson_sysconf.cores_per_package; // 确定主核的封装编号和核编号
+}
+```
+
+###### 1.1.6 paging_init()
+
+源码分析：
+
+```
+void __init free_area_init_nodes(unsigned long *max_zone_pfn)
+{
+	unsigned long start_pfn, end_pfn;
+	int i, nid;
+
+	/* Record where the zone boundaries are */
+	memset(arch_zone_lowest_possible_pfn, 0,
+				sizeof(arch_zone_lowest_possible_pfn));
+	memset(arch_zone_highest_possible_pfn, 0,
+				sizeof(arch_zone_highest_possible_pfn));
+
+	start_pfn = find_min_pfn_with_active_regions();
+
+	for (i = 0; i < MAX_NR_ZONES; i++) {
+		if (i == ZONE_MOVABLE)
+			continue;
+
+		end_pfn = max(max_zone_pfn[i], start_pfn); // an array of max PFNs for each zone
+		arch_zone_lowest_possible_pfn[i] = start_pfn;
+		arch_zone_highest_possible_pfn[i] = end_pfn;
+
+		start_pfn = end_pfn;
+	}
+
+	/* Find the PFNs that ZONE_MOVABLE begins at in each node */
+	memset(zone_movable_pfn, 0, sizeof(zone_movable_pfn));
+	find_zone_movable_pfns_for_nodes();
+
+	/* Print out the zone ranges */
+	pr_info("Zone ranges:\n");
+	for (i = 0; i < MAX_NR_ZONES; i++) {
+		if (i == ZONE_MOVABLE)
+			continue;
+		pr_info("  %-8s ", zone_names[i]);
+		if (arch_zone_lowest_possible_pfn[i] ==
+				arch_zone_highest_possible_pfn[i])
+			pr_cont("empty\n"); // If the maximum PFN between two adjacent zones match,
+		else					// it is assumed that the zone is empty.
+			pr_cont("[mem %#018Lx-%#018Lx]\n",
+				(u64)arch_zone_lowest_possible_pfn[i]
+					<< PAGE_SHIFT,
+				((u64)arch_zone_highest_possible_pfn[i]
+					<< PAGE_SHIFT) - 1);
+	}
+
+	/* Print out the PFNs ZONE_MOVABLE begins at in each node */
+	pr_info("Movable zone start for each node\n");
+	for (i = 0; i < MAX_NUMNODES; i++) {
+		if (zone_movable_pfn[i])
+			pr_info("  Node %d: %#018Lx\n", i,
+			       (u64)zone_movable_pfn[i] << PAGE_SHIFT);
+	}
+
+	/* Print out the early node map */
+	pr_info("Early memory node ranges\n");
+	for_each_mem_pfn_range(i, MAX_NUMNODES, &start_pfn, &end_pfn, &nid)
+		pr_info("  node %3d: [mem %#018Lx-%#018Lx]\n", nid,
+			(u64)start_pfn << PAGE_SHIFT,
+			((u64)end_pfn << PAGE_SHIFT) - 1);
+
+	/* Initialise every node */
+	mminit_verify_pageflags_layout();
+	setup_nr_node_ids();
+	zero_resv_unavail();
+	for_each_online_node(nid) {
+		pg_data_t *pgdat = NODE_DATA(nid);
+		free_area_init_node(nid, NULL,
+				find_min_pfn_for_node(nid), NULL);
+
+		/* Any memory on that node */
+		if (pgdat->node_present_pages)
+			node_set_state(nid, N_MEMORY);
+		check_for_memory(pgdat, nid);
+	}
 }
 ```
 
@@ -608,6 +696,8 @@ Once the allocator is set up, it is possible to use either single node or NUMA v
 龙芯3号的访存能力是48位，而龙芯的顶级IO总线是40位的，部分PCI设备的总线只有32位，如果系统为其分配了超过40位或32位总线寻址能力的地址，那么这些设备就不能访问对应的DMA数据，为了让访存能力有限的IO设备能够访问任意的DMA空间，就必须在硬件上设置一个DMA地址-物理地址的映射表，或者由内核在设备可访问的地址范围预先准备一款内存做中转站——SWIOTLB。
 
 #### 11. IOMMU
+
+ **Input–output memory management unit** (**IOMMU**) is a memory management unit (MMU) that **connects a direct-memory-access–capable (DMA-capable) I/O bus to the main memory**. Like a traditional MMU, which translates CPU-visible virtual addresses to physical addresses, the IOMMU maps device-visible virtual addresses (also called *device addresses* or *I/O addresses* in this context) to physical addresses. Some units also provide memory protection from faulty or malicious devices. It's function is same as SWIOTLB.
 
 #### 12. 节点
 
