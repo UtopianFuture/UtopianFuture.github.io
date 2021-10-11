@@ -122,7 +122,7 @@ setup_arch()
 |
 |	| -- resource_init(); // 在已经初始化的bootmem中为code, date, bss段分配空间
 |
-|	| -- plat_smp_setup(); // smp是多对称处理器，这里先配置祝贺
+|	| -- plat_smp_setup(); // smp是多对称处理器，这里先配置主核，主要是主核编号，核间中断等
 |
 |
 |
@@ -451,6 +451,74 @@ swiotlb_init(int verbose)
 	}
 	pr_warn("Cannot allocate buffer");
 	no_iotlb_memory = true;
+}
+```
+
+###### 1.1.5 plat_smp_setup()
+
+LoongArch也使用loongson3_smp_setup()进行初始化。
+
+```
+const struct plat_smp_ops loongson3_smp_ops = {
+	.send_ipi_single = loongson3_send_ipi_single, // 核间通讯
+	.send_ipi_mask = loongson3_send_ipi_mask, 	  // 核间通讯
+	.smp_setup = loongson3_smp_setup,			  // 主核启动
+	.prepare_cpus = loongson3_prepare_cpus,
+	.boot_secondary = loongson3_boot_secondary,	  // 辅核启动
+	.init_secondary = loongson3_init_secondary,
+	.smp_finish = loongson3_smp_finish,
+#ifdef CONFIG_HOTPLUG_CPU						  // CPU热拔插
+	.cpu_disable = loongson3_cpu_disable,
+	.cpu_die = loongson3_cpu_die,
+#endif
+};
+```
+
+```
+static void __init loongson3_smp_setup(void)
+{
+	int i = 0, num = 0; /* i: physical id, num: logical id */
+
+	if (acpi_disabled) {
+		init_cpu_possible(cpu_none_mask);
+
+		while (i < MAX_CPUS) {
+			if (loongson_sysconf.reserved_cpus_mask & (0x1UL << i)) { // reserved_cpus_mask非0，该核不用
+				/* Reserved physical CPU cores */
+				__cpu_number_map[i] = -1;
+			} else { // 建立CPU逻辑编号和物理编号的对应关系
+				__cpu_number_map[i] = num;
+				__cpu_logical_map[num] = i;
+				set_cpu_possible(num, true);
+				num++;
+			}
+			i++;
+		}
+		pr_info("Detected %i available CPU(s)\n", num);
+
+		while (num < MAX_CPUS) {
+			__cpu_logical_map[num] = -1;
+			num++;
+		}
+	}
+
+	ipi_method_init(); // ipi（核间中断）初始化
+	ipi_set_regs_init();
+	ipi_clear_regs_init();
+	ipi_status_regs_init();
+	ipi_en_regs_init();
+	ipi_mailbox_buf_init();
+
+	if (cpu_has_csripi)
+		iocsr_writel(0xffffffff, LOONGARCH_IOCSR_IPI_EN);
+	else
+		xconf_writel(0xffffffff, ipi_en_regs[cpu_logical_map(0)]);
+
+	cpu_set_core(&cpu_data[0],
+		     cpu_logical_map(0) % loongson_sysconf.cores_per_package);
+	cpu_set_cluster(&cpu_data[0],
+		     cpu_logical_map(0) / loongson_sysconf.cores_per_package);
+	cpu_data[0].package = cpu_logical_map(0) / loongson_sysconf.cores_per_package; // 确定主核的封装编号和核编号
 }
 ```
 
