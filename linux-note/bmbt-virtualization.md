@@ -269,7 +269,7 @@ void __init prom_init_env(void)
 
 源码分析：
 
-```
+```plain
 void __init prom_init(void)
 {
 	/* init base address of io space */
@@ -319,11 +319,11 @@ void __init prom_init(void)
 
 对[ACPI](#3.4. ACPI（建议浏览一下 ACPI[手册](https://uefi.org/sites/default/files/resources/ACPI_6_3_final_Jan30.pdf)）)进一步分析：
 
-首先分析重要的数据结构RSDT，RSDT分为the header和data两个部分，the header是所有SDT共有的。
+首先分析重要的数据结构 RSDT，RSDT 分为 the header 和 data 两个部分，the header 是所有 SDT 共有的。
 
-```
+```plain
 struct acpi_table_header {
-	// All the ACPI tables have a 4 byte Signature field (except the RSDP which has an 8 byte one). 
+	// All the ACPI tables have a 4 byte Signature field (except the RSDP which has an 8 byte one).
 	// Using the signature, you can determine what table are you working with.
 	char signature[ACPI_NAME_SIZE];	/* ASCII table signature */
 	u32 length;		/* Length of table in bytes, including this header */
@@ -337,9 +337,9 @@ struct acpi_table_header {
 };
 ```
 
-这个函数并不是初始化RSDT的，而是初始化所有的ACPI表。
+这个函数并不是初始化 RSDT 的，而是初始化所有的 ACPI 表。
 
-```
+```plain
 void __init acpi_table_upgrade(void)
 {
 	void *data = (void *)initrd_start;
@@ -453,11 +453,11 @@ void __init acpi_table_upgrade(void)
 }
 ```
 
-按照注释，这个才是获取RSDT的，但为什么这里又要初始化一个各种表，和上一个函数有什么区别？
+按照注释，这个才是获取 RSDT 的，但为什么这里又要初始化一个各种表，和上一个函数有什么区别？
 
-猜想：不是初始化其他表的，而是建立RSDT与其他表的关联，因为RSDT包含了所有指向其他系统表的指针。
+猜想：不是初始化其他表的，而是建立 RSDT 与其他表的关联，因为 RSDT 包含了所有指向其他系统表的指针。
 
-```
+```plain
 /*******************************************************************************
  *
  * FUNCTION:    acpi_initialize_tables
@@ -652,7 +652,7 @@ static void __init arch_mem_init(char **cmdline_p)
 
 plat_swiotlb_setup()
 
-```
+```plain
 void  __init
 swiotlb_init(int verbose)
 {
@@ -684,11 +684,11 @@ swiotlb_init(int verbose)
 
 ###### 1.1.5 plat_smp_setup()
 
-LoongArch也使用loongson3_smp_setup()进行初始化。
+LoongArch 也使用 loongson3_smp_setup()进行初始化。
 
 源码分析：
 
-```
+```plain
 const struct plat_smp_ops loongson3_smp_ops = {
 	.send_ipi_single = loongson3_send_ipi_single, // 核间通讯
 	.send_ipi_mask = loongson3_send_ipi_mask, 	  // 核间通讯
@@ -704,7 +704,7 @@ const struct plat_smp_ops loongson3_smp_ops = {
 };
 ```
 
-```
+```plain
 static void __init loongson3_smp_setup(void)
 {
 	int i = 0, num = 0; /* i: physical id, num: logical id */
@@ -756,7 +756,7 @@ static void __init loongson3_smp_setup(void)
 
 源码分析：
 
-```
+```plain
 void __init free_area_init_nodes(unsigned long *max_zone_pfn)
 {
 	unsigned long start_pfn, end_pfn;
@@ -921,9 +921,47 @@ After those limits are determined, the `init_bootmem()` or `init_bootmem_node()`
 
 Once the allocator is set up, it is possible to use either single node or NUMA variant of the allocation APIs.
 
+LoongArch的bootmem似乎和x86的不一样，以下为x86的bootmem初始化过程。
+
+bootmem_data结构：
+
+```
+/**
+ * struct bootmem_data - per-node information used by the bootmem allocator
+ * @node_min_pfn: the starting physical address of the node's memory
+ * @node_low_pfn: the end physical address of the directly addressable memory
+ * @node_bootmem_map: is a bitmap pointer - the bits represent all physical
+ *		      memory pages (including holes) on the node.
+ * @last_end_off: the offset within the page of the end of the last allocation;
+ *                if 0, the page used is full
+ * @hint_idx: the PFN of the page used with the last allocation;
+ *            together with using this with the @last_end_offset field,
+ *            a test can be made to see if allocations can be merged
+ *            with the page used for the last allocation rather than
+ *            using up a full new page.
+ * @list: list entry in the linked list ordered by the memory addresses
+ */
+typedef struct bootmem_data {
+	unsigned long node_min_pfn;
+	unsigned long node_low_pfn;
+	void *node_bootmem_map;
+	unsigned long last_end_off;
+	unsigned long hint_idx;
+	struct list_head list;
+} bootmem_data_t;
+```
+
+bootmem的需求是简单，因此使用first fit的方式。该分配器使用一个位图来管理页，位图中的bit数等于物理页数，bit为1，表示该页使用；bit为0，表示该页未用。在需要分配内存时，bootmem逐位扫描位图，知道找到一个空间足够大的连续页的位置。这种每次分配都需要从头扫描的方式效率不高，因此内核初始化结束后就转用伙伴系统（连同slab、slub或slob分配器）。
+
+NUMA内存体系中，每个节点都要初始化一个bootmem分配器。
+
+开始时位图中的bit都是1，根据BIOS提供的可用内存区的列表，释放所有可用的内存页。由于bootmem需要一些内存页保存位图，必须先调用reserve_bootmem分配这些内存页（ACPI数据和SMP启动时的配置也是通过reserve_bootmem保存的）。
+
+在停用bootmem时，需要扫描位图释放每个未使用的页，释放完后，位图所在的页也要释放。
+
 #### 3.10. [SWIOTLB](https://blog.csdn.net/liuhangtiant/article/details/87825466)
 
-龙芯3号的访存能力是48位，而龙芯的顶级IO总线是40位的，部分PCI设备的总线只有32位，如果系统为其分配了超过40位或32位总线寻址能力的地址，那么这些设备就不能访问对应的DMA数据，为了让访存能力有限的IO设备能够访问任意的DMA空间，就必须在硬件上设置一个DMA地址-物理地址的映射表，或者由内核在设备可访问的地址范围预先准备一款内存做中转站——SWIOTLB。
+龙芯 3 号的访存能力是 48 位，而龙芯的顶级 IO 总线是 40 位的，部分 PCI 设备的总线只有 32 位，如果系统为其分配了超过 40 位或 32 位总线寻址能力的地址，那么这些设备就不能访问对应的 DMA 数据，为了让访存能力有限的 IO 设备能够访问任意的 DMA 空间，就必须在硬件上设置一个 DMA 地址-物理地址的映射表，或者由内核在设备可访问的地址范围预先准备一款内存做中转站——SWIOTLB。
 
 #### 3.11. IOMMU
 
@@ -931,6 +969,14 @@ Once the allocator is set up, it is possible to use either single node or NUMA v
 
 #### 3.12. 节点
 
+系统的物理内存被划分为几个节点（node)，每个节点的物理内存又分为一个管理区（zone）: 
+
+- ZONE_DMA: 包含低于16MB的内存页框；
+- ZONE_MORMAL: 包含高于16MB且低于896MB的内存页框；
+- ZONE_HIGHMEM: 包含从896MB开始的内存页框。   
+
 问题：
 
 （1）正常在 LA 架构上运行 LA 内核是这样的，那如果在 LA 架构上运行 x86 内核是怎样的，BootLoader 直接传递 x86 内核的入口地址么。bios 要怎样把 LA 内核拉起来。
+
+（2）源码要结合书一起看，而且要多找即本书，对比着看，因为有些内容，如 ACPI，bootmem 不是所有的书都会详细介绍。我用到的参考书有《基于龙芯的 Linux 内核探索解析》、《深入理解 LINUX 内核》、《深入 LINUX 内核架构》。
