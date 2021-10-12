@@ -98,7 +98,11 @@ setup_arch()
 |
 | -- prom_init(); // 初始化io空间的基址、ACPI表、loongarch使用的numa存储等
 |	| -- set_io_port_base(); // 设置IO空间的基址
-|	| -- if(efi_bp){} // efi_bp是在prom_init_env()中用bios传递的_fw_envp赋值的，之后进行ACPI初始化
+|	| -- if(efi_bp){} // efi_bp是在prom_init_env()中用bios传递的_fw_envp赋值的，之后进行ACPI初始化，主要是初始化各种表
+|	| -- acpi_table_upgrade(); // 通过CPIO获取或bios收集的数据，对各个表进行初始化
+|	| -- acpi_boot_table_init();
+|		| -- acpi_initialize_tables(); // Initialize the table manager, get the RSDP and RSDT/XSDT.
+|	| -- acpi_boot_init(); // 主要是解析MADT
 |	| -- prom_init_numa_memory();
 |		| -- numa_mem_init(); // 初始化numa
 |			| -- numa_default_distance(); // 初始化numa节点的距离矩阵
@@ -265,7 +269,7 @@ void __init prom_init_env(void)
 
 源码分析：
 
-```plain
+```
 void __init prom_init(void)
 {
 	/* init base address of io space */
@@ -275,7 +279,7 @@ void __init prom_init(void)
 	if (efi_bp) { // efi_bp是在prom_init_env()中用bios传递的_fw_envp赋值的
 		efi_init(); // 为什么要初始化efi，efi和acpi有什么关系？
 #if defined(CONFIG_ACPI) && defined(CONFIG_BLK_DEV_INITRD)
-		acpi_table_upgrade(); // 这部分初始化看不懂，为什么要从cpio中获取数据
+		acpi_table_upgrade(); // 这部分初始化看不懂，为什么要从cpio中获取数据。应该是bios将数据保存成这种格式。
 #endif
 #ifdef CONFIG_ACPI
 		acpi_gbl_use_default_register_widths = false;
@@ -312,6 +316,226 @@ void __init prom_init(void)
 	loongson_acpi_init();
 }
 ```
+
+对[ACPI](#3.4. ACPI（建议浏览一下 ACPI[手册](https://uefi.org/sites/default/files/resources/ACPI_6_3_final_Jan30.pdf)）)进一步分析：
+
+首先分析重要的数据结构RSDT，RSDT分为the header和data两个部分，the header是所有SDT共有的。
+
+```
+struct acpi_table_header {
+	// All the ACPI tables have a 4 byte Signature field (except the RSDP which has an 8 byte one). 
+	// Using the signature, you can determine what table are you working with.
+	char signature[ACPI_NAME_SIZE];	/* ASCII table signature */
+	u32 length;		/* Length of table in bytes, including this header */
+	u8 revision;		/* ACPI Specification minor version number */
+	u8 checksum;		/* To make sum of entire table == 0 */
+	char oem_id[ACPI_OEM_ID_SIZE];	/* ASCII OEM identification */
+	char oem_table_id[ACPI_OEM_TABLE_ID_SIZE];	/* ASCII OEM table identification */
+	u32 oem_revision;	/* OEM revision number */
+	char asl_compiler_id[ACPI_NAME_SIZE];	/* ASCII ASL compiler vendor ID */
+	u32 asl_compiler_revision;	/* ASL compiler version */
+};
+```
+
+这个函数并不是初始化RSDT的，而是初始化所有的ACPI表。
+
+```
+void __init acpi_table_upgrade(void)
+{
+	void *data = (void *)initrd_start;
+	size_t size = initrd_end - initrd_start;
+	int sig, no, table_nr = 0, total_offset = 0;
+	long offset = 0;
+	struct acpi_table_header *table;
+	char cpio_path[32] = "kernel/firmware/acpi/"; // bios获取到的数据
+	struct cpio_data file;
+
+	if (data == NULL || size == 0)
+		return;
+
+	for (no = 0; no < NR_ACPI_INITRD_TABLES; no++) {
+		file = find_cpio_data(cpio_path, data, size, &offset);
+		if (!file.data)
+			break;
+
+		data += offset;
+		size -= offset;
+
+		if (file.size < sizeof(struct acpi_table_header)) {
+			pr_err("ACPI OVERRIDE: Table smaller than ACPI header [%s%s]\n",
+				cpio_path, file.name);
+			continue;
+		}
+
+		table = file.data; // file.data就是table，接下来初始化对应的ACPI表
+
+		for (sig = 0; table_sigs[sig]; sig++) // 找到对应的ACPI表
+			if (!memcmp(table->signature, table_sigs[sig], 4))
+				break;
+
+		if (!table_sigs[sig]) {
+			pr_err("ACPI OVERRIDE: Unknown signature [%s%s]\n",
+				cpio_path, file.name);
+			continue;
+		}
+		if (file.size != table->length) {
+			pr_err("ACPI OVERRIDE: File length does not match table length [%s%s]\n",
+				cpio_path, file.name);
+			continue;
+		}
+		// A 8-bit checksum field of the whole table, inclusive of the header.
+		// All bytes of the table summed must be equal to 0 (mod 0x100).
+		if (acpi_table_checksum(file.data, table->length)) {
+			pr_err("ACPI OVERRIDE: Bad table checksum [%s%s]\n",
+				cpio_path, file.name);
+			continue;
+		}
+
+		pr_info("%4.4s ACPI table found in initrd [%s%s][0x%x]\n",
+			table->signature, cpio_path, file.name, table->length);
+
+		all_tables_size += table->length;
+		acpi_initrd_files[table_nr].data = file.data; // 记录所有初始化的表信息
+		acpi_initrd_files[table_nr].size = file.size;
+		table_nr++;
+	}
+	if (table_nr == 0)
+		return;
+
+	acpi_tables_addr = // 为初始化的ACPI表分配物理地址
+		memblock_find_in_range(0, ACPI_TABLE_UPGRADE_MAX_PHYS,
+				       all_tables_size, PAGE_SIZE);
+	if (!acpi_tables_addr) {
+		WARN_ON(1);
+		return;
+	}
+	/*
+	 * Only calling e820_add_reserve does not work and the
+	 * tables are invalid (memory got used) later.
+	 * memblock_reserve works as expected and the tables won't get modified.
+	 * But it's not enough on X86 because ioremap will
+	 * complain later (used by acpi_os_map_memory) that the pages
+	 * that should get mapped are not marked "reserved".
+	 * Both memblock_reserve and e820__range_add (via arch_reserve_mem_area)
+	 * works fine.
+	 */
+	memblock_reserve(acpi_tables_addr, all_tables_size); // 这里为什么要设为reserve还不清楚
+	arch_reserve_mem_area(acpi_tables_addr, all_tables_size);
+
+	/*
+	 * early_ioremap only can remap 256k one time. If we map all
+	 * tables one time, we will hit the limit. Need to map chunks
+	 * one by one during copying the same as that in relocate_initrd().
+	 */
+	for (no = 0; no < table_nr; no++) { // 这里应该是将分配好的物理空间进行映射
+		unsigned char *src_p = acpi_initrd_files[no].data;
+		phys_addr_t size = acpi_initrd_files[no].size;
+		phys_addr_t dest_addr = acpi_tables_addr + total_offset;
+		phys_addr_t slop, clen;
+		char *dest_p;
+
+		total_offset += size;
+
+		while (size) {
+			slop = dest_addr & ~PAGE_MASK;
+			clen = size;
+			if (clen > MAP_CHUNK_SIZE - slop)
+				clen = MAP_CHUNK_SIZE - slop;
+			dest_p = early_memremap(dest_addr & PAGE_MASK,
+						clen + slop);
+			memcpy(dest_p + slop, src_p, clen);
+			early_memunmap(dest_p, clen + slop);
+			src_p += clen;
+			dest_addr += clen;
+			size -= clen;
+		}
+	}
+}
+```
+
+按照注释，这个才是获取RSDT的，但为什么这里又要初始化一个各种表，和上一个函数有什么区别？
+
+猜想：不是初始化其他表的，而是建立RSDT与其他表的关联，因为RSDT包含了所有指向其他系统表的指针。
+
+```
+/*******************************************************************************
+ *
+ * FUNCTION:    acpi_initialize_tables
+ *
+ * PARAMETERS:  initial_table_array - Pointer to an array of pre-allocated
+ *                                    struct acpi_table_desc structures. If NULL, the
+ *                                    array is dynamically allocated.
+ *              initial_table_count - Size of initial_table_array, in number of
+ *                                    struct acpi_table_desc structures
+ *              allow_resize        - Flag to tell Table Manager if resize of
+ *                                    pre-allocated array is allowed. Ignored
+ *                                    if initial_table_array is NULL.
+ *
+ * RETURN:      Status
+ *
+ * DESCRIPTION: Initialize the table manager, get the RSDP and RSDT/XSDT.
+ *
+ * NOTE:        Allows static allocation of the initial table array in order
+ *              to avoid the use of dynamic memory in confined environments
+ *              such as the kernel boot sequence where it may not be available.
+ *
+ *              If the host OS memory managers are initialized, use NULL for
+ *              initial_table_array, and the table will be dynamically allocated.
+ *
+ ******************************************************************************/
+
+acpi_status ACPI_INIT_FUNCTION
+acpi_initialize_tables(struct acpi_table_desc *initial_table_array,
+		       u32 initial_table_count, u8 allow_resize)
+{
+	acpi_physical_address rsdp_address;
+	acpi_status status;
+
+	ACPI_FUNCTION_TRACE(acpi_initialize_tables);
+
+	/*
+	 * Setup the Root Table Array and allocate the table array
+	 * if requested
+	 */
+	if (!initial_table_array) {
+		status = acpi_allocate_root_table(initial_table_count);
+		if (ACPI_FAILURE(status)) {
+			return_ACPI_STATUS(status);
+		}
+	} else {
+		/* Root Table Array has been statically allocated by the host */
+
+		memset(initial_table_array, 0,
+		       (acpi_size)initial_table_count *
+		       sizeof(struct acpi_table_desc));
+
+		acpi_gbl_root_table_list.tables = initial_table_array;
+		acpi_gbl_root_table_list.max_table_count = initial_table_count;
+		acpi_gbl_root_table_list.flags = ACPI_ROOT_ORIGIN_UNKNOWN;
+		if (allow_resize) {
+			acpi_gbl_root_table_list.flags |=
+			    ACPI_ROOT_ALLOW_RESIZE;
+		}
+	}
+
+	/* Get the address of the RSDP */
+
+	rsdp_address = acpi_os_get_root_pointer();
+	if (!rsdp_address) {
+		return_ACPI_STATUS(AE_NOT_FOUND);
+	}
+
+	/*
+	 * Get the root table (RSDT or XSDT) and extract all entries to the local
+	 * Root Table Array. This array contains the information of the RSDT/XSDT
+	 * in a common, more useable format.
+	 */
+	status = acpi_tb_parse_root_table(rsdp_address);
+	return_ACPI_STATUS(status);
+}
+```
+
+
 
 ```plain
 static int __init numa_mem_init(int (*init_func)(void))
@@ -614,15 +838,15 @@ void __init free_area_init_nodes(unsigned long *max_zone_pfn)
 
 ### 三、相关知识
 
-#### 1. [BSS 段清 0](https://www.cnblogs.com/lvzh/p/12079365.html)
+#### 3.1. [BSS 段清 0](https://www.cnblogs.com/lvzh/p/12079365.html)
 
 BSS 段是保存全局变量和静态局部变量的，因为这两种数据的位置是固定的，所有可以直接保存在 BSS 里，局部变量是保存在栈上。在初始化内核时一次性将 BSS 所有变量初始化为 0 更方便。
 
-#### 2. efi
+#### 3.2. efi
 
 EFI 系统分区（EFI system partition，ESP），是一个[FAT](https://zh.wikipedia.org/wiki/FAT)或[FAT32](https://zh.wikipedia.org/wiki/FAT32)格式的磁盘分区。UEFI 固件可从 ESP 加载 EFI 启动程式或者 EFI 应用程序。
 
-#### 3. [cpio](https://unix.stackexchange.com/questions/7276/why-use-cpio-for-initramfs)
+#### 3.3. [cpio](https://unix.stackexchange.com/questions/7276/why-use-cpio-for-initramfs)
 
 cpio 是 UNIX 操作系统的一个文件备份程序及文件格式。
 
@@ -632,7 +856,7 @@ All 2.6 Linux kernels **contain a gzipped "cpio" format archive,** which is extr
 checks to see if rootfs contains a file "init", and if so it executes it as PID. If found, this init process is responsible for bringing the system the rest of the way up, including locating and mounting the real root device (if any).  If rootfs does not contain an init program after the embedded cpio archive is extracted into it, the kernel will fall through to the older code to locate and mount a root partition, then exec some variant of /sbin/init
 out of that.
 
-#### 4. ACPI（建议浏览一下 ACPI[手册](https://uefi.org/sites/default/files/resources/ACPI_6_3_final_Jan30.pdf)）
+#### 3.4. ACPI（建议浏览一下 ACPI[手册](https://uefi.org/sites/default/files/resources/ACPI_6_3_final_Jan30.pdf)）
 
 Advanced Configuration and Power Interface (ACPI). Before the development of ACPI, operating systems (OS) primarily used BIOS (Basic Input/
 Output System) interfaces for **power management and device discovery and configuration**.
@@ -641,19 +865,25 @@ ACPI can first be understood as an architecture-independent power management and
 
 The primary intention of the standard ACPI framework and the hardware register set is to enable power management and system configuration without directly calling firmware natively from the OS. **ACPI serves as an interface layer between the system firmware (BIOS) and the OS**.
 
-#### 5. [NUMA](https://zhuanlan.zhihu.com/p/62795773)
+There are 2 main parts to ACPI. **The first part** is the tables used by the OS for configuration during boot (these include things like how many CPUs, APIC details, NUMA memory ranges, etc). The second part is the run time ACPI environment, which consists of AML code (a platform independent OOP language that comes from the BIOS and devices) and the ACPI SMM (System Management Mode) code.
+
+关键数据结构：
+
+**RSDT** (Root System Description Table) is a data structure used in the [ACPI](https://wiki.osdev.org/ACPI) programming interface. This table contains pointers to all the other System Description Tables. However there are many kinds of SDT. All the SDT may be split into two parts. One (**the header**) which is common to all the SDT and another (data) which is different for each table. RSDT contains 32-bit physical addresses, XSDT contains 64-bit physical addresses.
+
+#### 3.5. [NUMA](https://zhuanlan.zhihu.com/p/62795773)
 
 NUMA 指的是针对某个 CPU，内存访问的距离和时间是不一样的。其解决了多 CPU 系统下共享 BUS 带来的性能问题（链接中的图很直观）。
 
 NUMA 的特点是：被共享的内存物理上是分布式的，所有这些内存的集合就是全局地址空间。所以处理器访问这些内存的时间是不一样的，显然访问本地内存的速度要比访问全局共享内存或远程访问外地内存要快些。
 
-#### 6. initrd
+#### 3.6. initrd
 
 Initrd ramdisk 或者 initrd 是指一个临时文件系统，它在启动阶段被 Linux 内核调用。initrd 主要用于当“根”文件系统被[挂载](https://zh.wikipedia.org/wiki/Mount_(Unix))之前，进行准备工作。
 
-#### 7. initramfs
+#### 3.7. initramfs
 
-#### 8. [设备树（dt）](https://e-mailky.github.io/2019-01-14-dts-1)
+#### 3.8. [设备树（dt）](https://e-mailky.github.io/2019-01-14-dts-1)
 
 Device Tree 由一系列被命名的结点（node）和属性（property）组成，而结点本身可包含子结点。所谓属性， 其实就是成对出现的 name 和 value。在 Device Tree 中，可描述的信息包括（原先这些信息大多被 hard code 到 kernel 中）：
 
@@ -671,7 +901,7 @@ Device Tree 由一系列被命名的结点（node）和属性（property）组�
 
 设备树和 ACPI 有什么关系？
 
-#### 9. [BootMem 内存分配器](https://cloud.tencent.com/developer/article/1376122)
+#### 3.9. [BootMem 内存分配器](https://cloud.tencent.com/developer/article/1376122)
 
 **[Bootmem](https://www.kernel.org/doc/html/v4.19/core-api/boot-time-mm.html#bootmem) is a boot-time physical memory allocator and configurator**.
 
@@ -691,15 +921,15 @@ After those limits are determined, the `init_bootmem()` or `init_bootmem_node()`
 
 Once the allocator is set up, it is possible to use either single node or NUMA variant of the allocation APIs.
 
-#### 10. [SWIOTLB](https://blog.csdn.net/liuhangtiant/article/details/87825466)
+#### 3.10. [SWIOTLB](https://blog.csdn.net/liuhangtiant/article/details/87825466)
 
 龙芯3号的访存能力是48位，而龙芯的顶级IO总线是40位的，部分PCI设备的总线只有32位，如果系统为其分配了超过40位或32位总线寻址能力的地址，那么这些设备就不能访问对应的DMA数据，为了让访存能力有限的IO设备能够访问任意的DMA空间，就必须在硬件上设置一个DMA地址-物理地址的映射表，或者由内核在设备可访问的地址范围预先准备一款内存做中转站——SWIOTLB。
 
-#### 11. IOMMU
+#### 3.11. IOMMU
 
  **Input–output memory management unit** (**IOMMU**) is a memory management unit (MMU) that **connects a direct-memory-access–capable (DMA-capable) I/O bus to the main memory**. Like a traditional MMU, which translates CPU-visible virtual addresses to physical addresses, the IOMMU maps device-visible virtual addresses (also called *device addresses* or *I/O addresses* in this context) to physical addresses. Some units also provide memory protection from faulty or malicious devices. It's function is same as SWIOTLB.
 
-#### 12. 节点
+#### 3.12. 节点
 
 问题：
 
