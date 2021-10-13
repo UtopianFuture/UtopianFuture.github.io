@@ -82,35 +82,45 @@
 
 9. 本地分支重命名(还没有推送到远程)
 
-   ​	git branch -m oldName newName
+   ```
+   git branch -m oldName newName
+   ```
 
    ​	删除远程分支
 
-   ​	git push --delete origin oldName
+   ```
+   git push --delete origin oldName
+   ```
 
    ​	上传新命名的本地分支
 
-   ​	git push origin newName
+   ```
+   git push origin newName
+   ```
 
    ​	把修改后的本地分支与远程分支关联
 
-   ​	git branch --set-upstream-to origin/newName
+   ```
+   git branch --set-upstream-to origin/newName
+   ```
 
 10. git需要丢弃本地修改，同步到远程仓库（即遇到error: You have not concluded your merge (MERGE_HEAD exists).错误时）：
 
-   ​	git fetch –all
-
-   ​	git reset –hard origin/master
-
-   ​	git fetch
+    ```
+    git fetch –all
+    git reset –hard origin/master
+    git fetch
+    ```
 
    ​	之后再正常的pull就行。
 
 11. git在push是遇到问题
 
-    *squash commits first*
+    ```
+    squash commits first
+    ```
 
-    ​	这是因为两个commit的Change-ID相同，先用git-rebase -i HEAD~~查看commit的情况，然后选择一个commit进行squash即可。
+    这是因为两个commit的Change-ID相同，先用git-rebase -i HEAD~~查看commit的情况，然后选择一个commit进行squash即可。
 
 12. fit reset commitid只是改变git的指针，如果要将内容也切换过去，要用git reset –hard commitid或者是git checkout -f commitid, 不过这个命令会将本地的修改丢弃，有风险。
 
@@ -118,11 +128,13 @@
 
 14. fit status看到的未提交的文件可以用git checkout + filename删掉，如果有需要保存的文件，但是库里同步过来又会覆盖的，用git stash保存，然后在pull –rebase，之后再git stash apply恢复。
 
-15. git diff               工作区 vs 暂存区
+15. git diff的不用使用：
 
-    ​	git diff head      工作区 vs 版本库
-
-    ​	git diff –cached 暂存区 vs 版本库
+    ```
+    git diff            // 工作区 vs 暂存区
+    git diff head       // 工作区 vs 版本库
+    git diff –cached    // 暂存区 vs 版本库
+    ```
 
 16. 在上传修改前一定记得要git pull，和最新的版本库合并，之后再git add, commit, push，不然太麻烦了。
 
@@ -132,13 +144,33 @@
 
 19. 提交代码，push到GitHub上，突然出现这个问题。
 
-    ​	remote: Support for password authentication was removed on August 13, 2021. Please use a personal access token instead.
+    ```
+    remote: Support for password authentication was removed on August 13, 2021. Please use a personal access token instead.
+    remote: Please see https://github.blog/2020-12-15-token-authentication-requirements-for-git-operations/ for more information.
+    fatal: unable to access 'https://github.com/zhoulujun/algorithm.git/': The requested URL returned error: 403
+    ```
 
-    ​	remote: Please see https://github.blog/2020-12-15-token-authentication-requirements-for-git-operations/ for more information.
+    原因：从8月13日起不在支持密码验证，改用personal access token 替代。
 
-    ​	fatal: unable to access 'https://github.com/zhoulujun/algorithm.git/': The requested URL returned error: 403
+    方法：用ssh clone，设置密钥，将id_rsa.pub粘贴到githab上即可。
 
-    ​	原因：从8月13日起不在支持密码验证，改用personal access token 替代。
+20. 用git rebase在本地合并多条commit后push到远程仓库，出现如下bug:
 
-    ​	方法：用ssh clone，设置密钥，将id_rsa.pub粘贴到githab上即可。
+    ```
+    guanshun@Jack-ubuntu ~/g/UFuture.github.io (master)> git push origin maste
+    To github.com:UtopianFuture/UFuture.github.io.git                         
+     ! [rejected]        master -> master (non-fast-forward)                  
+    error: failed to push some refs to 'git@github.com:UtopianFuture/UFuture.g
+    hint: Updates were rejected because the tip of your current branch is behi
+    hint: its remote counterpart. Integrate the remote changes (e.g.          
+    hint: 'git pull ...') before pushing again.                               
+    hint: See the 'Note about fast-forwards' in 'git push --help' for details.
+    ```
 
+原因是git检查到当前head落后与远程仓库，但这本就是我们想做的，所以用
+
+```
+git push -f origin master
+```
+
+强行推上去，覆盖远程仓库的commit。
