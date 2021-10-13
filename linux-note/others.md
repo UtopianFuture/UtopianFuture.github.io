@@ -6,9 +6,7 @@
 
 ​	Page coloring则是将physical memory分为不同的color，不同color的physical memory缓存到不同的cache line，然后映射到virtual memory时，virtual memory也有不同的color。这样就不存在相邻的virtual memory缓存到cache时在同一个cache line。（很有意思，现在没能完全理解。和组相联映射有什么关系？4k页和16k页和这个又有什么关系？）
 
-![img](/home/guanshun/Pictures/notes picture/image3.png)
-
-
+![](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/others.1.png?raw=true)
 
 ### 程序优化技术
 
@@ -58,17 +56,17 @@ gcc -Og -pg xxx.c -o xxx
 
 ​		(1) x87 fpu 浮点部分，有8个浮点寄存器，st(i)，top指针指向当前使用的寄存器。
 
-​               	           ![img](/home/guanshun/Pictures/notes picture/image4.png)   
+​                           ![](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/others.2.png?raw=true)   
 
-![img](/home/guanshun/Pictures/notes picture/image5.png)
+![](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/others.3.png?raw=true)
 
 (2) xmm 支持simd指令的技术。8个xmm寄存器，和fpu一样的组织形式。
 
 ​	The MMX state is aliased to the x87 FPU state. No new states or modes have been added to IA-32 architecture to support the MMX technology. The same floating-point instructions that save and restore the x87 FPU state also handle the MMX state.
 
-![img](/home/guanshun/Pictures/notes picture/image6.png)
+![](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/others.6.png?raw=true)
 
-![img](/home/guanshun/Pictures/notes picture/image7.png)
+![](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/others.5.png?raw=true)
 
 (3) sse extensions(The streaming SIMD extensions)
 
@@ -76,11 +74,9 @@ gcc -Og -pg xxx.c -o xxx
 
 32-bit的mxcsr寄存器为xmm寄存器提供控制和状态位。
 
-![img](/home/guanshun/Pictures/notes picture/image8.png)
+![](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/others.6.png?raw=true)
 
-![img](/home/guanshun/Pictures/notes picture/image9.png)
-
-
+![](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/others.7.png?raw=true)
 
 ### mmap
 

@@ -40,7 +40,7 @@
 
 9. 遇到这个问题，diffie-hellman-xxxxxx
 
-   ![img](/home/guanshun/Pictures/notes picture/image1.png)  
+   ![](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/experience.1.png?raw=true)  
 
 
    需要在用户目录下的.ssh/config中添加
