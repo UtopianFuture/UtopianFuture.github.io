@@ -921,11 +921,13 @@ After those limits are determined, the `init_bootmem()` or `init_bootmem_node()`
 
 Once the allocator is set up, it is possible to use either single node or NUMA variant of the allocation APIs.
 
-LoongArch的bootmem似乎和x86的不一样，以下为x86的bootmem初始化过程。
+现在的bootmem初始化是用的memblock，详细看这个。
 
-bootmem_data结构：
+LoongArch 的 bootmem 似乎和 x86 的不一样，以下为 x86 的 bootmem 初始化过程。
 
-```
+bootmem_data 结构：
+
+```plain
 /**
  * struct bootmem_data - per-node information used by the bootmem allocator
  * @node_min_pfn: the starting physical address of the node's memory
@@ -951,13 +953,13 @@ typedef struct bootmem_data {
 } bootmem_data_t;
 ```
 
-bootmem的需求是简单，因此使用first fit的方式。该分配器使用一个位图来管理页，位图中的bit数等于物理页数，bit为1，表示该页使用；bit为0，表示该页未用。在需要分配内存时，bootmem逐位扫描位图，知道找到一个空间足够大的连续页的位置。这种每次分配都需要从头扫描的方式效率不高，因此内核初始化结束后就转用伙伴系统（连同slab、slub或slob分配器）。
+bootmem 的需求是简单，因此使用 first fit 的方式。该分配器使用一个位图来管理页，位图中的 bit 数等于物理页数，bit 为 1，表示该页使用；bit 为 0，表示该页未用。在需要分配内存时，bootmem 逐位扫描位图，知道找到一个空间足够大的连续页的位置。这种每次分配都需要从头扫描的方式效率不高，因此内核初始化结束后就转用伙伴系统（连同 slab、slub 或 slob 分配器）。
 
-NUMA内存体系中，每个节点都要初始化一个bootmem分配器。
+NUMA 内存体系中，每个节点都要初始化一个 bootmem 分配器。
 
-开始时位图中的bit都是1，根据BIOS提供的可用内存区的列表，释放所有可用的内存页。由于bootmem需要一些内存页保存位图，必须先调用reserve_bootmem分配这些内存页（ACPI数据和SMP启动时的配置也是通过reserve_bootmem保存的）。
+开始时位图中的 bit 都是 1，根据 BIOS 提供的可用内存区的列表，释放所有可用的内存页。由于 bootmem 需要一些内存页保存位图，必须先调用 reserve_bootmem 分配这些内存页（ACPI 数据和 SMP 启动时的配置也是通过 reserve_bootmem 保存的）。
 
-在停用bootmem时，需要扫描位图释放每个未使用的页，释放完后，位图所在的页也要释放。
+在停用 bootmem 时，需要扫描位图释放每个未使用的页，释放完后，位图所在的页也要释放。
 
 #### 3.10. [SWIOTLB](https://blog.csdn.net/liuhangtiant/article/details/87825466)
 
@@ -969,11 +971,11 @@ NUMA内存体系中，每个节点都要初始化一个bootmem分配器。
 
 #### 3.12. 节点
 
-系统的物理内存被划分为几个节点（node)，每个节点的物理内存又分为一个管理区（zone）: 
+系统的物理内存被划分为几个节点（node)，每个节点的物理内存又分为一个管理区（zone）:
 
-- ZONE_DMA: 包含低于16MB的内存页框；
-- ZONE_MORMAL: 包含高于16MB且低于896MB的内存页框；
-- ZONE_HIGHMEM: 包含从896MB开始的内存页框。   
+- ZONE_DMA: 包含低于 16MB 的内存页框；
+- ZONE_MORMAL: 包含高于 16MB 且低于 896MB 的内存页框；
+- ZONE_HIGHMEM: 包含从 896MB 开始的内存页框。
 
 问题：
 
