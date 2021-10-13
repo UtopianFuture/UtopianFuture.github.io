@@ -1,6 +1,10 @@
 ## bmbt 系统级虚拟化
 
-### 0. 虚拟化知识
+## 中期目标：
+
+在loongarch的qemu上年呢该输出hello world.
+
+### 零、 虚拟化知识
 
 VMM 对物理资源的虚拟可以归结为三个主要任务：处理器虚拟化、内存虚拟化和 I/O 虚拟化。
 
@@ -67,7 +71,7 @@ VMM 对物理资源的虚拟可以归结为三个主要任务：处理器虚拟�
 
 #### 1. 环境搭建
 
-[在 qemu 上调试 LoongArch 内核](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/linux-note/%E5%9C%A8qemu%E4%B8%8A%E8%B0%83%E8%AF%95loongson%E5%86%85%E6%A0%B8.md)
+[在 qemu 上调试 LoongArch 内核](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/debug%20loongarch%20kernel%20in%20qemu.md)
 
 #### 2. 内核启动过程
 
@@ -93,6 +97,8 @@ setup_arch()
 | -- plat_early_init(); // 解析bios传入的参数
 |	| -- fw_init_cmdline(); // 获取参数
 |	| -- prom_init_env(); // 根据参数设置环境变量
+|	| -- memblock_and_maxpfn_init() // 挂载memblock
+|		| -- memblock_add();		// loongson_mem_map和boot_mem_map是什么关系
 |
 | -- init_initrd(); // 主要是检查initrd_start和initrd_end是否正确，将其映射到虚拟地址
 |
@@ -111,9 +117,12 @@ setup_arch()
 |
 | -- cpu_report(); // 打印一些初始化后CPU的信息
 |
-| -- arch_mem_init(); //主要是初始化设备树和bootmem
+| -- arch_mem_init(); // 主要是初始化设备树和bootmem
+|	} -- plat_mem_setup(); // detects the memory configuration and 
+|						   // will record detected memory areas using add_memory_region.
 |	| -- early_init_dt_scan(); // 早期初始化设备树
 |	| -- dt_bootmem_init(); // 建立boot_mem_map内存映射图，boot_mem_map主要给BootMem内存分配器用，只包含系统内存
+|							// 这里不是初始化bootmem的地方，而只是确定其上下界，然后通过memblock_add_range()将其挂载
 |	| -- device_tree_init(); // 用bios传递的信息初始化设备树节点
 |		| -- unflatten_and_copy_device_tree();
 |			| -- early_init_dt_alloc_memory_arch(); // 先在初始化好的bootmem中分配物理空间
@@ -264,6 +273,156 @@ void __init prom_init_env(void)
 		printk("Scan bootparm failed\n");
 }
 ```
+
+这个函数本来以为只是解析bios传入的参数，但后来看bootmem的过程中发现，bootmem用的是memblock实现的，不是之前的位图，所以对这个函数进一步分析。
+
+重要的数据结构：
+
+```
+// 这个应该就是bootmem的数据结构，书上说是用位图的方式，但这里改用mem_start和mem_size表示内存空间
+struct loongsonlist_mem_map {
+	struct	_extention_list_hdr header;	/*{"M", "E", "M"}*/
+	u8	map_count;
+	struct	_loongson_mem_map {
+		u32 mem_type;
+		u64 mem_start;
+		u64 mem_size;
+	}__attribute__((packed))map[LOONGSON3_BOOT_MEM_MAP_MAX];
+}__attribute__((packed));
+```
+
+```
+void __init memblock_and_maxpfn_init(void)
+{
+	int i;
+	u32 mem_type;
+	u64 mem_start, mem_end, mem_size;
+
+	/* parse memory information */
+	for (i = 0; i < loongson_mem_map->map_count; i++) { // 将map中的虚拟内存依次挂载
+
+		mem_type = loongson_mem_map->map[i].mem_type; // loongson_mem_map在哪里初始化的？目前没有找到
+		mem_start = loongson_mem_map->map[i].mem_start;
+		mem_size = loongson_mem_map->map[i].mem_size;
+		mem_end = mem_start + mem_size;
+
+		switch (mem_type) {
+		case ADDRESS_TYPE_SYSRAM:
+			memblock_add(mem_start, mem_size); // 分配物理内存
+			if (max_low_pfn < (mem_end >> PAGE_SHIFT))
+				max_low_pfn = mem_end >> PAGE_SHIFT;
+			break;
+		}
+	}
+	memblock_set_current_limit(PFN_PHYS(max_low_pfn));
+}
+```
+
+```
+/**
+ * memblock_add_range - add new memblock region
+ * @type: memblock type to add new region into
+ * @base: base address of the new region
+ * @size: size of the new region
+ * @nid: nid of the new region
+ * @flags: flags of the new region
+ *
+ * Add new memblock region [@base, @base + @size) into @type.  The new region
+ * is allowed to overlap with existing ones - overlaps don't affect already
+ * existing regions.  @type is guaranteed to be minimal (all neighbouring
+ * compatible regions are merged) after the addition.
+ *
+ * Return:
+ * 0 on success, -errno on failure.
+ */
+int __init_memblock memblock_add_range(struct memblock_type *type,
+				phys_addr_t base, phys_addr_t size,
+				int nid, enum memblock_flags flags)
+{
+	bool insert = false;
+	phys_addr_t obase = base;
+	phys_addr_t end = base + memblock_cap_size(base, &size);
+	int idx, nr_new;
+	struct memblock_region *rgn;
+
+	if (!size)
+		return 0;
+
+	/* special case for empty array */
+	if (type->regions[0].size == 0) {
+		WARN_ON(type->cnt != 1 || type->total_size);
+		type->regions[0].base = base;
+		type->regions[0].size = size;
+		type->regions[0].flags = flags;
+		memblock_set_region_node(&type->regions[0], nid);
+		type->total_size = size;
+		return 0;
+	}
+repeat:
+	/*
+	 * The following is executed twice.  Once with %false @insert and
+	 * then with %true.  The first counts the number of regions needed
+	 * to accommodate the new area.  The second actually inserts them.
+	 */
+	base = obase;
+	nr_new = 0;
+
+	for_each_memblock_type(idx, type, rgn) {
+		phys_addr_t rbase = rgn->base;
+		phys_addr_t rend = rbase + rgn->size;
+
+		if (rbase >= end)
+			break;
+		if (rend <= base)
+			continue;
+		/*
+		 * @rgn overlaps.  If it separates the lower part of new
+		 * area, insert that portion.
+		 */
+		if (rbase > base) {
+#ifdef CONFIG_HAVE_MEMBLOCK_NODE_MAP
+			WARN_ON(nid != memblock_get_region_node(rgn));
+#endif
+			WARN_ON(flags != rgn->flags);
+			nr_new++;
+			if (insert)
+				memblock_insert_region(type, idx++, base,
+						       rbase - base, nid,
+						       flags);
+		}
+		/* area below @rend is dealt with, forget about it */
+		base = min(rend, end);
+	}
+
+	/* insert the remaining portion */
+	if (base < end) {
+		nr_new++;
+		if (insert)
+			memblock_insert_region(type, idx, base, end - base,
+					       nid, flags);
+	}
+
+	if (!nr_new)
+		return 0;
+
+	/*
+	 * If this was the first round, resize array and repeat for actual
+	 * insertions; otherwise, merge and return.
+	 */
+	if (!insert) {
+		while (type->cnt + nr_new > type->max)
+			if (memblock_double_array(type, obase, size) < 0)
+				return -ENOMEM;
+		insert = true;
+		goto repeat;
+	} else {
+		memblock_merge_regions(type);
+		return 0;
+	}
+}
+```
+
+
 
 ###### 1.1.3 prom_init()
 
@@ -577,6 +736,29 @@ static int __init numa_mem_init(int (*init_func)(void))
 源码分析：
 
 ```plain
+/*
+ * arch_mem_init - initialize memory management subsystem
+ *
+ *  o plat_mem_setup() detects the memory configuration and will record detected
+ *    memory areas using add_memory_region.
+ *
+ * At this stage the memory configuration of the system is known to the
+ * kernel but generic memory management system is still entirely uninitialized.
+ *
+ *  o bootmem_init()
+ *  o sparse_init()
+ *  o paging_init()
+ *  o dma_contiguous_reserve()
+ *
+ * At this stage the bootmem allocator is ready to use.
+ *
+ * NOTE: historically plat_mem_setup did the entire platform initialization.
+ *	 This was rather impractical because it meant plat_mem_setup had to
+ * get away without any kind of memory allocator.  To keep old code from
+ * breaking plat_setup was just renamed to plat_mem_setup and a second platform
+ * initialization hook for anything else was introduced.
+ */
+ 
 static void __init arch_mem_init(char **cmdline_p)
 {
 	unsigned int node;
@@ -596,6 +778,7 @@ static void __init arch_mem_init(char **cmdline_p)
 
 	if (loongson_fdt_blob)
 		dt_bootmem_init(); // 建立boot_mem_map内存映射图
+						   // 这里应该不是建立，而是建立好了将其挂载到物理空间，所以关键还是找到boot_mem_map在哪里初始化的
 	else
 		bootmem_init();
 
@@ -982,3 +1165,4 @@ NUMA 内存体系中，每个节点都要初始化一个 bootmem 分配器。
 （1）正常在 LA 架构上运行 LA 内核是这样的，那如果在 LA 架构上运行 x86 内核是怎样的，BootLoader 直接传递 x86 内核的入口地址么。bios 要怎样把 LA 内核拉起来。
 
 （2）源码要结合书一起看，而且要多找即本书，对比着看，因为有些内容，如 ACPI，bootmem 不是所有的书都会详细介绍。我用到的参考书有《基于龙芯的 Linux 内核探索解析》、《深入理解 LINUX 内核》、《深入 LINUX 内核架构》。
+
