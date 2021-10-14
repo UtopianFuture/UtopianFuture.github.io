@@ -85,7 +85,7 @@ VMM 对物理资源的虚拟可以归结为三个主要任务：处理器虚拟�
 
 #### 1. start_kernel()
 
-start_kernel()中一级节点中，先从架构相关的`setup_arch()`开始看。代码中涉及的技术都在之后有介绍。
+`start_kernel()`的一级节点中，架构相关的重要函数有`setup_arch()`, t`rap_init()`, `init_IRQ()`, `time_init()`。代码中涉及的技术都在之后有介绍。
 
 ##### 1.1 setup_arch()
 
@@ -1021,6 +1021,85 @@ void __init free_area_init_nodes(unsigned long *max_zone_pfn)
 }
 ```
 
+##### 1.2 trap_init()
+
+```plain
+trap_init()
+| -- set_handler(); // 将不同的trap_handler加载到对应的内存位置
+|	| -- memcpy(); // 每个handler大小为vec_size，所以要EXCCODE * vec_size
+|
+| -- cache_error_setup(); // Install uncached CPU exception handler
+|	| -- set_merr_handler(); // except_vec_cex就是cache exception handler
+```
+
+还有很多异常，如 PSI, HYP, GCM 等，为什么没有设置 handler？
+
+应该是 set_handler()只负责设置 cpu exception handler.
+
+```c
+void __init trap_init(void)
+{
+	unsigned long i;
+
+	/*
+	 * Initialise exception handlers
+	 */
+	for (i = 0; i < 64; i++)
+		set_handler(i * vec_size, handle_reserved, vec_size);
+
+	set_handler(EXCCODE_TLBL * vec_size, handle_tlbl, vec_size); // TLB miss on a load
+	set_handler(EXCCODE_TLBS * vec_size, handle_tlbs, vec_size); // TLB miss on a store
+	set_handler(EXCCODE_TLBI * vec_size, handle_tlbl, vec_size); // TLB miss on a ifetch(what is ifetch)
+	set_handler(EXCCODE_TLBM * vec_size, handle_tlbm, vec_size); // TLB modified fault
+	set_handler(EXCCODE_TLBRI * vec_size, tlb_do_page_fault_rixi, vec_size); // TLB Read-Inhibit exception
+	set_handler(EXCCODE_TLBXI * vec_size, tlb_do_page_fault_rixi, vec_size); // TLB Execution-Inhibit exception
+	set_handler(EXCCODE_ADE * vec_size, handle_ade, vec_size); // Address Error
+	set_handler(EXCCODE_UNALIGN * vec_size, handle_unalign, vec_size); // Unalign Access
+	set_handler(EXCCODE_SYS * vec_size, handle_sys_wrap, vec_size); // System call
+	set_handler(EXCCODE_BP * vec_size, handle_bp, vec_size); // Breakpoint
+	set_handler(EXCCODE_INE * vec_size, handle_ri, vec_size); // Inst. Not Exist
+	set_handler(EXCCODE_IPE * vec_size, handle_ri, vec_size); // Inst. Privileged Error
+	set_handler(EXCCODE_FPDIS * vec_size, handle_fpdis, vec_size); // FPU Disabled
+	set_handler(EXCCODE_LSXDIS * vec_size, handle_lsx, vec_size); // LSX Disabled
+	set_handler(EXCCODE_LASXDIS * vec_size, handle_lasx, vec_size); // LASX Disabled
+	set_handler(EXCCODE_FPE * vec_size, handle_fpe, vec_size); // Floating Point Exception
+	set_handler(EXCCODE_BTDIS * vec_size, handle_lbt, vec_size); // Binary Trans. Disabled
+	set_handler(EXCCODE_WATCH * vec_size, handle_watch, vec_size); // Watch address reference
+
+	cache_error_setup(); // Install uncached CPU exception handler
+
+	local_flush_icache_range(ebase, ebase + 0x400);
+
+	sort_extable(__start___dbe_table, __stop___dbe_table);
+}
+```
+
+```c
+/* Install CPU exception handler */
+void set_handler(unsigned long offset, void *addr, unsigned long size)
+{
+	memcpy((void *)(ebase + offset), addr, size);
+	local_flush_icache_range(ebase + offset, ebase + offset + size);
+}
+```
+
+```c
+/*
+ * Install uncached CPU exception handler.
+ * This is suitable only for the cache error exception which is the only
+ * exception handler that is being run uncached.
+ */
+void set_merr_handler(unsigned long offset, void *addr, unsigned long size)
+{
+	unsigned long uncached_ebase = TO_UNCAC(__pa(merror_ebase));
+
+	if (!addr)
+		panic(panic_null_cerr);
+
+	memcpy((void *)(uncached_ebase + offset), addr, size);
+}
+```
+
 
 
 ### 三、相关知识
@@ -1163,6 +1242,10 @@ NUMA 内存体系中，每个节点都要初始化一个 bootmem 分配器。
 - ZONE_DMA: 包含低于 16MB 的内存页框；
 - ZONE_MORMAL: 包含高于 16MB 且低于 896MB 的内存页框；
 - ZONE_HIGHMEM: 包含从 896MB 开始的内存页框。
+
+#### 3.13. LSX 和 LASZ
+
+龙芯架构下的向量扩展指令，其包括向量扩展（Loongson SIMD Extension, LSX）和高级向量扩展（Loongson Advanced SIMD Extension, LASX）。两个扩展部分均采用 SIMD 指令且功能基本一致，区别是 LSX 操作的向量位宽是 128 位，而 LASX 是 256 位。两者的关系类似与 xmm 和 mmx。
 
 问题：
 
