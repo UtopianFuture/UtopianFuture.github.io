@@ -25,7 +25,7 @@ Fix End of Files.........................................................Failed
 Check Yaml...........................................(no files to check)Skipped                                                       Check for added large files..............................................Passed                                                       Check for merge conflicts................................................Passed                                                       Don't commit to branch...................................................Failed                                                       - hook id: no-commit-to-branch                                                                                                       - exit code: 1                                                                                                                       format code..............................................................Failed                                                       - hook id: format-code                                                                                                               - exit code: 1
 ```
 
-实际上，很多 hook 都是通用的，于是乎就有了 pre-commit 项目，可以安装一些常用的 hook, 具体配置在 .pre-commit-config.yaml 中，而且，我还添加了一些新的规则:
+实际上，很多 hook 都是通用的，于是乎就有了 pre-commit 项目，可以安装一些常用的 hook, 具体配置在 .pre-commit-config.yaml 中，[pre-commit-hook](https://github.com/pre-commit/pre-commit-hooks)仓库本身提供了很多有用的 hook，而且，也可以在本地自己写 sh 添加了一些新的规则:
 
 - format-code.sh : 在提交代码之前保证代码都是被 format 过的，用 git blame 看到的信息如果是 code format, 那相当于什么都没说；
 - lint-md.sh : 中文文档需要按照规范书写；
