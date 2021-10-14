@@ -18,36 +18,42 @@
 
 5. 这个命令用来配置qemu，用qemu跑同样的程序，输出和latx对比，看有哪些不同。
 
-   ​	../configure --target-list=x86_64-linux-user --enable-debug --enable-tcg-interpreter –disable-werror
+   ```
+   ../configure --target-list=x86_64-linux-user --enable-debug --enable-tcg-interpreter –disable-werror
+   ```
 
-   ​	这个命令用来在本地操作远程的机器执行程序，“2>”代表重定向到标准输出，即>重定向指定的目录。
+   这个命令用来在本地操作远程的机器执行程序，“2>”代表重定向到标准输出，即>重定向指定的目录。
 
-   ​	ssh guanshun /home/guanshun/gitlab/qemu/build/qemu-x86_64 -d cpu -singlestep /home/guanshun/GDB/hello 2> /home/guanshun/research/loongson/qemu_log
+   ```
+   ssh guanshun /home/guanshun/gitlab/qemu/build/qemu-x86_64 -d cpu -singlestep /home/guanshun/GDB/hello 2> /home/guanshun/research/loongson/qemu_log
+   ```
 
-6. ​	将需要对比的文件加到vscode中，然后select for compare，就可以对比两个文件的不同。如果文件过大还是用diff和vimdiff。
+6. 将需要对比的文件加到vscode中，然后select for compare，就可以对比两个文件的不同。如果文件过大还是用diff和vimdiff。
 
-7. ​	终极的调试手段就是将目标程序与标准程序对比，将两个程序的执行环境设置为一样，然后printf出程序的reg信息，一个个对比。这其中要设置环境变量一样，两个程序的执行命令一样，还要知道reg信息怎么打印。
+7. 终极的调试手段就是将目标程序与标准程序对比，将两个程序的执行环境设置为一样，然后printf出程序的reg信息，一个个对比。这其中要设置环境变量一样，两个程序的执行命令一样，还要知道reg信息怎么打印。
 
-8. ​	latx-x64的bug：
+8. latx-x64的bug：
 
-   ​	(1) 寄存器高位清0；
+   (1) 寄存器高位清0；
 
-   ​	(2) 无效指令，或是latx没有实现，或是capstone没有实现；
+   (2) 无效指令，或是latx没有实现，或是capstone没有实现；
 
-9. ​	tui reg group（gdb 打印寄存器参数）
+9. tui reg group（gdb 打印寄存器参数）
 
-   ​	next: Repeatedly selecting this group will cause the display to cycle through all of the available register groups.
-
-   ​	prev: Repeatedly selecting this group will cause the display to cycle through all of the available register groups in the reverse order to next.
-
-   ​	general: Display the general registers.
-
-   ​	float: Display the floating point registers.
-
-   ​	system: Display the system registers.
-
-   ​	vector: Display the vector registers.
-
-   ​	all: Display all registers.
+   ```
+   next: Repeatedly selecting this group will cause the display to cycle through all of the available register groups.
+   
+   prev: Repeatedly selecting this group will cause the display to cycle through all of the available register groups in the reverse order to next.
+   
+   general: Display the general registers.
+   
+   float: Display the floating point registers.
+   
+   system: Display the system registers.
+   
+   vector: Display the vector registers.
+   
+   all: Display all registers.
+   ```
 
 10. ​	

@@ -57,9 +57,11 @@ KexAlgorithms +diffie-hellman-group14-sha1
 
 10. ssh连接服务器掉线：
 
-    ​	将etc/ssh/sshd_config中的ClientAliveInterval 900, ClientAliveCountMax 1注释掉即可。
+    将etc/ssh/sshd_config中的ClientAliveInterval 900, ClientAliveCountMax 1注释掉即可。
 
-    ​	rsync -avzP /home/guanshun/gitlab/latx guanshun:/home/guanshun/gitlab
+    ```
+    rsync -avzP /home/guanshun/gitlab/latx guanshun:/home/guanshun/gitlab
+    ```
 
 11. ​	Linux中有三个标准流，在一个程序启动的时候它们会自动开启。它们分别是：
 

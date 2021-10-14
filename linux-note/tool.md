@@ -213,15 +213,14 @@
 
 27. Loongarch下的gdb不能查看浮点寄存器，将
 
-    ​	gdb/features/loongarch/lbt64.c
+    ```
+    gdb/features/loongarch/lbt64.c
+    gdb/features/loongarch/lbt32.c
+    gdb/features/loongarch/lasx.c
+    gdb/features/loongarch/lsx.c
+    ```
 
-    ​	gdb/features/loongarch/lbt32.c
-
-    ​	gdb/features/loongarch/lasx.c
-
-    ​	gdb/features/loongarch/lsx.c
-
-    ​	中的lasx等变量修改成NULL，然后重新编译，记得修改环境变量。
+    中的lasx等变量修改成NULL，然后重新编译，记得修改环境变量。
 
 28. gdb显示数据的不同格式：
 

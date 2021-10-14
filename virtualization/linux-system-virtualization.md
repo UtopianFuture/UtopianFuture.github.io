@@ -48,7 +48,7 @@
 
    KVM用户空间按照如下结构体组织好CPU特性后传递给内核模块：
 
-```
+```c
 struct kvm_cpuid{
 	__u32 nent;
 	__u32 padding;
@@ -58,7 +58,7 @@ struct kvm_cpuid{
 
 ​	`kvm_cpuid_entry`就是kvm内核模块定义的VCPU特性结构体：
 
-```
+```c
 struct kvm_cpuid_entry {
 	__u32 function;
 	__u32 eax;
@@ -91,7 +91,7 @@ struct kvm_cpuid_entry {
 
    物理机器通过插入的内存条来提供内存。KVM通过定义数据结构来提供虚拟内存：
 
-```
+```c
 struct kvm_userspace_memory_region {
 	__u32 slot;
 	__u32 flags;
@@ -115,7 +115,7 @@ struct kvm_userspace_memory_region {
 
    在这个数据结构中：
 
-```
+```c
 struct kvm_userspace_memory_region {
 	__u32 slot;
 	__u32 flags;

@@ -1,10 +1,10 @@
-## 分析内核源码memblock_add_range()
+## 分析内核源码 memblock_add_range()
 
-### 1. memblock原理
+### 1. memblock 原理
 
 MEMBLOCK 内存分配器作为早期的内存管理器，维护了两种内存。第一种内存是系统可用的物理内存，即系统实际含有的物理内存，其值从 DTS 中进行配置，并通过 uboot 实际探测之 后传入到内核。第二种内存是内核预留给操作系统的内存，这部分内存作为特殊功能使用，不能作为共享内存使用。MEMBLOCK 内存分配器基础框架如下：
 
-```
+```plain
 MEMBLOCK
 
 
@@ -39,7 +39,7 @@ MEMBLOCK
 
 MEMBLOCK 分配器的主体是使用数据结构 struct memblock 进行维护：
 
-```
+```c
 /**
 * struct memblock - memblock allocator metadata
 * @bottom_up: is bottom up direction?
@@ -61,7 +61,7 @@ struct memblock {
 
 MEMBLOCK 分配器使用数据结构 struct memblock_type 管理不同类型的内存：
 
-```
+```c
 /**
  * struct memblock_type - collection of memory regions of certain type
  * @cnt: number of regions
@@ -81,7 +81,7 @@ struct memblock_type {
 
 数据结构 struct memblock_region 维护一块内存区块：
 
-```
+```c
 /**
  * struct memblock_region - represents a memory region
  * @base: physical address of the region
@@ -103,7 +103,7 @@ struct memblock_region {
 
 代码树展开：
 
-```
+```plain
 memblock_add_range()
 | -- memblock_insert_region();
 |
@@ -114,7 +114,7 @@ memblock_add_range()
 
 #### 3.1. memblock_add_range()
 
-```
+```c
 /**
  * memblock_add_range - add new memblock region
  * @type: memblock type to add new region into
@@ -224,7 +224,7 @@ repeat:
 
 对于这类，会存在两种情况，分别为：
 
-```
+```plain
 (1) rbase > end
 
  base                    end        rbase               rend
@@ -253,7 +253,7 @@ repeat:
 
 对于这类情况，会存在两种情况，分别为：
 
-```
+```plain
 (1) base > rend
  rbase                rend         base                  end
  +--------------------+            +---------------------+
@@ -284,7 +284,7 @@ repeat:
 
 对于第一种情况，典型的模型如下：
 
-```
+```plain
                  rbase     Exist regions        rend
                  | <--------------------------> |
  +---------------+--------+---------------------+
@@ -306,7 +306,7 @@ b. base == end
 
 对于第二种情况，典型的模型如下图：
 
-```
+```plain
 rbase                     rend
 | <---------------------> |
 +----------------+--------+----------------------+
@@ -324,7 +324,7 @@ rbase                     rend
 
 设计这部分代码的开发者的基本思路就是：**第一次通过 insert 和 nr_new 变量只检查新的内存区块是否加入到内存区块以及要加入几个内存区块**(在有的一个内存区块由于 与已经存在的内存区块存在重叠被分成了两块，所以这种情况下，一块新的内存区块加入时就需要向内存区块链表中加入两块内存区块)，通过这样的检测之后，函数就在上面的代码中检测现有的内存区是否能存储下这么多的内存区块，**如果不能**，则调用 memblock_double_array() 函数**增加现有内存区块链表的长度**。检测完毕之后，函数就执行真正的加入工作，将新的内存区块都加入到内存区块链表内。执行完以上操作之后，函数最后调用 memblock_merge_regions() 函数将内存区块链表中可以合并的内存区块进行合并。
 
-```
+```c
 	if (!nr_new)
 		return 0;
 
@@ -350,7 +350,7 @@ rbase                     rend
 
 函数首先检查内存区块链表是否已经超出最大内存区块数，如果是则报错。接着函数调用 memmove() 函数将内存区块链表中 idx 对应的内存区块以及之后的内存区块都往内存区块链表**后移一个位置**，然后将空出来的位置给新的内存区使用。移动完之后就是更新相关的数据。
 
-```
+```c
 /**
  * memblock_insert_region - insert new memblock region
  * @type:	memblock type to insert into
@@ -388,7 +388,7 @@ static void __init_memblock memblock_insert_region(struct memblock_type *type,
 
 函数通过遍历内存区块链表内存的所有内存区块，如果满足两个内存区是连接在一起的，以及 NUMA 号相同，flags 也相同，那么这两块内存区块就可以合并；反之只要其中一个条件不满足， 那么就不能合并。合并两个内存区块就是调用 memmove() 函数，首先将能合并的两个内存区块数据进行更新，将前一块的 size 增加后一块的 size，然后将后一块的下一块开始的 i - 2 块往 前移一个位置，那么合并就完成了。
 
-```
+```c
 /**
  * memblock_merge_regions - merge neighboring compatible regions
  * @type: memblock type to scan

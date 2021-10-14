@@ -34,7 +34,7 @@ hint:
 
 （4）Use `getpid` to find the process ID of the calling process
 
-```
+```c
 #include "kernel/types.h"
 #include "kernel/stat.h"
 #include "user/user.h"
@@ -91,7 +91,7 @@ main(int argc, char *argv[])
 
 （5）Add the program to UPROGS in Makefile.
 
-```
+```c
 UPROGS=\
 	...
 	$U/_pingpong\
@@ -119,7 +119,7 @@ content: use `pipe` and `fork` to set up the pipeline.
 （2）然后看网上的解法是一次产生所有的数，用两个数组作为pipe的读写缓冲。
 需要注意的点是`write()`, `read()`的缓冲区都是char * 指针，如果传输的是非char类型，需要强制类型转化。如：
 
-```
+```c
 int p[512];
 int temp = p[i];
 write(p[1], (char * )(&temp), sizeof(char * ));
@@ -161,7 +161,7 @@ hint:
 
 （1）Add `$U/_trace` to UPROGS in Makefile
 
-```
+```c
 UPROGS=\
 	...
 	$U/_trace\
@@ -172,7 +172,7 @@ UPROGS=\
 
 （3）在proc结构体中添加`mask`变量，用来记录是否打印该trace；
 
-```
+```c
 // Per-process state
 struct proc {
   struct spinlock lock;
@@ -183,7 +183,7 @@ struct proc {
 
 （4）Add a `sys_trace()` function in `kernel/sysproc.c`
 
-```
+```c
 uint64 sys_trace(void){
   struct proc * p = myproc();
   int n, num = 0;
@@ -204,7 +204,7 @@ uint64 sys_trace(void){
 
 （5）Modify `fork()`
 
-```
+```c
 int
 fork(void)
 {
@@ -220,7 +220,7 @@ fork(void)
 
 （6）print the trace output.
 
-```
+```c
 char * syscall_name[] = {"", "fork", "exit", "wait", "pipe",
     "read", "kill", "exec", "fstat", "chdir", "dup", "getpid",
     "sbrk", "sleep", "uptime", "open", "write", "mknod", "unlink",
@@ -278,7 +278,7 @@ hint:
 
 （1）Add `$U/_sysinfotest` to UPROGS in Makefile;
 
-```
+```c
 UPROGS=\
 	...
 	$U/_sysinfotest\
@@ -287,7 +287,7 @@ UPROGS=\
 
 （2）sysinfo needs to copy a `struct sysinfo` back to user space;
 
-```
+```c
 uint64 sys_sysinfo(void){
   uint64 addr;
   struct sysinfo s;
@@ -306,13 +306,13 @@ uint64 sys_sysinfo(void){
 
 （3）To collect the amount of free memory, add a function to `kernel/kalloc.c`;
 
-```
+```c
 // kalloc.c
 ...
 uint64          freemen(void);
 ```
 
-```
+```c
 uint64 freemen(void){
   struct run * r;
   int num = 0;
@@ -327,13 +327,13 @@ uint64 freemen(void){
 
 （4）To collect the number of processes, add a function to `kernel/proc.c;`
 
-```
+```c
 // proc.c
 ...
 uint64          procnum(void);
 ```
 
-```
+```c
 uint64 procnum(void){
   int num = 0;
   struct proc *p;
@@ -380,7 +380,7 @@ hint:
 
 （1）Insert `if(p->pid==1) vmprint(p->pagetable)` in exec.c just before the `return argc`, to print the first process's page table.
 
-```
+```c
   if (p->pid ==1 ) {
     vmprint(p->pagetable);
   }
@@ -388,7 +388,7 @@ hint:
 
 （2）implementing `vmprint()`;
 
-```
+```c
 void vmprint(pagetable_t pagetable){
   printf("page table %p\n", pagetable);
   reprint(pagetable, 0); // pagetable of this process
@@ -446,7 +446,7 @@ content: modify the kernel so that every process uses its own copy of the kernel
 
 （1）首先在`proc`结构体中声明一个`kpagetable`变量；
 
-```
+```c
 // Per-process state
 struct proc {
   ...
@@ -457,7 +457,7 @@ struct proc {
 
 （2）然后初始化这个`kpagetable`，初始化的过程和kernel page table的过程一样；同时要重新设计一个函数`ukvmmap()`，用来将`kpagetable`的各个页映射到物理空间，这个函数和原来的`kvmmap()`类似；
 
-```
+```c
 // add a mapping to the user kernel page table.
 // only used when booting.
 // does not flush TLB or enable paging.
@@ -469,7 +469,7 @@ ukvmmap(pagetable_t pagetable, uint64 va, uint64 pa, uint64 sz, int perm)
 }
 ```
 
-```
+```c
 /*
  * create a direct-map page table for the user kernel page table.
  */
@@ -506,7 +506,7 @@ ukvminit()
 
 （3）在`allocproc()`中初始化这个`kpagetable`，和初始化原有的`pagetable`一样；
 
-```
+```c
 static struct proc*
 allocproc(void)
 {
@@ -547,7 +547,7 @@ allocproc(void)
 
 ​	那么这个操作就是为`kstack`分配物理空间，然后映射，将`va`保存到`p->stack`中。
 
-```
+```c
 // process's kernel page table has a mapping
   // for that process's kernel stack
   char *pa = kalloc();
@@ -560,7 +560,7 @@ allocproc(void)
 
 （5）在切换process前将`kpagetable`保存到`stap`寄存器中。
 
-```
+```c
 void
 scheduler(void)
 {
@@ -592,7 +592,7 @@ scheduler(void)
 
 （6）最后也是最麻烦的是free kpagetable。
 
-```
+```c
 static void
 freeproc(struct proc *p)
 {
@@ -612,7 +612,7 @@ freeproc(struct proc *p)
 
 ​	同理，和正常的pagetable释放过程类似，重新设计一个free函数——`proc_freekpagetable()`。稍有不同的是`kpagetable`在分配时和kernel pagetable一样，分配了`UART0`，`VIRTIO0`，`PLIC`，`CLINT`，`kernel text`，`data`，`TRAMPOLINE`，在free时都要一一释放掉。最后`kstack`也要单独free，因为为它分配了物理空间，这一点借鉴了网上的实现，自己想不到。
 
-```
+```c
 // Free a process's kernel page table, and free the
 // physical memory it refers to.
 void
@@ -653,7 +653,7 @@ content: add user mappings to each process's kernel page table (created in the p
 
 background: The kernel's `copyin` function reads memory pointed to by user pointers. It does this by translating them to physical addresses, which the kernel can directly dereference. It performs this translation by walking the process page-table in software.
 
-```
+```c
 // Copy from user to kernel.
 // Copy len bytes to dst from virtual address srcva in a given page table.
 // Return 0 on success, -1 on error.
@@ -685,7 +685,7 @@ hint:
 
 （1）Add mappings for user addresses to each process's kernel page table; 开始想的是`kpagetable`和`pagetable`一样的初始化，但应该是`pagetable`初始化后将起直接复制给`kpagetable`. 这里由于kpagetable是执行在kernel中的，所以最后要将pte的PTE_U置为0.
 
-```
+```c
 // copy user kernel pagetable for user process pagetable
 void
 copypage(pagetable_t pagetable, pagetable_t kpagetable, uint64 start, uint64 end)
@@ -713,7 +713,7 @@ copypage(pagetable_t pagetable, pagetable_t kpagetable, uint64 start, uint64 end
 
 ​	a. fork()
 
-```
+```c
 int
 fork(void)
 {
@@ -733,7 +733,7 @@ fork(void)
 
 ​	b. exec()
 
-```
+```c
 int
 exec(char *path, char **argv)
 {
@@ -755,7 +755,7 @@ exec(char *path, char **argv)
 
 ​	c. sbrk(), Don't forget about the above-mentioned `PLIC` limit.
 
-```
+```c
 // Grow or shrink user memory by n bytes.
 // Return 0 on success, -1 on failure.
 int
@@ -783,7 +783,7 @@ growproc(int n)
 
 （3）Don't forget that to include the first process's user page table in its kernel page table in `userinit`;
 
-```
+```c
 // Set up first user process.
 void
 userinit(void)
@@ -802,7 +802,7 @@ userinit(void)
 
 （4）需要注意的一点是，由于user address 直接映射到kpagetable，free时只要删除映射关系即可，而不要删除物理内存，直接删除对应的物理内存会在返回user态的时候出现缺页异常。所以在这里重新定义一个unmapping的函数，用来删除kpagetable的pte，具体实现和`vmprint()`相似.
 
-```
+```c
 // Free a process's kernel page table, donnot free the physical memory.
 void
 proc_freekpagetablenophy(pagetable_t kpagetable)
@@ -861,7 +861,7 @@ FAILED -- lost some free pages 31964 (out of 32166)
 
 这是因为在A kernel page table per process实验的（4）中为`p->stack`分配了物理空间，然后在`proc_freekpagetable()`函数中释放了该物理内存，但是这个实验由于定义了新的删除pte的函数`proc_freekpagetablenophy()`，从而没有删除`p->stack`对应的物理内存，导致了该bug。故定义`proc_freekstack()`函数删除`p->kstack`的物理空间。
 
-```
+```c
 // free kstack's physical space
 void
 proc_freekstack(struct proc * p){
@@ -894,7 +894,7 @@ hint:
 
 （1）Add the prototype;
 
-```
+```c
 // printf.c
 ...
 void            backtrace();
@@ -902,7 +902,7 @@ void            backtrace();
 
 （2）The GCC compiler stores **the frame pointer** of the currently executing function in the register `s0`;
 
-```
+```c
 static inline uint64
 r_fp()
 {
@@ -914,7 +914,7 @@ r_fp()
 
 （3）implementing backtrace;
 
-```
+```c
 void backtrace(void){
   uint64 *s0 = (uint64 *)r_fp();
   uint64 up = PGROUNDUP((uint64)s0);
@@ -937,7 +937,7 @@ void backtrace(void){
 
 （4） Insert a call to this function in `sys_sleep`;
 
-```
+```c
 uint64
 sys_sleep(void)
 {
@@ -981,7 +981,7 @@ hint:
 
 （1）`sys_sigalarm()` should store the alarm interval and the pointer to the handler function in new fields in the `proc` structure.
 
-```
+```c
 // Per-process state
 struct proc {
   struct spinlock lock;
@@ -996,7 +996,7 @@ struct proc {
 };
 ```
 
-```
+```c
 uint64
 sys_sigalarm(void)
 {
@@ -1014,7 +1014,7 @@ sys_sigalarm(void)
 }
 ```
 
-```
+```c
 // Fetch the nth word-sized system call argument as a pointer
 // to a block of memory of size bytes.  Check that the pointer
 // lies within the process address space.
@@ -1035,7 +1035,7 @@ argptr(int n, char **pp, int size)
 
 （2）initialize `proc` fields in `allocproc()` in `proc.c`;
 
-```
+```c
 static struct proc*
 allocproc(void)
 {
@@ -1051,7 +1051,7 @@ allocproc(void)
 
 （3）Every tick, the hardware clock forces an interrupt, which is handled in `usertrap()` in `kernel/trap.c`;
 
-```
+```c
 void
 usertrap(void)
 {
@@ -1080,7 +1080,7 @@ usertrap(void)
 
 （4）save and restore registers;
 
-```
+```c
 uint64
 sys_sigreturn()
 {
@@ -1096,7 +1096,7 @@ sys_sigreturn()
 
 （5）结果
 
-```
+```c
 == Test answers-traps.txt == answers-traps.txt: OK 
 == Test backtrace test == 
 $ make qemu-gdb
@@ -1146,7 +1146,7 @@ content: Modify the code in trap.c to respond to a page fault from user space by
 
 ​		a. 是否超过了内存需要的地址空间；
 
-```
+```c
 if(va >= p->sz){ // out of the allocate memory
 	p->killed = 1;
 	exit(-1);
@@ -1155,7 +1155,7 @@ if(va >= p->sz){ // out of the allocate memory
 
 处理栈溢出；
 
-```
+```c
 va = PGROUNDDOWN(va);
 if(va < PGROUNDDOWN(p->trapframe->sp)){
 	p->killed = 1;
@@ -1165,7 +1165,7 @@ if(va < PGROUNDDOWN(p->trapframe->sp)){
 
 关于os的page fault有了新的认知，即重新分配内存，然后mapping。
 
-```
+```c
 if(r_scause() == 0xd || r_scause() == 0xf){
 	char * mem = kalloc();
 	if(mem == 0) // allocate memory failed
@@ -1205,7 +1205,7 @@ hint:
 
 （1）在`uvmcopy()`中将父进程的该页的`pte`置为`PTE_COW`和`~PTE_W`，不需要`kalloc()`， map的时候还是用父进程的pa;
 
-```
+```c
 int
 uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
@@ -1237,7 +1237,7 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 
 （2）Modify `usertrap()` to recognize page faults; 注意这里和lazy实验不一样，只需要处理`r_scause() == 0xf`，即写的缺页中断。
 
-```
+```c
 void
 usertrap(void)
 {
@@ -1258,14 +1258,14 @@ usertrap(void)
 
 （2）定义一个count变量来确定每一个page的使用情况，以及对应的操作函数。
 
-```
+```c
 struct COUNT{
   uint count[(PHYSTOP - KERNBASE) / PGSIZE];
   struct spinlock lock;
 }count;
 ```
 
-```
+```c
 uint64 index(uint64 pa){
   return (pa - KERNBASE) / PGSIZE;
 }
@@ -1295,7 +1295,7 @@ void increase(uint64 pa, int n){
 
 （3）在`kalloc()`初始化时将对应page的count置为1；
 
-```
+```c
 void *
 kalloc(void)
 {
@@ -1311,7 +1311,7 @@ kalloc(void)
 
 （4）在`kfree()`中，如果count > 1，则说明有多个process使用该页，不需要free，只需要将count - 1，反之free该页。
 
-```
+```c
 void
 kfree(void *pa)
 {
@@ -1376,7 +1376,7 @@ content: design the context switch mechanism for a user-level threading system, 
 
 （1）创建进程；
 
-```
+```c
 // Saved registers for user context switches.
 struct context {
   uint64 ra;
@@ -1385,7 +1385,7 @@ struct context {
   // callee-saved
   uint64 s0;
   uint64 s1;
-  uint64 s2;
+  uint64 s2;c
   uint64 s3;
   uint64 s4;
   uint64 s5;
@@ -1398,7 +1398,7 @@ struct context {
 };
 ```
 
-```
+```c
 void 
 thread_create(void (*func)())
 {
@@ -1429,7 +1429,7 @@ extern void thread_switch(uint64, uint64); // old, new
 
 （2）进程切换；
 
-```
+```c
 void 
 thread_schedule(void)
 {
@@ -1448,7 +1448,7 @@ thread_schedule(void)
 }
 ```
 
-```
+```c
 	.globl thread_switch
 thread_switch:
 	    sd ra, 0(a0)
@@ -1516,19 +1516,19 @@ context: explore parallel programming with threads and locks using a hash table.
 
 （1）声明锁；
 
-```
+```c
 pthread_mutex_t lock;            // declare a lock
 ```
 
 （2）初始化，注意在`main()`中初始化一次即可，所有的thread用同一个锁；
 
-```
+```c
 pthread_mutex_init(&lock, NULL); // initialize the lock
 ```
 
 （3）给put, get加锁；
 
-```
+```c
 static 
 void put(int key, int value)
 {
@@ -1553,7 +1553,7 @@ void put(int key, int value)
 }
 ```
 
-```
+```c
 static struct entry*
 get(int key)
 {
@@ -1589,7 +1589,7 @@ guanshun@Jack-ubuntu ~/g/xv6-labs-2020 (thread)> ./ph 2
 
 但是2个thread并没有比1个thread快两倍，因为两个thread并不是并行插入hash table的，而是一个thread写前半部分，一个thread写后半部分，然后get的时候get两个thread都get一次。那么可以只给会造成冲突的部分加锁，即insert部分，其他部分两个thread同时访问。
 
-```
+```c
 static 
 void put(int key, int value)
 {
@@ -1642,7 +1642,7 @@ content: barrier: a point in an application at which all participating threads m
 
 （1）编写`barrier()`函数，在函数开始时加锁，如果当前进程是最后一个进程，则唤醒所有block的进程，如果不是，则`pthread_cond_wait()`，这个函数会释放`barrier_mutex`锁，所以第33行不需要释放`barrier_mutex`，这是开始犯的一个错误，没有仔细看手册。这里用到的条件变量`barrier_cond`，互斥变量`barrier_mutex`都是源码声明好的。
 
-```
+```c
 struct barrier {
   pthread_mutex_t barrier_mutex;
   pthread_cond_t barrier_cond;
@@ -1651,7 +1651,7 @@ struct barrier {
 } bstate;
 ```
 
-```
+```c
 static void 
 barrier()
 {
@@ -1706,7 +1706,7 @@ panic: init exiting
 
 是因为kinit()只为一个cpu分配了freelist，其他cpu的freelist都是空的，之后kalloc()肯定出错。
 
-```
+```c
 void
 kinit()
 {
@@ -1717,9 +1717,9 @@ kinit()
 }
 ```
 
-所以kalloc()中要"steal" part of the other CPU's free list。
+所以`kalloc()`中要"steal" part of the other CPU's free list。
 
-```
+```c
 void *
 kalloc(void)
 {
@@ -1768,7 +1768,7 @@ freelist: 0x0000000087f71000, kfree1: cpuid: 3
 
 最后，重新定义`kmem`数据结构。
 
-```
+```c
 struct {
   struct spinlock lock;
   struct run *freelist;
@@ -1793,7 +1793,7 @@ The buffer cache has two jobs:
 
 （1）hint中说：“We suggest you look up block numbers in the cache with a hash table that has a lock per hash bucket.“，所以对`bcache`数据结构进行修改，以`blockno`作为hash key, buckets = 13。
 
-```
+```c
 #define prime 13
 
 struct {
@@ -1804,7 +1804,7 @@ struct {
 
 （2）hint4: Remove the list of all buffers (`bcache.head` etc.) and instead time-stamp buffers using the time of their last use. 在buf数据结构中加上ticks变量，用来记录时间戳。
 
-```
+```c
 struct buf {
   int valid;   // has data been read from disk?
   int disk;    // does disk "own" buf?
@@ -1821,7 +1821,7 @@ struct buf {
 
 重写替换算法。
 
-```
+```c
 // Not cached.
   // Recycle the least recently used (LRU) unused buffer.
   struct buf * temp = bcache.buf[bucket];
@@ -1901,7 +1901,7 @@ hint：
 
 （1）an xv6 inode contains 12 "**direct**" block numbers and one "**singly-indirect**" block number, which refers to a block that holds up to 256 more block numbers, for a total of 12+256=**268** blocks.
 
-```
+```c
 #define NDIRECT 12
 ...
 #define MAXFILE (NDIRECT + NINDIRECT)
@@ -1913,7 +1913,7 @@ struct dinode {
 };
 ```
 
-```
+```c
 // in-memory copy of an inode
 struct inode {
   ...
@@ -1923,7 +1923,7 @@ struct inode {
 
 ​	change the xv6 file system code to support a "**doubly-indirect**" block in each inode, containing 256 addresses of singly-indirect blocks, each of which can contain up to 256 addresses of data blocks. The result will be that a file will be able to consist of up to  **256*256+256+11** blocks .
 
-```
+```c
 #define NDIRECT 11
 ...
 #define MAXFILE (NDIRECT + NINDIRECT + NINDIRECT * NINDIRECT)
@@ -1935,7 +1935,7 @@ struct dinode {
 };
 ```
 
-```
+```c
 // in-memory copy of an inode
 struct inode {
   ...
@@ -1945,7 +1945,7 @@ struct inode {
 
 （2）修改`bmap()`，和`itrunc()`。
 
-```
+```c
 static uint
 bmap(struct inode *ip, uint bn)
 {
@@ -2040,7 +2040,7 @@ content: add symbolic links to xv6. Symbolic links (or soft links) refer to a li
 
 （1）添加`sym_symlink()`;
 
-```
+```c
 uint64
 sys_symlink(void)
 {
@@ -2072,7 +2072,7 @@ int symlink(char *target, char *path){
 
 （2）在`sys_open()`中处理`T_SYMLINK`类型的文件，注意需要设置`threshold`，超过10次就返回错误。
 
-```
+```c
   if (ip->type == T_SYMLINK) {
     int threshold = 0;
     char target[MAXPATH];
@@ -2131,7 +2131,7 @@ background:
 
 `mmap`, `munmap` - map or unmap files or devices into memory
 
-```
+```c
 #include <sys/mman.h>
 
 void *mmap(void *addr, size_t length, int prot, int flags,
@@ -2157,7 +2157,7 @@ hint:
 
 （1）Define a structure corresponding to the VMA (virtual memory area). 这里需要在`proc`中添加`vma`变量，用来表示该进程的mmap。然后所有的进程公用一个`VMA` array，每次添加新的mmap映射都需要互斥的从array中获取。
 
-```
+```c
 #define NVMA 16
 #define VMASTART MAXVA / 2
 struct VMA {
@@ -2174,7 +2174,7 @@ struct VMA {
 };
 ```
 
-```
+```c
 struct VMA vma[NVMA];
 
 struct VMA * getvma(){
@@ -2193,7 +2193,7 @@ struct VMA * getvma(){
 
 （2）Implement `mmap`.  每个进程添加新的mmap映射时都需要从array中获取一个VMA变量，初始化VMA变量，然后将其添加到proc的VMA链表中，每个进程都维护一个VMA链表。这里需要对flag做一些处理，因为mmap映射的地址空间有不同的权限，这些权限要准确的写入VMA。
 
-```
+```c
 uint64 mmap(uint64 addr, uint length, int prot, int flags, int fd, uint offset)
 {
   struct proc * p = myproc();
@@ -2245,7 +2245,7 @@ uint64 mmap(uint64 addr, uint length, int prot, int flags, int fd, uint offset)
 
 （3）Implement `usertrap`. 这部分的代码可以用`lab: lazy`的代码，而最后读文件`readi()`也可以直接用原有的代码。值得注意的是读取文件时使用的偏移量`v->offset + a - v->start`，例如`va = 3000`, `v->start = 3000`，不能直接用`va`当作偏移量，因为`v->start = 3000`的byte是文件的第0 byte。
 
-```
+```c
     if(r_scause() == 0xd || r_scause() == 0xf){
       uint64 va = r_stval();
       struct VMA * v = p->vma;
@@ -2306,7 +2306,7 @@ uint64 mmap(uint64 addr, uint length, int prot, int flags, int fd, uint offset)
 
 （4）Implement `munmap`. 主要有三个部分：当flags是`MAP_SHARED`时写回；删除addr对应的映射信息；当这个mmap全部删除后，将引用的文件`refcount--`。
 
-```
+```c
 int munmap(uint64 addr, uint length)
 {
   struct proc * p = myproc();
@@ -2358,7 +2358,7 @@ int munmap(uint64 addr, uint length)
 
 （5）Modify `exit`. 
 
-```
+```c
   // remove all mmap vma
   struct VMA* v = p->vma;
   while(v){
@@ -2371,7 +2371,7 @@ int munmap(uint64 addr, uint length)
 
 （6）Modify `fork`. 这两部分比较简单。
 
-```
+```c
   // np->vma = p->vma;
   // filedup(np->vma->fd);
   np->vma = 0;
@@ -2449,7 +2449,7 @@ background:
 
 （6）Legacy Transmit Descriptor Format（Section 3.3.3 in the E1000 manual）
 
-```
+```c
 struct tx_desc
 {
   uint64 addr;
@@ -2466,7 +2466,7 @@ hint:
 
 （1）implementing `e1000_transmit`. 跟着hint做就好，比较简单。
 
-```
+```c
 int
 e1000_transmit(struct mbuf *m)
 {
@@ -2506,7 +2506,7 @@ e1000_transmit(struct mbuf *m)
 
 （2）implementing `e1000_recv`. 和`e1000_transmit`不同的是，这里RDT指向的是当前有效的descriptor，所以要+1才是空闲的descriptor，然后要循环rx_ring。
 
-```
+```c
 static void
 e1000_recv(void)
 {
