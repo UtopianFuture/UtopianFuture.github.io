@@ -2,7 +2,8 @@
 
 ## 中期目标
 
-在 loongarch 的 qemu 上年呢该输出 hello world.
+1. 在 loongarch 的 qemu 上输出 hello world.
+2. 调研 memory managment 相关设计和实现。
 
 ### 零、 虚拟化知识
 
@@ -154,7 +155,7 @@ setup_arch()
 
 源码分析：
 
-```plain
+```c
 void cpu_probe(void) // probe CPU type, LOONGARCH's processor_id should be 0
 {
 	struct cpuinfo_loongarch *c = &current_cpu_data; // current_cpu_data指向当前cpu信息
@@ -224,7 +225,7 @@ void cpu_probe(void) // probe CPU type, LOONGARCH's processor_id should be 0
 
 源码分析：
 
-```plain
+```c
 void __init fw_init_cmdline(void)
 {
 	int i;
@@ -242,7 +243,7 @@ void __init fw_init_cmdline(void)
 }
 ```
 
-```plain
+```c
 void __init prom_init_env(void)
 {
 	efi_bp = (struct bootparamsinterface *)_fw_envp;
@@ -280,7 +281,7 @@ void __init prom_init_env(void)
 
 重要的数据结构：
 
-```plain
+```c
 // 这个应该就是bootmem的数据结构，书上说是用位图的方式，但这里改用mem_start和mem_size表示内存空间
 // 这个是BIOS内存分布图，记录了包括NUMA节点和多种类型在内的内存信息。
 struct loongsonlist_mem_map {
@@ -294,7 +295,7 @@ struct loongsonlist_mem_map {
 }__attribute__((packed));
 ```
 
-```plain
+```c
 void __init memblock_and_maxpfn_init(void)
 {
 	int i;
@@ -321,9 +322,9 @@ void __init memblock_and_maxpfn_init(void)
 }
 ```
 
-memblock_add_range()就是bootmem的allocator，初始化过程中，所有的内存挂载，物理页的reserved，都是通过这个函数进行。
+memblock_add_range()就是 bootmem 的 allocator，初始化过程中，所有的内存挂载，物理页的 reserved，都是通过这个函数进行。
 
-```plain
+```c
 /**
  * memblock_add_range - add new memblock region
  * @type: memblock type to add new region into
@@ -431,7 +432,7 @@ repeat:
 
 源码分析：
 
-```plain
+```c
 void __init prom_init(void)
 {
 	/* init base address of io space */
@@ -483,7 +484,7 @@ void __init prom_init(void)
 
 首先分析重要的数据结构 RSDT，RSDT 分为 the header 和 data 两个部分，the header 是所有 SDT 共有的。
 
-```plain
+```c
 struct acpi_table_header {
 	// All the ACPI tables have a 4 byte Signature field (except the RSDP which has an 8 byte one).
 	// Using the signature, you can determine what table are you working with.
@@ -501,7 +502,7 @@ struct acpi_table_header {
 
 这个函数并不是初始化 RSDT 的，而是初始化所有的 ACPI 表。
 
-```plain
+```c
 void __init acpi_table_upgrade(void)
 {
 	void *data = (void *)initrd_start;
@@ -619,7 +620,7 @@ void __init acpi_table_upgrade(void)
 
 猜想：不是初始化其他表的，而是建立 RSDT 与其他表的关联，因为 RSDT 包含了所有指向其他系统表的指针。
 
-```plain
+```c
 /*******************************************************************************
  *
  * FUNCTION:    acpi_initialize_tables
@@ -699,7 +700,7 @@ acpi_initialize_tables(struct acpi_table_desc *initial_table_array,
 
 
 
-```plain
+```c
 static int __init numa_mem_init(int (*init_func)(void))
 {
 	int i;
@@ -738,7 +739,7 @@ static int __init numa_mem_init(int (*init_func)(void))
 
 源码分析：
 
-```plain
+```c
 /*
  * arch_mem_init - initialize memory management subsystem
  *
@@ -838,7 +839,7 @@ static void __init arch_mem_init(char **cmdline_p)
 
 plat_swiotlb_setup()
 
-```plain
+```c
 void  __init
 swiotlb_init(int verbose)
 {
@@ -874,7 +875,7 @@ LoongArch 也使用 loongson3_smp_setup()进行初始化。
 
 源码分析：
 
-```plain
+```c
 const struct plat_smp_ops loongson3_smp_ops = {
 	.send_ipi_single = loongson3_send_ipi_single, // 核间通讯
 	.send_ipi_mask = loongson3_send_ipi_mask, 	  // 核间通讯
@@ -890,7 +891,7 @@ const struct plat_smp_ops loongson3_smp_ops = {
 };
 ```
 
-```plain
+```c
 static void __init loongson3_smp_setup(void)
 {
 	int i = 0, num = 0; /* i: physical id, num: logical id */
@@ -942,7 +943,7 @@ static void __init loongson3_smp_setup(void)
 
 源码分析：
 
-```plain
+```c
 void __init free_area_init_nodes(unsigned long *max_zone_pfn)
 {
 	unsigned long start_pfn, end_pfn;
@@ -1113,7 +1114,7 @@ LoongArch 的 bootmem 似乎和 x86 的不一样，以下为 x86 的 bootmem 初
 
 bootmem_data 结构：
 
-```plain
+```c
 /**
  * struct bootmem_data - per-node information used by the bootmem allocator
  * @node_min_pfn: the starting physical address of the node's memory
