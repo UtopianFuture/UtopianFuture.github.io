@@ -9,7 +9,7 @@ repos:
     -   id: check-yaml
     -   id: check-added-large-files
     -   id: check-merge-conflict
-    -   id: no-commit-to-branch
+      #-   id: no-commit-to-branch // shouldn't commit in master branch
 
 -   repo: local
     hooks:
@@ -25,11 +25,11 @@ repos:
         entry: script/hook/lint-md.sh
         language: script
 
-    -   id: code-test
-        name: code test
-        description: test the code
-        entry: script/hook/code-test.sh
-        language: script
+        #-   id: code-test
+        # name: code test
+        # description: test the code
+        # entry: script/hook/code-test.sh
+        # language: script
 
     -   id: separate-doc-code
         name: separate-doc-code

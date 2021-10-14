@@ -21,8 +21,8 @@ git commit -m "ci: use pre-commit before commit"
 [INFO] Stashing unstaged files to /home/guanshun/.cache/pre-commit/patch1634198521-3555437.
 Trim Trailing Whitespace.................................................Passed
 Fix End of Files.........................................................Failed
-- hook id: end-of-file-fixer                                                                                                         - exit code: 1                                                                                                                       - files were modified by this hook                                                                                                   Fixing script/hook/separate-doc-code.sh                                                                
-Check Yaml...........................................(no files to check)Skipped                                                       Check for added large files..............................................Passed                                                       Check for merge conflicts................................................Passed                                                       Don't commit to branch...................................................Failed                                                       - hook id: no-commit-to-branch                                                                                                       - exit code: 1                                                                                                                       format code..............................................................Failed                                                       - hook id: format-code                                                                                                               - exit code: 1                                                                 
+- hook id: end-of-file-fixer                                                                                                         - exit code: 1                                                                                                                       - files were modified by this hook                                                                                                   Fixing script/hook/separate-doc-code.sh
+Check Yaml...........................................(no files to check)Skipped                                                       Check for added large files..............................................Passed                                                       Check for merge conflicts................................................Passed                                                       Don't commit to branch...................................................Failed                                                       - hook id: no-commit-to-branch                                                                                                       - exit code: 1                                                                                                                       format code..............................................................Failed                                                       - hook id: format-code                                                                                                               - exit code: 1
 ```
 
 实际上，很多 hook 都是通用的，于是乎就有了 pre-commit 项目，可以安装一些常用的 hook, 具体配置在 .pre-commit-config.yaml 中，而且，我还添加了一些新的规则:
@@ -63,6 +63,14 @@ npx husky add .husky/commit-msg 'npx --no-install commitlint --edit "$1"'
 ```
 
 commit 的使用规则在[这里](https://github.com/conventional-changelog/commitlint/blob/master/%40commitlint/config-conventional/index.js)。
+
+### 三、遇到的问题
+
+安装好 commitlint 后 commit 时 pre-commit 无效。
+
+原因：husky 修改 `git config core.hooksPath`[4](https://github.com/Martins3/What-doesnt-kill-you-makes-you-stronger/blob/note/CONTRIBUTING.md#user-content-fn-6-2aa822bae5d8d8a17e72bcbd4b06d9ba) 的路径为 `.husky`，这会导致 `.git/hooks/pre-commit` 失效。
+
+解决：暂时的方法将 `.git/hooks/pre-commit` 拷贝到 `.husky` 中。
 
 ### reference
 
