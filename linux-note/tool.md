@@ -130,7 +130,7 @@
     rsync -avzP /home/guanshun/gitlab/latx/target guanshun:/home/guanshun/gitlab/latx-x64
     ```
 
-16. vim   
+16. vim
 
     ​	v         字符选
 
@@ -157,7 +157,7 @@
     ```
      - Kill all processes which match:
        pkill -9 "{{process_name}}"
-    
+
      - Kill all processes which match their full command instead of just the process name:
        pkill -9 --full "{{command_name}}"
     ```
@@ -179,13 +179,13 @@
     ```
     - List the sizes of a directory and any subdirectories, in the given unit (B/KB/MB):
        du -{{b|k|m}} {{path/to/directory}}
-    
+
      - List the sizes of a directory and any subdirectories, in human-readable form (i.e. auto-selecting the appropriate unit for each size):
        du -h {{path/to/directory}}
-    
+
      - Show the size of a single directory, in human readable units:
        du -sh {{path/to/directory}}
-    
+
      - List the human-readable sizes of a directory and of all the files and directories within it:
        du -ah {{path/to/directory}}
     ```
@@ -195,16 +195,16 @@
     ```
     - Display all filesystems and their disk usage:
        df
-    
+
      - Display all filesystems and their disk usage in human readable form:
        df -h
-    
+
      - Display the filesystem and its disk usage containing the given file or directory:
        df {{path/to/file_or_directory}}
-    
+
      - Display statistics on the number of free inodes:
        df -i
-    
+
      - Display filesystems but exclude the specified types:
        df -x {{squashfs}} -x {{tmpfs}}
     ```
@@ -276,55 +276,73 @@
 
 33. vim中能够画代码树的插件——[DrawIt](http://www.drchip.org/astronaut/vim/index.html#DRAWIT)
 
-下载后用vim打开DrawIt.vba.gz
+    下载后用vim打开DrawIt.vba.gz
 
-```
-vim DrawIt.vba.gz
-```
+    ```
+    vim DrawIt.vba.gz
+    ```
 
-然后使用 `:so %` 进行解压，最后 `:q` 退出 `vim`，`DrawIt` 就安装完成。
+    然后使用 `:so %` 进行解压，最后 `:q` 退出 `vim`，`DrawIt` 就安装完成。
 
-进入vim后用`\di`，`\ds`即可进入，退出DrawIt。
+    进入vim后用`\di`，`\ds`即可进入，退出DrawIt。
 
-```
-\di to start DrawIt，
-\ds to stop  DrawIt.
-```
+    ```
+    \di to start DrawIt，
+    \ds to stop  DrawIt.
+    ```
 
-```
-Supported Features
-   <left>       move and draw left
-   <right>      move and draw right, inserting lines/space as needed
-   <up>         move and draw up, inserting lines/space as needed
-   <down>       move and draw down, inserting lines/space as needed
-   <s-left>     move left
-   <s-right>    move right, inserting lines/space as needed
-   <s-up>       move up, inserting lines/space as needed
-   <s-down>     move down, inserting lines/space as needed
-   <space>      toggle into and out of erase mode
-   >            draw -> arrow
-   <            draw <- arrow
-   ^            draw ^  arrow
-   v            draw v  arrow
-   <pgdn>       replace with a \, move down and right, and insert a \
-   <end>        replace with a /, move down and left,  and insert a /
-   <pgup>       replace with a /, move up   and right, and insert a /
-   <home>       replace with a \, move up   and left,  and insert a \
-   \>           draw fat -> arrow
-   \<           draw fat <- arrow
-   \^           draw fat ^  arrow
-   \v           draw fat v  arrow
-   \a           draw arrow based on corners of visual-block
-   \b           draw box using visual-block selected region
-   \e           draw an ellipse inside visual-block
-   \f           fill a figure with some character
-   \h           create a canvas for \a \b \e \l
-   \l           draw line based on corners of visual block
-   \s           adds spaces to canvas
-   <leftmouse>  select visual block
- <s-leftmouse>  drag and draw with current brush (register)
-   \ra ... \rz  replace text with given brush/register
-   \pa ...      like \ra ... \rz, except that blanks are considered
-                to be transparent
-```
+    ```
+    Supported Features
+       <left>       move and draw left
+       <right>      move and draw right, inserting lines/space as needed
+       <up>         move and draw up, inserting lines/space as needed
+       <down>       move and draw down, inserting lines/space as needed
+       <s-left>     move left
+       <s-right>    move right, inserting lines/space as needed
+       <s-up>       move up, inserting lines/space as needed
+       <s-down>     move down, inserting lines/space as needed
+       <space>      toggle into and out of erase mode
+       >            draw -> arrow
+       <            draw <- arrow
+       ^            draw ^  arrow
+       v            draw v  arrow
+       <pgdn>       replace with a \, move down and right, and insert a \
+       <end>        replace with a /, move down and left,  and insert a /
+       <pgup>       replace with a /, move up   and right, and insert a /
+       <home>       replace with a \, move up   and left,  and insert a \
+       \>           draw fat -> arrow
+       \<           draw fat <- arrow
+       \^           draw fat ^  arrow
+       \v           draw fat v  arrow
+       \a           draw arrow based on corners of visual-block
+       \b           draw box using visual-block selected region
+       \e           draw an ellipse inside visual-block
+       \f           fill a figure with some character
+       \h           create a canvas for \a \b \e \l
+       \l           draw line based on corners of visual block
+       \s           adds spaces to canvas
+       <leftmouse>  select visual block
+     <s-leftmouse>  drag and draw with current brush (register)
+       \ra ... \rz  replace text with given brush/register
+       \pa ...      like \ra ... \rz, except that blanks are considered
+                    to be transparent
+    ```
 
+34. objcopy
+
+    将目标文件的一部分或者全部内容拷贝到另外一个目标文件中，或者实现目标文件的格式转换。
+
+    ```
+    SYNOPSIS
+           objcopy [-F bfdname|--target=bfdname]
+                   [-I bfdname|--input-target=bfdname]
+                   [-O bfdname|--output-target=bfdname]
+                   [-B bfdarch|--binary-architecture=bfdarch]
+                   ...
+    ```
+
+    例如：
+
+    ```
+    objcopy -O binary test.o test.bin
+    ```
