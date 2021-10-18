@@ -6,7 +6,7 @@
 
 3. ls -al 该文件夹下的所有文件
 
-4. tab 命令补全和文件补全  
+4. tab 命令补全和文件补全
 
 5. ctrl + c 退出
 
@@ -25,6 +25,8 @@
 12. 修改文件夹所属用户：chown -R guanshun ***
 
     修改文件夹所属用户组：chgrp -R guanshun ***
+
+    由于所有的设备也都是文件，因此chmod也能直接修改设备的使用权限。
 
 13. 查看当前终端的环境变量：env | grep 'proxy'
 
@@ -52,4 +54,4 @@
     Copyright (c) 2003-2021 Fabrice Bellard and the QEMU Project developers
     ```
 
-18. 
+18.
