@@ -1,12 +1,12 @@
 ## Run "Hello World" in LA bare metal
 
-由于bmbt是在裸机上直接运行的，那么必须搞清楚程序是怎样在裸机上运行的。按照惯例，从最简单的"Hello World"入手，即在LA裸机上运行“Hello World"。当然这里的裸机指的是支持LA的qemu。
+由于 bmbt 是在裸机上直接运行的，那么必须搞清楚程序是怎样在裸机上运行的。按照惯例，从最简单的"Hello World"入手，即在 LA 裸机上运行“Hello World"。当然这里的裸机指的是支持 LA 的 qemu。
 
 ### 1. 显示原理
 
-在没有OS支持下，程序必须自己操作硬件来完成输出。在现代计算机体系结构下，CPU与硬件（尤其是块设备）的交互方式往往是内存地址映射，即程序通过对某个内存地址的读写来完成对硬件的读写。比如在x86下，CPU与显示器的交互过程中，显卡被映射到了内存的`0xb8000`（注意是20位）处开始的16KB。往`0xb8000`这段内存写入内容，就能立即显示在屏幕上。**那么在LA中显卡被映射到哪个内存地址？**
+在没有 OS 支持下，程序必须自己操作硬件来完成输出。在现代计算机体系结构下，CPU 与硬件（尤其是块设备）的交互方式往往是内存地址映射，即程序通过对某个内存地址的读写来完成对硬件的读写。比如在 x86 下，CPU 与显示器的交互过程中，显卡被映射到了内存的`0xb8000`（注意是 20 位）处开始的 16KB。往`0xb8000`这段内存写入内容，就能立即显示在屏幕上。**那么在 LA 中显卡被映射到哪个内存地址？**
 
-在显示器的文本模式下，每个字符都占用2个字节，第一个字节是ASCII码，第二个字节是字符的颜色，其中高4位表示背景颜色，低4位表示字体颜色。下图表示颜色值。
+在显示器的文本模式下，每个字符都占用 2 个字节，第一个字节是 ASCII 码，第二个字节是字符的颜色，其中高 4 位表示背景颜色，低 4 位表示字体颜色。下图表示颜色值。
 
 | 背景颜色 | 字体颜色   |
 | :------- | :--------- |
@@ -21,22 +21,134 @@
 
 ### 2. 体系结构相关
 
-搞清楚程序怎样才能在裸机上直接运行，我们需要看看bios是怎样把内核拉起来的。
+搞清楚程序怎样才能在裸机上直接运行，我们先看看bios是怎样将内核拉起来的。
 
-先以x86为例：
+#### 2.1. BIOS
 
-bios在完成对硬件进行检测，为OS准备相关参数之后（大概过程），会把磁盘第一个扇区（512字节）的内容复制到内存的`0x7c00`处，然后检查内存的`0x7dfe`处（也就是从`0x7c00`开始的第510字节）开始的两个字节（510，511字节）组成的数字是否是`0xaa55`。如果是，那么bios认为前510字节是一段可执行文件，于是jump到`0x7c00`处开始执行这段程序。所以我们写的代码必须小于511字节，并且如果有jump指令，要链接到`0x7c00`的位置，即让链接器知道，这段代码执行时会被放到`0x7c00`处，要相应调整各个label的绝对位置（不懂），这样才能正确使用jump指令。
+bios完成的主要任务如下：
 
-x86在上电之后，CPU是在实模式下运行的，即访问的内存地址都是物理内存地址，且操作数都是16位的。但是地址总线的宽度是20位的，即最大寻址空间为1M，为了能够用16位寄存器访问20位地址，x86将1M空间分为多个段，如代码段，数据段等等。每个段用一个寄存器存放其基址。最后的读写地址就是段基址左移4位加上偏移量。
+（1）上电自检（Power On Self Test, POST）指的是对硬件，如CPU、主板、DRAM等设备进行检测。POST之后会有Beep声表示POST检查结果。一声简短的beep声意味着系统是OK的，两声beep则表示检查失败，错误码会显示在屏幕上；
+
+（2）POST之后初始化与启动相关的硬件，如磁盘、键盘控制器等；
+
+（3）位OS创建一些参数，如ACPI表；
+
+（4）选择引导设备，从设备中加载bootloader。
+
+bios 在完成对硬件进行检测，为 OS 准备相关参数之后，按照BIOS中设定的启动次序（Boot Sequence)逐一查找可启动设备，找到可启动的设备后，会把该设备第一个扇区（512 字节）——MBR，的内容复制到内存的`0x7c00`处，然后检查内存的`0x7dfe`处（也就是从`0x7c00`开始的第 510 字节）开始的两个字节（510，511 字节，即magic number）组成的数字是否是`0xaa55`。
+
+```
+                    512 bytes
+     +-----------------------+---------+--+
+     |                       | parti-  |  |
+     |    boot loader        | tion    |  | --> magic number(2 bytes)
+     |                       | table   |  |
+     +-----------------------+---------+--+
+            446 bytes       /           \
+                           /  64 bytes   \
+                          /               \
+                          p1   p2   p3   p4(为啥有4个分区表)
+```
+
+如果是，那么 bios 认为前 510 字节是一段可执行文件，于是 jump 到`0x7c00`处开始执行这段程序，即MBR开始执行；若不等于则转去尝试其他启动设备，如果没有启动设备满足要求则显示"NO ROM BASIC"然后死机。
+
+```
+qemu-img create -f qcow2 hello.img 10M
+qemu-system-x86_64 hello.img
+```
+
+![image-20211018162600419](/home/guanshun/.config/Typora/typora-user-images/image-20211018162600419.png)
+
+但MBR容量太小，放不下完整的boot loader代码，所以现在的MBR中的功能也从直接启动操作系统变为了启动boot loader，一般是grub。
+
+#### 2.2. Hello World
+
+```c
+asm(".long 0x1badb002, 0, (-(0x1badb002 + 0))");
+
+unsigned char *videobuf = (unsigned char*)0xb8000;
+const char *str = "Hello World!!";
+
+int start_entry(void)
+{
+	int i;
+	for (i = 0; str[i]; i++) {
+		videobuf[i * 2 + 0] = str[i];
+		videobuf[i * 2 + 1] = 0x0F;
+	}
+	for (; i < 80; i++) {
+		videobuf[i * 2 + 0] = ' ';
+		videobuf[i * 2 + 1] = 0x0f;
+	}
+	while (1) { }
+	return 0;
+}
+```
+
+```
+gcc -c -ffreestanding -nostdlib -m32 hello.c -o hello.o
+ld -e start_entry -m elf_i386 -Ttext-seg=0x100000 hello.o -o hello.elf
+qemu-system-x86_64 -kernel hello.elf
+```
+
+命令解析：
+
+（1）`-ffreestanding`
+
+```
+-ffreestanding
+	Assert that compilation targets a freestanding environment.  This implies -fno-builtin.  A freestanding environment is one in which the standard library may not exist, and program startup may not necessarily be at "main".  The most obvious example is an OS kernel.  This is equivalent to -fno-hosted.
+```
+
+（2）`-nostdlib`
+
+```
+-nostdlib
+	Do not use the standard system startup files or libraries when linking.  No startup files and only the libraries you specify are passed to the linker, and options specifying linkage of the system libraries, such as -static-libgcc or -shared-libgcc, are ignored.
+	The compiler may generate calls to "memcmp", "memset", "memcpy" and "memmove".  These entries are usually resolved by entries in libc.  These entry points should be supplied through some other mechanism when this option is specified.
+	One of the standard libraries bypassed by -nostdlib and -nodefaultlibs is libgcc.a, a library of internal subroutines which GCC uses to overcome shortcomings of particular machines, or special needs for some languages.
+	In most cases, you need libgcc.a even when you want to avoid other standard libraries.  In other words, when you specify -nostdlib or -nodefaultlibs you should usually specify -lgcc as well.
+       This ensures that you have no unresolved references to internal GCC library subroutines.  (An example of such an internal subroutine is "__main", used to ensure C++ constructors are called.)
+```
+
+（3）`-e start_entry`
+
+指定程序的入口地址。
+
+（4）`-m elf_i386`
+
+指定链接后的输出格式为32位的elf。还可以输出成 binary 格式，就是没有任何额外信息，你代码里面写了什么就是什么。一般MBR就是用的binary格式。
+
+但是这里我们需要 elf 格式，因为 elf格式除了代码和数据外还有很多有用的信息，**可以被标准 boot loader 识别**， grub 可以直接加载，qemu 也可以直接运行。所以之后的bmbt也时要编译成elf格式，直接用现成boot loader识别，不用重写boot loader。关于elf文件更多的信息在这里。
+
+（5）是不是所有 elf 文件都可以被 boot loader 加载？
+
+不是，需要第一个段中（没有ld文件的话，第一个段默认就是 text）头部包含 `multiboot header`，即：
+
+```text
+asm(".long 0x1badb002, 0, (-(0x1badb002 + 0))");
+```
+
+一共定义了十二个字节的 multiboot header，第一个long是 magic code, grub/qemu等需要检查，第二个 long 代表你需要 grub 提供哪些信息（比如内存布局，elf结构），这里填写0，不需要它提供任何信息。第三个long是代表前两个运算以后的一个 checksum，grub/qemu 会检查这个值确认你真的是一个可以引导的 kernel。
+
+结果：
+
+![image-20211018194315703](/home/guanshun/.config/Typora/typora-user-images/image-20211018194315703.png)
+
+
 
 那么问题来了：
 
-（1）LA中这个过程是怎么样的？即bios是否也是把磁盘的第一个扇区的内容复制到内存的`0x7c00`处，然后检查510，511字节。手册中没有说明。
+（1）LA 中这个过程是怎么样的？即 bios 是否也是把磁盘的第一个扇区的内容复制到内存的`0x7c00`处，然后检查 510，511 字节。手册中没有说明。
 
-（2）LA中有实模式的概念么？有段寄存器么？
+（2）LA 中有实模式的概念么？有段寄存器么？
 
 ### 3. 问题
 
-1. 在LA中显卡被映射到哪个内存地址？
-2. LA中bios是否也是把磁盘的第一个扇区的内容复制到内存的`0x7c00`处，然后检查510，511字？
-3. LA中有实模式的概念么？有段寄存器么？
+1. 在 LA 中显卡被映射到哪个内存地址？
+2. LA 中 bios 是否也是把磁盘的第一个扇区的内容复制到内存的`0x7c00`处，然后检查 510，511 字？
+3. LA 中有实模式的概念么？有段寄存器么？
+
+reference
+
+[1] https://www.zhihu.com/question/49580321 这个问题下面的回答都很有帮助。
