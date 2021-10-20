@@ -6,7 +6,7 @@
 
 - [xv6-labs-2020](https://github.com/UtopianFuture/xv6-labs)
 
-- [debug loongarch kernel in qemu](./kernel/debug%20loongarch%20kernel%20in%20qemu.md)
+- [debug loongarch kernel in qemu](./kernel/debug-loongarch-kernel-in-qemu.md)
 
 ## linux
 
