@@ -3,7 +3,8 @@
 ## 中期目标
 
 1. 在 loongarch 的 qemu 上输出 hello world.
-2. 调研 memory managment 相关设计和实现。
+2. 了解 CPU 时钟的相关知识，怎样使用 LA 的时钟，利用定时器周期性的输出 hello world.
+3. 调研 memory managment 相关设计和实现。
 
 ### 零、 虚拟化知识
 
@@ -1023,6 +1024,8 @@ void __init free_area_init_nodes(unsigned long *max_zone_pfn)
 
 ##### 1.2 trap_init()
 
+异常初始化。
+
 ```plain
 trap_init()
 | -- set_handler(); // 将不同的trap_handler加载到对应的内存位置
@@ -1030,6 +1033,7 @@ trap_init()
 |
 | -- cache_error_setup(); // Install uncached CPU exception handler
 |	| -- set_merr_handler(); // except_vec_cex就是cache exception handler
+\
 ```
 
 还有很多异常，如 PSI, HYP, GCM 等，为什么没有设置 handler？
@@ -1097,6 +1101,44 @@ void set_merr_handler(unsigned long offset, void *addr, unsigned long size)
 		panic(panic_null_cerr);
 
 	memcpy((void *)(uncached_ebase + offset), addr, size);
+}
+```
+
+##### 1.3 init_IRQ()
+
+```plain
+init_IRQ()
+| -- irq_set_noprobe();
+|
+| -- arch_init_irq();
+|	| -- setup_IRQ();
+|
+```
+
+在 init_IRQ()之前还有一个函数——early_irq_init()，用于初始化中断描述符——irq_desc，irq_desc 中包含了每个中断号（IRQ）的芯片数据 irq_data 和总段处理程序 irqaction 等信息。该函数只是设置默认信息，体系相关的设置有 init_IRQ()完成。
+
+```plain
+int __init early_irq_init(void)
+{
+	int count, i, node = first_online_node;
+	struct irq_desc *desc;
+
+	init_irq_default_affinity();
+
+	printk(KERN_INFO "NR_IRQS: %d\n", NR_IRQS);
+
+	desc = irq_desc;
+	count = ARRAY_SIZE(irq_desc);
+
+	for (i = 0; i < count; i++) { // 设置默认信息
+		desc[i].kstat_irqs = alloc_percpu(unsigned int);
+		alloc_masks(&desc[i], node);
+		raw_spin_lock_init(&desc[i].lock);
+		lockdep_set_class(&desc[i].lock, &irq_desc_lock_class);
+		mutex_init(&desc[i].request_mutex);
+		desc_set_defaults(i, &desc[i], node, NULL, NULL);
+	}
+	return arch_early_irq_init();
 }
 ```
 
