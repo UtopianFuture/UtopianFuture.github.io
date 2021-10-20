@@ -57,11 +57,19 @@ qemu-img create -f qcow2 hello.img 10M
 qemu-system-x86_64 hello.img
 ```
 
-![image-20211018162600419](/home/guanshun/.config/Typora/typora-user-images/image-20211018162600419.png)
+![image-20211018162600419](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/run.1.png?raw=true)
 
 但MBR容量太小，放不下完整的boot loader代码，所以现在的MBR中的功能也从直接启动操作系统变为了启动boot loader，一般是grub。
 
-#### 2.2. Hello World
+那么问题来了：
+
+（1）LA 中这个过程是怎么样的？即 bios 是否也是把磁盘的第一个扇区的内容复制到内存的`0x7c00`处，然后检查 510，511 字节。手册中没有说明。
+
+（2）LA 中有实模式的概念么？有段寄存器么？
+
+### 3. Hello World for x86
+
+#### 3.1 源码及命令
 
 ```c
 asm(".long 0x1badb002, 0, (-(0x1badb002 + 0))");
@@ -131,19 +139,106 @@ asm(".long 0x1badb002, 0, (-(0x1badb002 + 0))");
 
 一共定义了十二个字节的 multiboot header，第一个long是 magic code, grub/qemu等需要检查，第二个 long 代表你需要 grub 提供哪些信息（比如内存布局，elf结构），这里填写0，不需要它提供任何信息。第三个long是代表前两个运算以后的一个 checksum，grub/qemu 会检查这个值确认你真的是一个可以引导的 kernel。
 
-结果：
+#### 3.2. 结果
 
-![image-20211018194315703](/home/guanshun/.config/Typora/typora-user-images/image-20211018194315703.png)
+![image-20211018194315703](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/run.2.png?raw=true)
 
+### 4. Hello World for LA
 
+#### 4.1. 源码及调试
 
-那么问题来了：
+```
+asm(".long 0x1badb002, 0, (-(0x1badb002 + 0))");
 
-（1）LA 中这个过程是怎么样的？即 bios 是否也是把磁盘的第一个扇区的内容复制到内存的`0x7c00`处，然后检查 510，511 字节。手册中没有说明。
+unsigned char *videobuf = (unsigned char*)0x800000001fe001e0;
+const char *str = "Hello World!!";
 
-（2）LA 中有实模式的概念么？有段寄存器么？
+int start_entry(void)
+{
+	int i;
+    for (int i = 0; str[i]; i++) {
+        videobuf[0] = str[i];
+        videobuf[1] = 0x0f;
+	}
+	while (1) { }
+    // asm("break");
+	return 0;
+}
+```
 
-### 3. 问题
+```
+qemu-system-loongarch64 -nographic -m 2G -cpu Loongson-3A5000 -serial mon:stdio -bios ~/research/bmbt/qemu-la/pc-bios/loongarch_bios.bin -M loongson7a,kernel_irqchip=off -kernel la_hello.elf // 该命令用于直接运行
+```
+
+```
+qemu-system-loongarch64 -nographic -m 2G -cpu Loongson-3A5000 -serial mon:stdio -bios ~/research/bmbt/qemu-la/pc-bios/loongarch_bios.bin -M loongson7a,kernel_irqchip=off -kernel la_hello.elf -s -S // 该命令用于调试，配合LA的gdb
+```
+
+```
+guanshun@Jack-ubuntu ~/r/b/test> loongarch64-linux-gnu-gdb la_hello.elf
+GNU gdb (GDB) 8.1.50.20190122-git
+Copyright (C) 2018 Free Software Foundation, Inc.
+License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
+Type "show copying" and "show warranty" for details.
+This GDB was configured as "--host=x86_64-pc-linux-gnu --target=loongarch64-linux-gnu".
+Type "show configuration" for configuration details.
+For bug reporting instructions, please see:
+<http://www.gnu.org/software/gdb/bugs/>.
+Find the GDB manual and other documentation resources online at:
+    <http://www.gnu.org/software/gdb/documentation/>.
+
+For help, type "help".
+Type "apropos word" to search for commands related to "word"...
+Reading symbols from la_hello.elf...(no debugging symbols found)...done.
+(gdb) b start_entry
+Breakpoint 1 at 0x80000000000000fc
+(gdb) target remote localhost:1234
+Remote debugging using localhost:1234
+0x000000001c000000 in ?? ()
+(gdb) c
+Continuing.
+
+Breakpoint 1, 0x80000000000000fc in start_entry ()
+(gdb) layout asm
+
+```
+
+这里有两点需要注意：
+
+（1）LA中只有两个窗口地址在裸机上能够使用
+
+```
+cache地址：9000000000000000
+I/O地址：8000000000000000
+```
+
+（2）LA的串口地址是`0x1fe001e0`，因此输出字符的地址为`0x800000001fe001e0`。
+
+（3）LA不需要像x86一样，一个地址对应一个字符
+
+```
+for (i = 0; str[i]; i++) {
+	videobuf[i * 2 + 0] = str[i];
+	videobuf[i * 2 + 1] = 0x0F;
+}
+```
+
+而是直接对串口进行输出
+
+```
+for (int i = 0; str[i]; i++) {
+    videobuf[0] = str[i];
+    videobuf[1] = 0x0f;
+}
+```
+
+#### 4.2. 结果
+
+![image-20211020151308828](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/run.3.png?raw=true)
+
+### 5. 问题
 
 1. 在 LA 中显卡被映射到哪个内存地址？
 2. LA 中 bios 是否也是把磁盘的第一个扇区的内容复制到内存的`0x7c00`处，然后检查 510，511 字？
@@ -152,3 +247,7 @@ asm(".long 0x1badb002, 0, (-(0x1badb002 + 0))");
 reference
 
 [1] https://www.zhihu.com/question/49580321 这个问题下面的回答都很有帮助。
+
+[2] https://zhou-yuxin.github.io/articles/2015/x86%E8%A3%B8%E6%9C%BAHelloWorld/index.html 裸机helloworld的另一个写法。
+
+[3] https://nancyyihao.github.io/2020/04/10/Linux-Boot-Process/ bios启动写的很详细。
