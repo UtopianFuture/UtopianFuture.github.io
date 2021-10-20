@@ -2,11 +2,11 @@
 
 ## kernel
 
-- [xv6 notes](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/xv6.md)
+- [xv6 notes](./kernel/xv6.md)
 
 - [xv6-labs-2020](https://github.com/UtopianFuture/xv6-labs)
 
-- [debug loongarch kernel in qemu](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/debug%20loongarch%20kernel%20in%20qemu.md)
+- [debug loongarch kernel in qemu](./kernel/debug%20loongarch%20kernel%20in%20qemu.md)
 
 ## linux
 
@@ -22,11 +22,10 @@
 
 ## virtualization
 
-- [bmbt virtualization](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/bmbt-virtualization.md)
-
-- [kvm 原理简介](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/kvm.md)
-
-- [linux 系统虚拟化](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/linux-system-virtualization.md)
+- [bmbt virtualization](./virtualization/bmbt-virtualization.md)
+- [kvm 原理简介](./virtualization/kvm.md)
+- [linux 系统虚拟化](./virtualization/linux-system-virtualization.md)
+- [run "hello world" in LA bare metal](./virtualization/run-helloworld-in-LA-bare-metal.md)
 
 ## firends
 
