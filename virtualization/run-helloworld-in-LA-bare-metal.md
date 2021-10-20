@@ -238,7 +238,11 @@ for (int i = 0; str[i]; i++) {
 
 ![image-20211020151308828](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/run.3.png?raw=true)
 
-### 5. 问题
+### 5. 总结
+
+总的来说，在裸机上运行程序就是要编译一个不依赖任何标准库的程序，而且这个程序还要是boot或boot loader可以识别的格式（如elf），然后在编译的时候手动指定程序的入口地址，如内核在编译时就指定了入口地址是`kernel_entry`，和程序加载地址，即程序放在内存哪个地方执行。这样boot在硬件自检完后就会跳转到程序入口执行。
+
+### 6. 问题
 
 1. 在 LA 中显卡被映射到哪个内存地址？
 2. LA 中 bios 是否也是把磁盘的第一个扇区的内容复制到内存的`0x7c00`处，然后检查 510，511 字？
