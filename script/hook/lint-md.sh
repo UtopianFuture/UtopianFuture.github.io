@@ -1,6 +1,6 @@
 #!/bin/bash
 
-lint_md_output=$(lint-md ./*.md doc/ -c .lintmdrc.json)
+lint_md_output=$(lint-md ./*.md -c .lintmdrc.json)
 echo "$lint_md_output"
 
 # Lint total 55 files, 0 warnings 1 errors
