@@ -68,7 +68,7 @@ commit 的使用规则在[这里](https://github.com/conventional-changelog/comm
 
 安装好 commitlint 后 commit 时 pre-commit 无效。
 
-原因：husky 修改 `git config core.hooksPath`[4](https://github.com/Martins3/What-doesnt-kill-you-makes-you-stronger/blob/note/CONTRIBUTING.md#user-content-fn-6-2aa822bae5d8d8a17e72bcbd4b06d9ba) 的路径为 `.husky`，这会导致 `.git/hooks/pre-commit` 失效。
+原因：husky 修改 `git config core.hooksPath`的路径为 `.husky`，这会导致 `.git/hooks/pre-commit` 失效。
 
 解决：暂时的方法将 `.git/hooks/pre-commit` 拷贝到 `.husky` 中。
 
