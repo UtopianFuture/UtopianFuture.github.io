@@ -346,3 +346,28 @@
     ```
     objcopy -O binary test.o test.bin
     ```
+
+35. spacevim 快捷键
+    ```
+    space f t 打开/关闭目录
+    f3        快捷键打开/关闭目录
+
+    ```
+
+36. 利用 voidkiss/folaterm 可以实现将终端以 float window 的形式打开，映射的快捷键分别为:
+    ```
+    Ctrl n : 创建新的 terminal window
+    Ctrl p : 切换到 prev 的 terminal window
+    Fn5 : 显示/隐藏窗口
+    ```
+
+37. 利用 'telescope' 快速搜索 file，buffer，function 等
+    '''
+    , o             在当前文件中搜索该符号
+    , s             在整个工程中搜索该符号
+    , f + 文件名    搜索文件
+    , b + buffer 名 搜索buffer
+    '''
+
+38.
+    ​
