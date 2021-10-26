@@ -69,6 +69,29 @@ APIC 包含两个部分：`LAPIC`和`I/O APIC`， LAPIC 位于处理器一端，
 
 ### 2. 中断模拟
 
+与中断有关的函数，包括创建中断设备，发起中断，中断注入等等。
+
+```c
+| -- kvm_vm_compat_iobtl()
+|	| -- kvm_vm_ioctl()
+|		| -- kvm_arch_vm_ioctl() // PIC创建
+|			| -- kvm_pic_init() // 创建3个PIC设备
+|			| -- kvm_ioapic_init() // 创建ioapic设备
+|			| -- kvm_setup_default_irq_routing() // 创建路由
+|				| -- kvm_set_irq_routing() // 初始化kvm_irq_routing_table -> guestos 用的路由表
+    									   // kvm_kernel_irq_routing_entry -> hostos kernel用的路由表项
+    									   // kvm_irq_routing_entry -> 默认路由表项
+    				| -- setup_routing_entry() // 将默认路由转换成内核中的路由信息，
+    										   // 将guestos路由表项mapping到hostos表项中
+
+| -- pc_init1()
+    | -- pc_gsi_create() // PIC中断向量的初始化，初始化完后PIC设备就能分发中断   (1)
+    	| -- qemu_allocate_irqs() // 24个中断向量
+    		| -- qemu_entend_irqs()
+```
+
+
+
 #### 2.1. 虚拟化环境下的中断注入
 
 在 KVM 模拟虚拟 CPU 的数据结构中有字段 VM-entry interruption-information field 即用来设定虚拟机的中断信息。物理机产生的中断要注入到这个字段中，虚拟机的虚拟中断才能处理。
@@ -274,3 +297,43 @@ static void vmx_inject_irq(struct kvm_vcpu *vcpu)
 	vmx_clear_hlt(vcpu); // 写入VMCS
 }
 ```
+
+#### 2.2. PIC 的初始化
+
+`x86ms->gsi`就是 guestos 中断路由的起点，在调用`pc_gsi_create()`初始化之后，`x86ms->gsi`会被赋值给南桥 piix3 的 PIC 成员，PCI 设备的中断会从这里开始分发。
+
+```c
+gsi_state = pc_gsi_create(&x86ms->gsi, pcmc->pci_enabled);
+```
+
+南桥会创建一条 isa 总线`isa_bus`，并调用`isa_bus_irqs()`将`x86ms->gsi`赋值给 isabus 的 irq 成员。
+
+```c
+if (pcmc->pci_enabled) {
+        PIIX3State *piix3;
+
+        pci_bus = i440fx_init(host_type,
+                              pci_type,
+                              &i440fx_state,
+                              system_memory, system_io, machine->ram_size,
+                              x86ms->below_4g_mem_size,
+                              x86ms->above_4g_mem_size,
+                              pci_memory, ram_memory);
+        pcms->bus = pci_bus;
+
+        piix3 = piix3_create(pci_bus, &isa_bus);
+        piix3->pic = x86ms->gsi;
+        piix3_devfn = piix3->dev.devfn;
+    } else {
+        pci_bus = NULL;
+        i440fx_state = NULL;
+        isa_bus = isa_bus_new(NULL, get_system_memory(), system_io,
+                              &error_abort);
+        pcms->hpet_enabled = false;
+    }
+    isa_bus_irqs(isa_bus, x86ms->gsi);
+```
+
+问题
+
+（1）痛苦面具了，看的很艰难，理不清头绪，可能是我打开方式错了。准备老老实实从头开始看。
