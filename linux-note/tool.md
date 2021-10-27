@@ -349,9 +349,19 @@
 
 35. spacevim 快捷键
     ```
-    space f t 打开/关闭目录
-    f3        快捷键打开/关闭目录
-
+    space f t 		打开/关闭目录
+    f3        		快捷键打开/关闭目录
+    space f o 		打开当前文件所在目录
+    >		  		放大文件树窗口宽度
+    <		  		缩小文件树窗口宽度
+    SPC f y	  		复制并显示当前文件的绝对路径
+    SPC f Y	  		复制并显示当前文件的相对路径
+    Ctrl-<Down>		切换至下方窗口
+    Ctrl-<Up>		切换至上方窗口
+    Ctrl-<Left>		切换至左边窗口
+    Ctrl-<Right>	切换至右边窗口
+    SPC 1～9			跳至窗口 1～9
+    q				智能关闭当前窗口
     ```
 
 36. 利用 voidkiss/folaterm 可以实现将终端以 float window 的形式打开，映射的快捷键分别为:
@@ -361,13 +371,12 @@
     Fn5 : 显示/隐藏窗口
     ```
 
-37. 利用 'telescope' 快速搜索 file，buffer，function 等
-    '''
-    , o             在当前文件中搜索该符号
-    , s             在整个工程中搜索该符号
-    , f + 文件名    搜索文件
-    , b + buffer 名 搜索buffer
-    '''
 
-38.
-    ​
+37. 利用 'telescope' 快速搜索 file，buffer，function 等
+
+    ```
+    , o             		 在当前文件中搜索该符号
+    , s             		 在整个工程中搜索该符号
+    , f + 文件名       搜索文件
+    , b + buffer 名 搜索buffer
+    ```
