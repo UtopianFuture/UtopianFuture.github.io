@@ -772,3 +772,9 @@ object_class_property_add(oc, "family", "int",
 ```
 
 但具体怎么用的还不知道，在接下来的源码阅读中如果有遇到再进行分析。
+
+### reference
+
+[1] QEMU/KVM 源码解析与应用
+
+[2] https://martins3.github.io/qemu/qom.html
