@@ -125,3 +125,15 @@ DESCRIPTION
        The second argument is a device-dependent request code.  The third argument is an untyped pointer to memory.  It's traditionally char *argp (from the days before void * was valid C), and will be so named for this discussion.
 		An  ioctl() request has encoded in it whether the argument is an in parameter or out parameter, and the size of the argument argp in bytes.  Macros and defines used in specifying an ioctl() request are located in the file <sys/ioctl.h>.
 ```
+
+### C语言中结构体成员变量前的点的作用
+
+结构体中成员变量前的点： 结构体成员指定初始化
+
+（1）该结构体要先定义；
+
+（2）一个成员变量赋值完后用逗号而不是分号；
+
+（3）初始化语句的元素以固定的顺序出现，和被初始化的数组或结构体中的元素顺序一样，这样可以不用按顺序初始化；
+
+（4）C99才开始支持的。
