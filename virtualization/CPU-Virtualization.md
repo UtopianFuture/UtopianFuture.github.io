@@ -1,6 +1,111 @@
 ## CPU Virtualization
 
-在 [Interrupt-Virtualization](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Interrupt-Virtualization.md) 中已经介绍了 CPU 的类型初始化，对象实例初始化，但还需要对 CPU 对象进行具现化才能让 CPU 对象可以用。我对具现化的理解就是在 VCPU 上运行 GuestOS 。这一工作通过调用 `x86_cpu_realizefn` 来完成。
+### 1. QEMU 侧虚拟机的建立
+
+### 2. KVM 侧虚拟机的建立
+
+`kvm_dev_ioctl` 向用户层 QEMU 提供 `ioctl` ，根据不同类型的请求提供不同的服务，如果是 `KVM_CREATE_VM` 就调用 `kvm_dev_ioctl_create_vm` 创建一个虚拟机，然后返回一个文件描述符到用户态，QEMU 用该描述符操作虚拟机。
+
+```c
+static long kvm_dev_ioctl(struct file *filp,
+			  unsigned int ioctl, unsigned long arg)
+{
+	long r = -EINVAL;
+
+	switch (ioctl) {
+	case KVM_GET_API_VERSION:
+		if (arg)
+			goto out;
+		r = KVM_API_VERSION;
+		break;
+	case KVM_CREATE_VM:
+		r = kvm_dev_ioctl_create_vm(arg);
+		break;
+	case KVM_CHECK_EXTENSION:
+		r = kvm_vm_ioctl_check_extension_generic(NULL, arg);
+		break;
+	case KVM_GET_VCPU_MMAP_SIZE:
+		if (arg)
+			goto out;
+		r = PAGE_SIZE;     /* struct kvm_run */
+#ifdef CONFIG_X86
+		r += PAGE_SIZE;    /* pio data page */
+#endif
+#ifdef CONFIG_KVM_MMIO
+		r += PAGE_SIZE;    /* coalesced mmio ring page */
+#endif
+		break;
+	case KVM_TRACE_ENABLE:
+	case KVM_TRACE_PAUSE:
+	case KVM_TRACE_DISABLE:
+		r = -EOPNOTSUPP;
+		break;
+	default:
+		return kvm_arch_dev_ioctl(filp, ioctl, arg);
+	}
+out:
+	return r;
+}
+```
+
+该函数的主要任务是调用 `kvm_create_vm` 创建虚拟机实例，每一个虚拟机实例用 kvm 结构体表示。
+
+```c
+static int kvm_dev_ioctl_create_vm(unsigned long type)
+{
+	int r;
+	struct kvm *kvm;
+	struct file *file;
+
+	kvm = kvm_create_vm(type);
+	if (IS_ERR(kvm))
+		return PTR_ERR(kvm);
+#ifdef CONFIG_KVM_MMIO
+	r = kvm_coalesced_mmio_init(kvm);
+	if (r < 0)
+		goto put_kvm;
+#endif
+	r = get_unused_fd_flags(O_CLOEXEC);
+	if (r < 0)
+		goto put_kvm;
+
+	snprintf(kvm->stats_id, sizeof(kvm->stats_id),
+			"kvm-%d", task_pid_nr(current));
+
+	file = anon_inode_getfile("kvm-vm", &kvm_vm_fops, kvm, O_RDWR);
+	if (IS_ERR(file)) {
+		put_unused_fd(r);
+		r = PTR_ERR(file);
+		goto put_kvm;
+	}
+
+	/*
+	 * Don't call kvm_put_kvm anymore at this point; file->f_op is
+	 * already set, with ->release() being kvm_vm_release().  In error
+	 * cases it will be called by the final fput(file) and will take
+	 * care of doing kvm_put_kvm(kvm).
+	 */
+	if (kvm_create_vm_debugfs(kvm, r) < 0) {
+		put_unused_fd(r);
+		fput(file);
+		return -ENOMEM;
+	}
+	kvm_uevent_notify_change(KVM_EVENT_CREATE_VM, kvm);
+
+	fd_install(r, file);
+	return r;
+
+put_kvm:
+	kvm_put_kvm(kvm);
+	return r;
+}
+```
+
+### 3. QEMU CPU 的创建
+
+前面两节讲的是整个虚拟机的建立，而虚拟机又可以使用多个 VCPU ，接下来分析 VCPU 的建立。
+
+在 [QOM](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/QOM.md) 中已经介绍了 CPU 的类型初始化，对象实例初始化，但还需要对 CPU 对象进行具现化才能让 CPU 对象可以用。我对具现化的理解就是在 VCPU 上运行 GuestOS 。这一工作通过调用 `x86_cpu_realizefn` 来完成。
 
 ```c
 static void x86_cpu_realizefn(DeviceState *dev, Error **errp)
@@ -20,38 +125,7 @@ static void x86_cpu_realizefn(DeviceState *dev, Error **errp)
         }
     }
 
-    if (cpu->max_features && accel_uses_host_cpuid()) {
-        if (enable_cpu_pm) {
-            host_cpuid(5, 0, &cpu->mwait.eax, &cpu->mwait.ebx,
-                       &cpu->mwait.ecx, &cpu->mwait.edx);
-            env->features[FEAT_1_ECX] |= CPUID_EXT_MONITOR;
-            if (kvm_enabled() && kvm_has_waitpkg()) {
-                env->features[FEAT_7_0_ECX] |= CPUID_7_0_ECX_WAITPKG;
-            }
-        }
-        if (kvm_enabled() && cpu->ucode_rev == 0) {
-            cpu->ucode_rev = kvm_arch_get_supported_msr_feature(kvm_state,
-                                                                MSR_IA32_UCODE_REV);
-        }
-    }
-
-    if (cpu->ucode_rev == 0) {
-        /* The default is the same as KVM's.  */
-        if (IS_AMD_CPU(env)) {
-            cpu->ucode_rev = 0x01000065;
-        } else {
-            cpu->ucode_rev = 0x100000000ULL;
-        }
-    }
-
-    /* mwait extended info: needed for Core compatibility */
-    /* We always wake on interrupt even if host does not have the capability */
-    cpu->mwait.ecx |= CPUID_MWAIT_EMX | CPUID_MWAIT_IBE;
-
-    if (cpu->apic_id == UNASSIGNED_APIC_ID) {
-        error_setg(errp, "apic-id property was not initialized properly");
-        return;
-    }
+    ...
 
     x86_cpu_expand_features(cpu, &local_err);
     if (local_err) {
@@ -68,104 +142,7 @@ static void x86_cpu_realizefn(DeviceState *dev, Error **errp)
         goto out;
     }
 
-    /* On AMD CPUs, some CPUID[8000_0001].EDX bits must match the bits on
-     * CPUID[1].EDX.
-     */
-    if (IS_AMD_CPU(env)) {
-        env->features[FEAT_8000_0001_EDX] &= ~CPUID_EXT2_AMD_ALIASES;
-        env->features[FEAT_8000_0001_EDX] |= (env->features[FEAT_1_EDX]
-           & CPUID_EXT2_AMD_ALIASES);
-    }
-
-    /* For 64bit systems think about the number of physical bits to present.
-     * ideally this should be the same as the host; anything other than matching
-     * the host can cause incorrect guest behaviour.
-     * QEMU used to pick the magic value of 40 bits that corresponds to
-     * consumer AMD devices but nothing else.
-     */
-    if (env->features[FEAT_8000_0001_EDX] & CPUID_EXT2_LM) {
-        if (accel_uses_host_cpuid()) {
-            uint32_t host_phys_bits = x86_host_phys_bits();
-            static bool warned;
-
-            /* Print a warning if the user set it to a value that's not the
-             * host value.
-             */
-            if (cpu->phys_bits != host_phys_bits && cpu->phys_bits != 0 &&
-                !warned) {
-                warn_report("Host physical bits (%u)"
-                            " does not match phys-bits property (%u)",
-                            host_phys_bits, cpu->phys_bits);
-                warned = true;
-            }
-
-            if (cpu->host_phys_bits) {
-                /* The user asked for us to use the host physical bits */
-                cpu->phys_bits = host_phys_bits;
-                if (cpu->host_phys_bits_limit &&
-                    cpu->phys_bits > cpu->host_phys_bits_limit) {
-                    cpu->phys_bits = cpu->host_phys_bits_limit;
-                }
-            }
-        }
-        if (cpu->phys_bits &&
-            (cpu->phys_bits > TARGET_PHYS_ADDR_SPACE_BITS ||
-            cpu->phys_bits < 32)) {
-            error_setg(errp, "phys-bits should be between 32 and %u "
-                             " (but is %u)",
-                             TARGET_PHYS_ADDR_SPACE_BITS, cpu->phys_bits);
-            return;
-        }
-        /* 0 means it was not explicitly set by the user (or by machine
-         * compat_props or by the host code above). In this case, the default
-         * is the value used by TCG (40).
-         */
-        if (cpu->phys_bits == 0) {
-            cpu->phys_bits = TCG_PHYS_ADDR_BITS;
-        }
-    } else {
-        /* For 32 bit systems don't use the user set value, but keep
-         * phys_bits consistent with what we tell the guest.
-         */
-        if (cpu->phys_bits != 0) {
-            error_setg(errp, "phys-bits is not user-configurable in 32 bit");
-            return;
-        }
-
-        if (env->features[FEAT_1_EDX] & CPUID_PSE36) {
-            cpu->phys_bits = 36;
-        } else {
-            cpu->phys_bits = 32;
-        }
-    }
-
-    /* Cache information initialization */
-    if (!cpu->legacy_cache) {
-        if (!xcc->model || !xcc->model->cpudef->cache_info) {
-            g_autofree char *name = x86_cpu_class_get_model_name(xcc);
-            error_setg(errp,
-                       "CPU model '%s' doesn't support legacy-cache=off", name);
-            return;
-        }
-        env->cache_info_cpuid2 = env->cache_info_cpuid4 = env->cache_info_amd =
-            *xcc->model->cpudef->cache_info;
-    } else {
-        /* Build legacy cache information */
-        env->cache_info_cpuid2.l1d_cache = &legacy_l1d_cache;
-        env->cache_info_cpuid2.l1i_cache = &legacy_l1i_cache;
-        env->cache_info_cpuid2.l2_cache = &legacy_l2_cache_cpuid2;
-        env->cache_info_cpuid2.l3_cache = &legacy_l3_cache;
-
-        env->cache_info_cpuid4.l1d_cache = &legacy_l1d_cache;
-        env->cache_info_cpuid4.l1i_cache = &legacy_l1i_cache;
-        env->cache_info_cpuid4.l2_cache = &legacy_l2_cache;
-        env->cache_info_cpuid4.l3_cache = &legacy_l3_cache;
-
-        env->cache_info_amd.l1d_cache = &legacy_l1d_cache_amd;
-        env->cache_info_amd.l1i_cache = &legacy_l1i_cache_amd;
-        env->cache_info_amd.l2_cache = &legacy_l2_cache_amd;
-        env->cache_info_amd.l3_cache = &legacy_l3_cache;
-    }
+    ...
 
     /* Process Hyper-V enlightenments */
     x86_cpu_hyperv_realize(cpu);
@@ -190,54 +167,11 @@ static void x86_cpu_realizefn(DeviceState *dev, Error **errp)
 
     mce_init(cpu);
 
-#ifndef CONFIG_USER_ONLY
-    if (tcg_enabled()) {
-        cpu->cpu_as_mem = g_new(MemoryRegion, 1);
-        cpu->cpu_as_root = g_new(MemoryRegion, 1);
-
-        /* Outer container... */
-        memory_region_init(cpu->cpu_as_root, OBJECT(cpu), "memory", ~0ull);
-        memory_region_set_enabled(cpu->cpu_as_root, true);
-
-        /* ... with two regions inside: normal system memory with low
-         * priority, and...
-         */
-        memory_region_init_alias(cpu->cpu_as_mem, OBJECT(cpu), "memory",
-                                 get_system_memory(), 0, ~0ull);
-        memory_region_add_subregion_overlap(cpu->cpu_as_root, 0, cpu->cpu_as_mem, 0);
-        memory_region_set_enabled(cpu->cpu_as_mem, true);
-
-        cs->num_ases = 2;
-        cpu_address_space_init(cs, 0, "cpu-memory", cs->memory);
-        cpu_address_space_init(cs, 1, "cpu-smm", cpu->cpu_as_root);
-
-        /* ... SMRAM with higher priority, linked from /machine/smram.  */
-        cpu->machine_done.notify = x86_cpu_machine_done;
-        qemu_add_machine_init_done_notifier(&cpu->machine_done);
-    }
-#endif
+	...
 
     qemu_init_vcpu(cs);
 
-    /*
-     * Most Intel and certain AMD CPUs support hyperthreading. Even though QEMU
-     * fixes this issue by adjusting CPUID_0000_0001_EBX and CPUID_8000_0008_ECX
-     * based on inputs (sockets,cores,threads), it is still better to give
-     * users a warning.
-     *
-     * NOTE: the following code has to follow qemu_init_vcpu(). Otherwise
-     * cs->nr_threads hasn't be populated yet and the checking is incorrect.
-     */
-    if (IS_AMD_CPU(env) &&
-        !(env->features[FEAT_8000_0001_ECX] & CPUID_EXT3_TOPOEXT) &&
-        cs->nr_threads > 1 && !ht_warned) {
-            warn_report("This family of AMD CPU doesn't support "
-                        "hyperthreading(%d)",
-                        cs->nr_threads);
-            error_printf("Please configure -smp options properly"
-                         " or try enabling topoext feature.\n");
-            ht_warned = true;
-    }
+    ...
 
     x86_cpu_apic_realize(cpu, &local_err);
     if (local_err != NULL) {
@@ -310,7 +244,7 @@ X86CPU |  			 |		   |
 
 另外 `X86CPUClass` 是静态变量，其中的变量也是所有 CPU 共有的。
 
-`x86_cpu_expand_features` 根据 QEMU 的命令行参数解析出来的 CPU 特性对 CPU 实例中的属性设置 TRUE 或 FALSE 。`x86_cpu_filter_features` 用来检测宿主机 CPU 特性能否支持创建的 CPU 对象。`x86_cpu_hyperv_realize` 用来初始化 CPU 实例中的 hyperv 相关的变量。`cpu_exec_realizefn` 调用 `cpu_list_add` 将正在初始化的 CPU 对象添加到一个全局链表 cpus 上。接下来的重要函数是 qemu_init_vcpu ，它会根据 QEMU 使用用的加速器 `cpus_accel->create_vcpu_thread(cpu)` 来决定执行哪个初始化函数
+`x86_cpu_expand_features` 根据 QEMU 的命令行参数解析出来的 CPU 特性对 CPU 实例中的属性设置 TRUE 或 FALSE 。`x86_cpu_filter_features` 用来检测宿主机 CPU 特性能否支持创建的 CPU 对象。`x86_cpu_hyperv_realize` 用来初始化 CPU 实例中的 hyperv 相关的变量。`cpu_exec_realizefn` 调用 `cpu_list_add` 将正在初始化的 CPU 对象添加到一个全局链表 cpus 上。接下来的重要函数是 `qemu_init_vcpu` ，它会根据 QEMU 使用用的加速器 `cpus_accel->create_vcpu_thread(cpu);` 来决定执行哪个初始化函数，加速方式在 accel 目录下。
 
 ```c
 void qemu_init_vcpu(CPUState *cpu)
@@ -340,7 +274,7 @@ void qemu_init_vcpu(CPUState *cpu)
 }
 ```
 
-`qemu_init_vcpu` 会记录 CPU 的核数和线程数，然后创建地址空间。如果使用 KVM 加速，就会调用 `kvm_start_vcpu_thread`
+首先记录 CPU 的核数和线程数，然后创建地址空间。如果使用 KVM 加速，就会调用 `kvm_start_vcpu_thread`
 
 ```c
 static void kvm_start_vcpu_thread(CPUState *cpu)
@@ -357,7 +291,7 @@ static void kvm_start_vcpu_thread(CPUState *cpu)
 }
 ```
 
-该函数通过 `kvm_vcpu_thread_fn` 创建 VCPU 线程
+该函数通过 `kvm_vcpu_thread_fn` 创建 VCPU 线程并运行。
 
 ```c
 static void *kvm_vcpu_thread_fn(void *arg)
@@ -398,6 +332,461 @@ static void *kvm_vcpu_thread_fn(void *arg)
 }
 ```
 
-这个函数首先调用 `kvm_init_vcpu` ，用于在 KVM 中创建 VCPU ，之后会详细介绍。然后调用 `kvm_init_cpu_signals` 初始化 CPU 的信号处理，使 CPU 线程能够处理 IPI 中断。
+这个函数首先调用 `kvm_init_vcpu` ，用于在 KVM 中创建 VCPU，这里 `KVMState` 是 QEMU 中用来表示 KVM 相关的数据结构，操作虚拟机的 fd 就保存在这里。
+
+```c
+int kvm_init_vcpu(CPUState *cpu, Error **errp)
+{
+    KVMState *s = kvm_state;
+    long mmap_size;
+    int ret;
+
+    trace_kvm_init_vcpu(cpu->cpu_index, kvm_arch_vcpu_id(cpu));
+
+    ret = kvm_get_vcpu(s, kvm_arch_vcpu_id(cpu));
+
+    ...
+
+    cpu->kvm_fd = ret;
+    cpu->kvm_state = s;
+    cpu->vcpu_dirty = true;
+
+    mmap_size = kvm_ioctl(s, KVM_GET_VCPU_MMAP_SIZE, 0);
+    if (mmap_size < 0) {
+        ret = mmap_size;
+        error_setg_errno(errp, -mmap_size,
+                         "kvm_init_vcpu: KVM_GET_VCPU_MMAP_SIZE failed");
+        goto err;
+    }
+
+    cpu->kvm_run = mmap(NULL, mmap_size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                        cpu->kvm_fd, 0);
+    ...
+
+    ret = kvm_arch_init_vcpu(cpu);
+
+    ...
+
+err:
+    return ret;
+}
+```
+
+`kvm_get_vcpu` 首先会从已有的 VCPU 队列中查询是否有对应 `vcpu_id` 的 VCPU ，如果没有的话就用 `ioctl` 向 KVM 发起一个 `KVM_CREATE_VCPU` 的请求，并把对应的 `vcpu_id` 传进去。
+
+```c
+static int kvm_get_vcpu(KVMState *s, unsigned long vcpu_id)
+{
+    struct KVMParkedVcpu *cpu;
+
+    QLIST_FOREACH(cpu, &s->kvm_parked_vcpus, node) {
+        if (cpu->vcpu_id == vcpu_id) {
+            int kvm_fd;
+
+            QLIST_REMOVE(cpu, node);
+            kvm_fd = cpu->kvm_fd;
+            g_free(cpu);
+            return kvm_fd;
+        }
+    }
+
+    return kvm_vm_ioctl(s, KVM_CREATE_VCPU, (void *)vcpu_id);
+}
+```
+
+`kvm_vm_ioctl` 底层就是一个 `ioctl` 系统调用，这个系统调用会被 KVM 捕获进行分析。
+
+```c
+int kvm_vm_ioctl(KVMState *s, int type, ...)
+{
+    int ret;
+    void *arg;
+    va_list ap;
+
+    va_start(ap, type);
+    arg = va_arg(ap, void *);
+    va_end(ap);
+
+    trace_kvm_vm_ioctl(type, arg);
+    ret = ioctl(s->vmfd, type, arg);
+    if (ret == -1) {
+        ret = -errno;
+    }
+    return ret;
+}
+```
+
+然后调用 `kvm_init_cpu_signals` 初始化 CPU 的信号处理，使 CPU 线程能够处理 IPI 中断。
 
 接下来的 `do while` 循环是最重要的，通过 `cpu_can_run` 判断 CPU 是否能够运行，如果可以则调用 `kvm_cpu_exec` ，该函数会调用 `kvm_vcpu_ioctl` ，即 KVM 提供的 `ioctl(KVM_RUN)` ，让 VCPU 在物理 CPU 上运行起来。然后应用层就阻塞在这里，当 guestOS 产生 `VM Exit` 时内核再根据退出原因进行处理，然后再循环运行，完成 CPU 的虚拟化。
+
+### 4. KVM CPU 的创建
+
+[前面](#2. KVM 侧虚拟机的建立)讲到 `kvm_dev_ioctl_create_vm` 会创建一个匿名的文件，用来表示一台虚拟机，并且返回 fd 到用户态， QEMU 通过这个文件描述符来操作虚拟机，即下面这行代码：
+
+```c
+file = anon_inode_getfile("kvm-vm", &kvm_vm_fops, kvm, O_RDWR);
+```
+
+该匿名文件的定义如下：
+
+```c
+static struct file_operations kvm_vm_fops = {
+	.release        = kvm_vm_release,
+	.unlocked_ioctl = kvm_vm_ioctl,
+	.llseek		= noop_llseek,
+	KVM_COMPAT(kvm_vm_compat_ioctl),
+};
+```
+
+其主要操作也是 `ioctl` ，对应的函数是 `kvm_vm_ioctl` ，这个函数是处理虚拟机级别的 `ioctl` 入口，前面的 `kvm_dev_ioctl` 是设备级别的处理入口，不要搞混了。`kvm_vm_ioctl`  会处理各种请求，刚刚我们分析的 QEMU 中的 `kvm_vm_ioctl` 请求就是在这里进行处理（注意一个是 QEMU 中的函数，一个是kernel KVM 中的函数，不要搞混了），这里先分析 `KVM_CREATE_VCPU` 即创建 VCPU 的情况。
+
+```c
+static long kvm_vm_ioctl(struct file *filp,
+			   unsigned int ioctl, unsigned long arg)
+{
+	struct kvm *kvm = filp->private_data;
+	void __user *argp = (void __user *)arg;
+	int r;
+
+	if (kvm->mm != current->mm || kvm->vm_bugged)
+		return -EIO;
+	switch (ioctl) {
+	case KVM_CREATE_VCPU:
+		r = kvm_vm_ioctl_create_vcpu(kvm, arg);
+		break;
+	...
+
+	default:
+		r = kvm_arch_vm_ioctl(filp, ioctl, arg);
+	}
+out:
+	return r;
+}
+```
+
+```c
+static int kvm_vm_ioctl_create_vcpu(struct kvm *kvm, u32 id)
+{
+	int r;
+	struct kvm_vcpu *vcpu;
+	struct page *page;
+
+	if (id >= KVM_MAX_VCPU_ID)
+		return -EINVAL;
+
+	mutex_lock(&kvm->lock);
+	if (kvm->created_vcpus == KVM_MAX_VCPUS) {
+		mutex_unlock(&kvm->lock);
+		return -EINVAL;
+	}
+
+	kvm->created_vcpus++;
+	mutex_unlock(&kvm->lock);
+
+	r = kvm_arch_vcpu_precreate(kvm, id);
+	if (r)
+		goto vcpu_decrement;
+
+	vcpu = kmem_cache_zalloc(kvm_vcpu_cache, GFP_KERNEL_ACCOUNT);
+	if (!vcpu) {
+		r = -ENOMEM;
+		goto vcpu_decrement;
+	}
+
+	BUILD_BUG_ON(sizeof(struct kvm_run) > PAGE_SIZE);
+	page = alloc_page(GFP_KERNEL_ACCOUNT | __GFP_ZERO);
+	if (!page) {
+		r = -ENOMEM;
+		goto vcpu_free;
+	}
+	vcpu->run = page_address(page);
+
+	kvm_vcpu_init(vcpu, kvm, id);
+
+	r = kvm_arch_vcpu_create(vcpu);
+	if (r)
+		goto vcpu_free_run_page;
+
+	if (kvm->dirty_ring_size) {
+		r = kvm_dirty_ring_alloc(&vcpu->dirty_ring,
+					 id, kvm->dirty_ring_size);
+		if (r)
+			goto arch_vcpu_destroy;
+	}
+
+	mutex_lock(&kvm->lock);
+	if (kvm_get_vcpu_by_id(kvm, id)) {
+		r = -EEXIST;
+		goto unlock_vcpu_destroy;
+	}
+
+	vcpu->vcpu_idx = atomic_read(&kvm->online_vcpus);
+	BUG_ON(kvm->vcpus[vcpu->vcpu_idx]);
+
+	/* Fill the stats id string for the vcpu */
+	snprintf(vcpu->stats_id, sizeof(vcpu->stats_id), "kvm-%d/vcpu-%d",
+		 task_pid_nr(current), id);
+
+	/* Now it's all set up, let userspace reach it */
+	kvm_get_kvm(kvm);
+	r = create_vcpu_fd(vcpu);
+	if (r < 0) {
+		kvm_put_kvm_no_destroy(kvm);
+		goto unlock_vcpu_destroy;
+	}
+
+	kvm->vcpus[vcpu->vcpu_idx] = vcpu;
+
+	/*
+	 * Pairs with smp_rmb() in kvm_get_vcpu.  Write kvm->vcpus
+	 * before kvm->online_vcpu's incremented value.
+	 */
+	smp_wmb();
+	atomic_inc(&kvm->online_vcpus);
+
+	mutex_unlock(&kvm->lock);
+	kvm_arch_vcpu_postcreate(vcpu);
+	kvm_create_vcpu_debugfs(vcpu);
+	return r;
+
+	...
+
+	return r;
+}
+```
+
+这里代码很清楚，`kvm_vcpu_init` 和 `kvm_arch_vcpu_create` 初始化 VCPU ，然后将其保存到 kvm 中的 vcpus 结构中。
+
+```c
+kvm->vcpus[vcpu->vcpu_idx] = vcpu;
+```
+
+### 5. QEMU 与 KVM 之间的共享数据
+
+### 6. VCPU CPUID 构造
+
+这两节等之后有需要了再详细分析。
+
+### 7. VCPU 的运行
+
+首先每个 VCPU 都会对应一个 VMCS ，VMCS 对于 VCPU 的作用类似与进程描述符对于进程的作用。其用来管理 VMX non-root Operation 的转换以及控制 VCPU 的行为。操作 VMCS 的指令包括 VMCLEAR、VMPTRLD、VMREAD 和 VMWRITE。VMCS 的区域大小为 4KB，VMM 通过它的 64 位地址进行访问。
+
+[前面](#3. QEMU CPU 的创建)讲到 `kvm_vcpu_thread_fn` 创建 VCPU 线程并运行，并且跟踪了 QEMU 是怎样通过 `kvm_init_vcpu` 让 KVM 创建 VCPU 的，现在我们继续分析重要的 `do while` 循环。
+
+```c
+	do {
+        if (cpu_can_run(cpu)) {
+            r = kvm_cpu_exec(cpu);
+            if (r == EXCP_DEBUG) {
+                cpu_handle_guest_debug(cpu);
+            }
+        }
+        qemu_wait_io_event(cpu);
+    } while (!cpu->unplug || cpu_can_run(cpu));
+```
+
+调用 `cpu_can_run` 检查当前 cpu 是否可运行。这里有个问题，为什么用的是 `CPUState`，而不是 `X86CPU`。
+
+```c
+bool cpu_can_run(CPUState *cpu)
+{
+    if (cpu->stop) {
+        return false;
+    }
+    if (cpu_is_stopped(cpu)) {
+        return false;
+    }
+    return true;
+}
+```
+
+如果不可运行，则调用 `qemu_wait_io_event` 将 cpu 挂在 `cpu->halt_cond` 条件上，带了全局锁 `qemu_global_mutex` 。
+
+```C
+void qemu_wait_io_event(CPUState *cpu)
+{
+    bool slept = false;
+
+    while (cpu_thread_is_idle(cpu)) {
+        if (!slept) {
+            slept = true;
+            qemu_plugin_vcpu_idle_cb(cpu);
+        }
+        qemu_cond_wait(cpu->halt_cond, &qemu_global_mutex);
+    }
+    if (slept) {
+        qemu_plugin_vcpu_resume_cb(cpu);
+    }
+    qemu_wait_io_event_common(cpu);
+}
+```
+
+当在 main 中执行 `vm_start` -> `resume_all_vcpus` -> `qemu_cpu_kick` 时，qemu_cpu_kick 会将 VCPU 唤醒。
+
+```C
+void qemu_cpu_kick(CPUState *cpu)
+{
+    qemu_cond_broadcast(cpu->halt_cond);
+    if (cpus_accel->kick_vcpu_thread) {
+        cpus_accel->kick_vcpu_thread(cpu);
+    } else { /* default */
+        cpus_kick_thread(cpu);
+    }
+}
+```
+
+接下来分析 `kvm_cpu_exec`
+
+```c
+int kvm_cpu_exec(CPUState *cpu)
+{
+    struct kvm_run *run = cpu->kvm_run;
+    int ret, run_ret;
+
+    ...
+
+    qemu_mutex_unlock_iothread();
+    cpu_exec_start(cpu);
+
+    do {
+        MemTxAttrs attrs;
+
+        if (cpu->vcpu_dirty) {
+            kvm_arch_put_registers(cpu, KVM_PUT_RUNTIME_STATE);
+            cpu->vcpu_dirty = false;
+        }
+
+        kvm_arch_pre_run(cpu, run);
+
+        ...
+
+        /* Read cpu->exit_request before KVM_RUN reads run->immediate_exit.
+         * Matching barrier in kvm_eat_signals.
+         */
+        smp_rmb();
+
+        run_ret = kvm_vcpu_ioctl(cpu, KVM_RUN, 0);
+
+        attrs = kvm_arch_post_run(cpu, run);
+
+		...
+
+        trace_kvm_run_exit(cpu->cpu_index, run->exit_reason);
+        switch (run->exit_reason) {
+        case KVM_EXIT_IO:
+            DPRINTF("handle_io\n");
+            /* Called outside BQL */
+            kvm_handle_io(run->io.port, attrs,
+                          (uint8_t *)run + run->io.data_offset,
+                          run->io.direction,
+                          run->io.size,
+                          run->io.count);
+            ret = 0;
+            break;
+        case KVM_EXIT_MMIO:
+            DPRINTF("handle_mmio\n");
+            /* Called outside BQL */
+            address_space_rw(&address_space_memory,
+                             run->mmio.phys_addr, attrs,
+                             run->mmio.data,
+                             run->mmio.len,
+                             run->mmio.is_write);
+            ret = 0;
+            break;
+        case KVM_EXIT_IRQ_WINDOW_OPEN:
+        case KVM_EXIT_SHUTDOWN:
+        case KVM_EXIT_UNKNOWN:
+        case KVM_EXIT_INTERNAL_ERROR:
+        case KVM_EXIT_SYSTEM_EVENT:
+            switch (run->system_event.type) {
+            case KVM_SYSTEM_EVENT_SHUTDOWN:
+            case KVM_SYSTEM_EVENT_RESET:
+            case KVM_SYSTEM_EVENT_CRASH
+            default:
+                DPRINTF("kvm_arch_handle_exit\n");
+                ret = kvm_arch_handle_exit(cpu, run);
+                break;
+            }
+            break;
+        default:
+            DPRINTF("kvm_arch_handle_exit\n");
+            ret = kvm_arch_handle_exit(cpu, run);
+            break;
+        }
+    } while (ret == 0);
+
+    cpu_exec_end(cpu);
+    qemu_mutex_lock_iothread();
+
+    if (ret < 0) {
+        cpu_dump_state(cpu, stderr, CPU_DUMP_CODE);
+        vm_stop(RUN_STATE_INTERNAL_ERROR);
+    }
+
+    qatomic_set(&cpu->exit_request, 0);
+    return ret;
+}
+```
+
+`kvm_arch_pre_run` 首先做一些运行前的准备工作，如 `nmi` 和 `smi` 的[中断注入](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Interrupt-Virtualization.md)，之后使用 `ioctl(KVM_RUN)` 系统调用通知 KVM 使该 KVM 运行起来。KVM 模块在处理该 ioctl 时会执行对应的 vmx 指令，将 VCPU 运行的物理 CPU 从 `VMX root` 转换成 `VMX non-root` ，开始运行虚拟机中的代码。虚拟机内部如果产生 `VM Exit` ，就会退出到 KVM ，如果 KVM 无法处理就会分发到 QEMU ，也就是在 `ioctl(KVM_RUN)`  返回的时候调用 `kvm_arch_post_run` 进行初步的处理。然后根据共享内存 `kvm_run` （这个是第 5 节的内容，没有分析）中的数据来判断退出原因，并进行处理。之后的 `switch` 就是处理 KVM 不能处理的问题。
+
+接下来分析 `ioctl(KVM_RUN)` 是怎样在 kernel 中运行的。这个 `ioctl` 是在 `kvm_vcpu_ioctl` 中处理的，这个函数是专门处理 `VCPU ioctl` 的，和之前的两个处理函数不同（一个是处理 dev ，一个是处理 vm ）。
+
+```c
+static long kvm_vcpu_ioctl (struct file *filp,
+			   unsigned int ioctl, unsigned long arg)
+{
+	struct kvm_vcpu *vcpu = filp->private_data;
+	void __user *argp = (void __user *)arg;
+	int r;
+	struct kvm_fpu *fpu = NULL;
+	struct kvm_sregs *kvm_sregs = NULL;
+
+	...
+
+	switch (ioctl) {
+	case KVM_RUN: {
+		struct pid *oldpid;
+		r = -EINVAL;
+		if (arg)
+			goto out;
+		oldpid = rcu_access_pointer(vcpu->pid);
+		if (unlikely(oldpid != task_pid(current))) {
+			/* The thread running this VCPU changed. */
+			struct pid *newpid;
+
+			r = kvm_arch_vcpu_run_pid_change(vcpu);
+			if (r)
+				break;
+
+			newpid = get_task_pid(current, PIDTYPE_PID);
+			rcu_assign_pointer(vcpu->pid, newpid);
+			if (oldpid)
+				synchronize_rcu();
+			put_pid(oldpid);
+		}
+		r = kvm_arch_vcpu_ioctl_run(vcpu);
+		trace_kvm_userspace_exit(vcpu->run->exit_reason, r);
+		break;
+	}
+	case KVM_GET_REGS:
+	case KVM_SET_REGS:
+	case KVM_GET_SREGS:
+	case KVM_SET_SREGS:
+	case KVM_SET_MP_STATE:
+	case KVM_SET_GUEST_DEBUG:
+	case KVM_SET_SIGNAL_MASK:
+	case KVM_GET_FPU:
+	case KVM_SET_FPU:
+	case KVM_GET_STATS_FD:
+	default:
+		r = kvm_arch_vcpu_ioctl(filp, ioctl, arg);
+	}
+out:
+	mutex_unlock(&vcpu->mutex);
+	kfree(fpu);
+	kfree(kvm_sregs);
+	return r;
+}
+```
