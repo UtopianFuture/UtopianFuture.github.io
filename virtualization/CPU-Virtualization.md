@@ -790,3 +790,394 @@ out:
 	return r;
 }
 ```
+
+对于 `KVM_RUN` 的情况，会调用 `kvm_arch_vcpu_ioctl_run` 进行处理。
+
+```c
+int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
+{
+	struct kvm_run *kvm_run = vcpu->run;
+	int r;
+
+	vcpu_load(vcpu);
+	kvm_sigset_activate(vcpu);
+	kvm_run->flags = 0;
+	kvm_load_guest_fpu(vcpu);
+
+	...
+
+	if (kvm_run->immediate_exit)
+		r = -EINTR;
+	else
+		r = vcpu_run(vcpu);
+
+out:
+	kvm_put_guest_fpu(vcpu);
+	if (kvm_run->kvm_valid_regs)
+		store_regs(vcpu);
+	post_kvm_run_save(vcpu);
+	kvm_sigset_deactivate(vcpu);
+
+	vcpu_put(vcpu);
+	return r;
+}
+```
+
+`kvm_arch_vcpu_ioctl_run` 主要调用 `vcpu_run` 。
+
+```c
+static int vcpu_run(struct kvm_vcpu *vcpu)
+{
+	int r;
+	struct kvm *kvm = vcpu->kvm;
+
+	vcpu->srcu_idx = srcu_read_lock(&kvm->srcu);
+	vcpu->arch.l1tf_flush_l1d = true;
+
+	for (;;) {
+		if (kvm_vcpu_running(vcpu)) {
+			r = vcpu_enter_guest(vcpu);
+		} else {
+			r = vcpu_block(kvm, vcpu);
+		}
+
+		if (r <= 0)
+			break;
+
+		kvm_clear_request(KVM_REQ_UNBLOCK, vcpu);
+		if (kvm_cpu_has_pending_timer(vcpu))
+			kvm_inject_pending_timer_irqs(vcpu);
+
+		if (dm_request_for_irq_injection(vcpu) &&
+			kvm_vcpu_ready_for_interrupt_injection(vcpu)) {
+			r = 0;
+			vcpu->run->exit_reason = KVM_EXIT_IRQ_WINDOW_OPEN;
+			++vcpu->stat.request_irq_exits;
+			break;
+		}
+
+		if (__xfer_to_guest_mode_work_pending()) {
+			srcu_read_unlock(&kvm->srcu, vcpu->srcu_idx);
+			r = xfer_to_guest_mode_handle_work(vcpu);
+			if (r)
+				return r;
+			vcpu->srcu_idx = srcu_read_lock(&kvm->srcu);
+		}
+	}
+
+	srcu_read_unlock(&kvm->srcu, vcpu->srcu_idx);
+
+	return r;
+}
+```
+
+`vcpu_run` 和 QEMU 一样，首先通过调用 `kvm_vcpu_running` 判断当前 CPU 是否可运行
+
+```c
+static inline bool kvm_vcpu_running(struct kvm_vcpu *vcpu)
+{
+	if (is_guest_mode(vcpu))
+		kvm_check_nested_events(vcpu);
+
+	return (vcpu->arch.mp_state == KVM_MP_STATE_RUNNABLE &&
+		!vcpu->arch.apf.halted);
+}
+```
+
+`kvm_vcpu_running` 还要通过读取 vcpu 中的 `hflags` 和 `HF_GUEST_MASK` 判断当前 CPU 是否处于 guest mode
+
+```c
+static inline bool is_guest_mode(struct kvm_vcpu *vcpu)
+{
+	return vcpu->arch.hflags & HF_GUEST_MASK;
+}
+```
+
+如果可以运行，就会调用 `vcpu_enter_guest` 进入虚拟机，在进入虚拟机前会通过 `kvm_check_request` 对 `vcpu -> request` 上的请求进行处理。这个函数是 enter guestos, run guestos,  exit guestos 的重要函数，之后有需要还要再分析一下。
+
+```c
+static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
+{
+	int r;
+	bool req_int_win =
+		dm_request_for_irq_injection(vcpu) &&
+		kvm_cpu_accept_dm_intr(vcpu);
+	fastpath_t exit_fastpath;
+
+	bool req_immediate_exit = false;
+
+	/* Forbid vmenter if vcpu dirty ring is soft-full */
+	if (unlikely(vcpu->kvm->dirty_ring_size &&
+		     kvm_dirty_ring_soft_full(&vcpu->dirty_ring))) {
+		vcpu->run->exit_reason = KVM_EXIT_DIRTY_RING_FULL;
+		trace_kvm_dirty_ring_exit(vcpu);
+		r = 0;
+		goto out;
+	}
+
+	if (kvm_request_pending(vcpu)) {
+		if (kvm_check_request(KVM_REQ_VM_BUGGED, vcpu)) {
+			r = -EIO;
+			goto out;
+		}
+		if (kvm_check_request(KVM_REQ_GET_NESTED_STATE_PAGES, vcpu)) {
+			if (unlikely(!kvm_x86_ops.nested_ops->get_nested_state_pages(vcpu))) {
+				r = 0;
+				goto out;
+			}
+		}
+		...
+        r = inject_pending_event(vcpu, &req_immediate_exit);
+	}
+    r = kvm_mmu_reload(vcpu);
+		if (unlikely(r)) {
+		goto cancel_injection;
+	}
+
+	preempt_disable();
+
+	static_call(kvm_x86_prepare_guest_switch)(vcpu);
+
+	/*
+	 * Disable IRQs before setting IN_GUEST_MODE.  Posted interrupt
+	 * IPI are then delayed after guest entry, which ensures that they
+	 * result in virtual interrupt delivery.
+	 */
+	local_irq_disable();
+	vcpu->mode = IN_GUEST_MODE;
+
+	srcu_read_unlock(&vcpu->kvm->srcu, vcpu->srcu_idx);
+
+	/*
+	 * 1) We should set ->mode before checking ->requests.  Please see
+	 * the comment in kvm_vcpu_exiting_guest_mode().
+	 *
+	 * 2) For APICv, we should set ->mode before checking PID.ON. This
+	 * pairs with the memory barrier implicit in pi_test_and_set_on
+	 * (see vmx_deliver_posted_interrupt).
+	 *
+	 * 3) This also orders the write to mode from any reads to the page
+	 * tables done while the VCPU is running.  Please see the comment
+	 * in kvm_flush_remote_tlbs.
+	 */
+	smp_mb__after_srcu_read_unlock();
+
+	/*
+	 * This handles the case where a posted interrupt was
+	 * notified with kvm_vcpu_kick.
+	 */
+	if (kvm_lapic_enabled(vcpu) && vcpu->arch.apicv_active)
+		static_call(kvm_x86_sync_pir_to_irr)(vcpu);
+
+	if (kvm_vcpu_exit_request(vcpu)) {
+		vcpu->mode = OUTSIDE_GUEST_MODE;
+		smp_wmb();
+		local_irq_enable();
+		preempt_enable();
+		vcpu->srcu_idx = srcu_read_lock(&vcpu->kvm->srcu);
+		r = 1;
+		goto cancel_injection;
+	}
+
+	if (req_immediate_exit) {
+		kvm_make_request(KVM_REQ_EVENT, vcpu);
+		static_call(kvm_x86_request_immediate_exit)(vcpu);
+	}
+
+	fpregs_assert_state_consistent();
+	if (test_thread_flag(TIF_NEED_FPU_LOAD))
+		switch_fpu_return();
+
+	if (unlikely(vcpu->arch.switch_db_regs)) {
+		set_debugreg(0, 7);
+		set_debugreg(vcpu->arch.eff_db[0], 0);
+		set_debugreg(vcpu->arch.eff_db[1], 1);
+		set_debugreg(vcpu->arch.eff_db[2], 2);
+		set_debugreg(vcpu->arch.eff_db[3], 3);
+	} else if (unlikely(hw_breakpoint_active())) {
+		set_debugreg(0, 7);
+	}
+
+	for (;;) {
+		exit_fastpath = static_call(kvm_x86_run)(vcpu);
+		if (likely(exit_fastpath != EXIT_FASTPATH_REENTER_GUEST))
+			break;
+
+        if (unlikely(kvm_vcpu_exit_request(vcpu))) {
+			exit_fastpath = EXIT_FASTPATH_EXIT_HANDLED;
+			break;
+		}
+
+		if (vcpu->arch.apicv_active)
+			static_call(kvm_x86_sync_pir_to_irr)(vcpu);
+    }
+
+	...
+
+	vcpu->mode = OUTSIDE_GUEST_MODE;
+	smp_wmb();
+
+	static_call(kvm_x86_handle_exit_irqoff)(vcpu);
+
+	/*
+	 * Consume any pending interrupts, including the possible source of
+	 * VM-Exit on SVM and any ticks that occur between VM-Exit and now.
+	 * An instruction is required after local_irq_enable() to fully unblock
+	 * interrupts on processors that implement an interrupt shadow, the
+	 * stat.exits increment will do nicely.
+	 */
+	kvm_before_interrupt(vcpu);
+	local_irq_enable();
+	++vcpu->stat.exits;
+	local_irq_disable();
+	kvm_after_interrupt(vcpu);
+
+	...
+
+	r = static_call(kvm_x86_handle_exit)(vcpu, exit_fastpath);
+	return r;
+
+cancel_injection:
+	if (req_immediate_exit)
+		kvm_make_request(KVM_REQ_EVENT, vcpu);
+	static_call(kvm_x86_cancel_injection)(vcpu);
+	if (unlikely(vcpu->arch.apic_attention))
+		kvm_lapic_sync_from_vapic(vcpu);
+out:
+	return r;
+}
+```
+
+将这些 `request` 处理完并 `inject_pending_event` 之后就调用 `kvm_mmu_reload` 处理内存虚拟化相关的东西。然后就是 `kvm_x86_prepare_guest_switch` ，保存宿主机状态到 `VMCS` ，使虚拟机下次退出后能正常运行。
+
+之后就是 vmx 的 run 回调 —— `vmx_vcpu_run` ，这是一个巨长的函数，我没有搞懂，只关注目前有用的部分。
+
+```c
+static fastpath_t vmx_vcpu_run(struct kvm_vcpu *vcpu)
+{
+	struct vcpu_vmx *vmx = to_vmx(vcpu);
+	unsigned long cr3, cr4;
+
+	...
+
+	/* The actual VMENTER/EXIT is in the .noinstr.text section. */
+	vmx_vcpu_enter_exit(vcpu, vmx);
+
+	...
+
+	vmx_register_cache_reset(vcpu);
+
+	pt_guest_exit(vmx);
+
+	kvm_load_host_xsave_state(vcpu);
+
+	if (is_guest_mode(vcpu)) {
+		/*
+		 * Track VMLAUNCH/VMRESUME that have made past guest state
+		 * checking.
+		 */
+		if (vmx->nested.nested_run_pending &&
+		    !vmx->exit_reason.failed_vmentry)
+			++vcpu->stat.nested_run;
+
+		vmx->nested.nested_run_pending = 0;
+	}
+
+	vmx->idt_vectoring_info = 0;
+
+	if (unlikely(vmx->fail)) {
+		vmx->exit_reason.full = 0xdead;
+		return EXIT_FASTPATH_NONE;
+	}
+
+	vmx->exit_reason.full = vmcs_read32(VM_EXIT_REASON);
+	if (unlikely((u16)vmx->exit_reason.basic == EXIT_REASON_MCE_DURING_VMENTRY))
+		kvm_machine_check();
+
+	if (likely(!vmx->exit_reason.failed_vmentry))
+		vmx->idt_vectoring_info = vmcs_read32(IDT_VECTORING_INFO_FIELD);
+
+	trace_kvm_exit(vmx->exit_reason.full, vcpu, KVM_ISA_VMX);
+
+	if (unlikely(vmx->exit_reason.failed_vmentry))
+		return EXIT_FASTPATH_NONE;
+
+	vmx->loaded_vmcs->launched = 1;
+
+	vmx_recover_nmi_blocking(vmx);
+	vmx_complete_interrupts(vmx);
+
+	if (is_guest_mode(vcpu))
+		return EXIT_FASTPATH_NONE;
+
+	return vmx_exit_handlers_fastpath(vcpu);
+}
+```
+
+`vmx_vcpu_enter_exit` 最终会 `call vmx_vmenter` ，在这个汇编里使用 `vmlaunch` 指令切换到 guest mode
+
+```c
+/**
+ * vmx_vmenter - VM-Enter the current loaded VMCS
+ *
+ * %RFLAGS.ZF:	!VMCS.LAUNCHED, i.e. controls VMLAUNCH vs. VMRESUME
+ *
+ * Returns:
+ *	%RFLAGS.CF is set on VM-Fail Invalid
+ *	%RFLAGS.ZF is set on VM-Fail Valid
+ *	%RFLAGS.{CF,ZF} are cleared on VM-Success, i.e. VM-Exit
+ *
+ * Note that VMRESUME/VMLAUNCH fall-through and return directly if
+ * they VM-Fail, whereas a successful VM-Enter + VM-Exit will jump
+ * to vmx_vmexit.
+ */
+SYM_FUNC_START_LOCAL(vmx_vmenter)
+	/* EFLAGS.ZF is set if VMCS.LAUNCHED == 0 */
+	je 2f
+
+1:	vmresume
+	ret
+
+2:	vmlaunch
+	ret
+
+3:	cmpb $0, kvm_rebooting
+	je 4f
+	ret
+4:	ud2
+
+	_ASM_EXTABLE(1b, 3b)
+	_ASM_EXTABLE(2b, 3b)
+
+SYM_FUNC_END(vmx_vmenter)
+```
+
+同时从 guest mode 中退出也是在 `vmx_vcpu_run` 中处理的，即使用 `vmcs_read32` 读取退出原因。
+
+```c
+vmx->exit_reason.full = vmcs_read32(VM_EXIT_REASON);
+```
+
+当 `vmx_vcpu_run` 执行完返回时，已经完成了一次 `VM Exit` 和 `VM Entry` 。
+
+退出之后同样回调函数 `vmx_handle_exit` 处理外部中断。
+
+```c
+static struct kvm_x86_ops vmx_x86_ops __initdata = {
+	...
+
+	.run = vmx_vcpu_run,
+	.handle_exit = vmx_handle_exit,
+
+	...
+
+};
+```
+
+最后处理完中断后根据 `vcpu_enter_guest` 的返回值判断是否需要返回到 QEMU ，如果 `vcpu_enter_guest` 返回值小于等于 0 ，会导致退出循环，进而该 `ioctl` 返回到用户态 QEMU ，如果返回 1 ，则 KVM 能处理，继续下一轮执行。
+
+如果 `kvm_vcpu_running` 判断出该 cpu 不能执行，那么就会调用 `vcpu_block` ，最终调用 `schedule` 请求调度，让出物理 cpu 。
+
+### 8. VCPU 的调度
+
+待续。。。
