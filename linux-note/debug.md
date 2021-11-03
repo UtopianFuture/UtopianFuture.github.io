@@ -6,17 +6,32 @@
 
    （2）另开一个终端，使用：gdb kernel命令，在gdb中使用target remote localhost:26000
 
-2. 由于LA上的GDB用不了layout src看源码，所以用list命令。
+2. GDB 中用 layout 查看源码
+
+   ```
+   layout src		显示源代码窗口
+   layout asm		显示汇编窗口
+   layout regs		显示源代码/汇编和寄存器窗口
+   layout split	显示源代码和汇编窗口
+   layout next		显示下一个layout
+   layout prev		显示上一个layout
+   Ctrl + L		刷新窗口
+   Ctrl + x + 1	单窗口模式，显示一个窗口
+   Ctrl + x + 2	双窗口模式，显示两个窗口
+   Ctrl + x + a	回到传统模式，即退出layout，回到执行layout之前的调试窗口。
+   ```
+
+3. 由于LA上的GDB用不了layout src看源码，所以用list命令。
 
    list快捷键是l，可以接函数名，列出当前函数源码，每次10行。
 
-3. Gdbserver可以远程调试程序。首先在远程机器上运行：gdbserver :1234(port) /xxx(elf)，然后在本地用target remote ip:port连接，gdbgui是gdb的图形化界面工具，直接使用gdbgui指令就可以使用，然后选择需要调试的进程，或者远程调试的端口。https://www.gdbgui.com/gettingstarted/
+4. Gdbserver可以远程调试程序。首先在远程机器上运行：gdbserver :1234(port) /xxx(elf)，然后在本地用target remote ip:port连接，gdbgui是gdb的图形化界面工具，直接使用gdbgui指令就可以使用，然后选择需要调试的进程，或者远程调试的端口。https://www.gdbgui.com/gettingstarted/
 
-4. gdb在3a5000不能用layout：
+5. gdb在3a5000不能用layout：
 
    ​	安装ncurses-base包，之后用./configure --enable-tui –disable-werror配置gdb，编译，make install安装。
 
-5. 这个命令用来配置qemu，用qemu跑同样的程序，输出和latx对比，看有哪些不同。
+6. 这个命令用来配置qemu，用qemu跑同样的程序，输出和latx对比，看有哪些不同。
 
    ```
    ../configure --target-list=x86_64-linux-user --enable-debug --enable-tcg-interpreter –disable-werror
@@ -28,17 +43,17 @@
    ssh guanshun /home/guanshun/gitlab/qemu/build/qemu-x86_64 -d cpu -singlestep /home/guanshun/GDB/hello 2> /home/guanshun/research/loongson/qemu_log
    ```
 
-6. 将需要对比的文件加到vscode中，然后select for compare，就可以对比两个文件的不同。如果文件过大还是用diff和vimdiff。
+7. 将需要对比的文件加到vscode中，然后select for compare，就可以对比两个文件的不同。如果文件过大还是用diff和vimdiff。
 
-7. 终极的调试手段就是将目标程序与标准程序对比，将两个程序的执行环境设置为一样，然后printf出程序的reg信息，一个个对比。这其中要设置环境变量一样，两个程序的执行命令一样，还要知道reg信息怎么打印。
+8. 终极的调试手段就是将目标程序与标准程序对比，将两个程序的执行环境设置为一样，然后printf出程序的reg信息，一个个对比。这其中要设置环境变量一样，两个程序的执行命令一样，还要知道reg信息怎么打印。
 
-8. latx-x64的bug：
+9. latx-x64的bug：
 
    (1) 寄存器高位清0；
 
    (2) 无效指令，或是latx没有实现，或是capstone没有实现；
 
-9. tui reg group（gdb 打印寄存器参数）
+10. tui reg group（gdb 打印寄存器参数）
 
    ```
    next: Repeatedly selecting this group will cause the display to cycle through all of the available register groups.
@@ -56,7 +71,7 @@
    all: Display all registers.
    ```
 
-10. gcc中的`-fno-builtin`命令
+11. gcc中的`-fno-builtin`命令
 
         -fno-builtin
         -fno-builtin-function
@@ -69,7 +84,7 @@
 
     即不用内联函数，便于设置断点调试。而`-fno-builtin-function`则是指定某个函数不用，这个函数的命名可以和bulit-in函数重名。
 
-11. gcc中的`-ffreestanding`命令
+12. gcc中的`-ffreestanding`命令
 
     ```
     -ffreestanding
@@ -78,7 +93,7 @@
 
     即程序的入口可以不是main，而是指定的入口。
 
-12. gcc中的`-nostdlib`
+13. gcc中的`-nostdlib`
 
         -nostdlib
         	Do not use the standard system startup files or libraries when linking.  No startup files and only the libraries you specify are passed to the linker, and options specifying linkage of the system libraries, such as -static-libgcc or -shared-libgcc, are ignored.

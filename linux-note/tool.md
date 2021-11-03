@@ -82,27 +82,31 @@
 
 10. tmux工具可以用来分屏，常用的快捷键：
 
-   Ctrl+a %：划分左右两个窗格；
+```
+Ctrl+a %					划分左右两个窗格；
+Ctrl+a "					划分上下两个窗格；
+Ctrl+a <arrow key>			光标切换到其他窗格。<arrow key>是指向要切换到的窗格的方向键，比如切换到下方窗格，就按方向键↓。
+Ctrl+a x					关闭当前窗格。
+Ctrl+a Ctrl+<arrow key>		按箭头方向调整窗格大小。
+Ctrl+a z					当前窗格全屏显示，再使用一次会变回原来大小
+Ctrl+a c					创建一个新窗口，状态栏会显示多个窗口的信息。
+tmux swap-window -s 3 -t 1  交换 3 号和 1 号窗口
+tmux swap-window -t 1       交换当前和 1 号窗口
+tmux move-window -t 1       移动当前窗口到 1 号
+tmux attach -t 0			重新接入某个已存在的会话
+tmux kill-session -t 0		杀死某个会话
+tmux switch -t 0			切换会话
+Ctrl+q d					分离当前会话
+Ctrl+q s					列出所有会话
+```
 
-   Ctrl+a "：划分上下两个窗格；
+tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tmux source ~/.tmux/tmux.conf`来更新配置。
 
-   Ctrl+a <arrow key>：光标切换到其他窗格。<arrow key>是指向要切换到的窗格的方向键，比如切换到下方窗格，就按方向键↓。
+按下PREFIX+[快捷键进入复制模式，在复制模式下按下q字符退出复制模式。
 
-   Ctrl+a x：关闭当前窗格。
+复制模式类似于Vim的普通模式，键盘操作风格也类似，在复制模式下，按下v字符，进行待复制内容的选取，类似于进入Vim的可视模式，键盘操作风格也类似。
 
-   Ctrl+a Ctrl+<arrow key>：按箭头方向调整窗格大小。
-
-   Ctrl+a z：当前窗格全屏显示，再使用一次会变回原来大小
-
-   Ctrl+a c：创建一个新窗口，状态栏会显示多个窗口的信息。
-
-   tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tmux source ~/.tmux/tmux.conf`来更新配置。
-
-   按下PREFIX+[快捷键进入复制模式，在复制模式下按下q字符退出复制模式。
-
-   复制模式类似于Vim的普通模式，键盘操作风格也类似，在复制模式下，按下v字符，进行待复制内容的选取，类似于进入Vim的可视模式，键盘操作风格也类似。
-
-   在复制模式下crtl + s进入查找模式，同样按q退出。
+在复制模式下crtl + s进入查找模式，同样按q退出。
 
 11. termux: arm中使用的终端。
 
@@ -371,6 +375,7 @@
     i				显示文件夹历史
     sg				垂直分屏打开文件
     Ctrl+r			刷新文件树
+    r				替换或者重命名
     ```
 
 36. 利用 voidkiss/folaterm 可以实现将终端以 float window 的形式打开，映射的快捷键分别为:
