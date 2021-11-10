@@ -100,7 +100,7 @@ Ctrl+q d					分离当前会话
 Ctrl+q s					列出所有会话
 ```
 
-tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tmux source ~/.tmux/tmux.conf`来更新配置。
+tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tmux source ~/.tmux/tmux.conf`来更新配置。可以将 `.tmux.conf` 移到 `~/` 目录下，tmux 就会将其作为默认配置文件，下次开机使用 tmux 会默认读取这个配置文件。
 
 按下PREFIX+[快捷键进入复制模式，在复制模式下按下q字符退出复制模式。
 
@@ -226,7 +226,18 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
 
     中的lasx等变量修改成NULL，然后重新编译，记得修改环境变量。
 
-28. gdb显示数据的不同格式：
+28. pkg-config
+
+    ```
+    pkg-config - Return metainformation about installed libraries
+    - Get the list of libraries and their dependencies:
+       pkg-config --libs {{library1 library2 ...}}
+
+     - Get the list of libraries, their dependencies, and proper cflags for gcc:
+       pkg-config --cflags --libs {{library1 library2 ...}}
+    ```
+
+29. gdb显示数据的不同格式：
 
     ​	x  按十六进制格式显示变量。
 
@@ -244,7 +255,7 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
 
     ​	f  按浮点数格式显示变量。
 
-29. gdb使用examine命令（简写是x）来查看内存地址中的值。x命令的语法如下所示：
+30. gdb使用examine命令（简写是x）来查看内存地址中的值。x命令的语法如下所示：
 
     ​	x/<n/f/u> <addr>  n、f、u是可选的参数。
 
@@ -260,11 +271,11 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
 
     ​	命令：x/8xb 0x54320 表示，从内存地址0x54320读取内容，b表示以字节为一个单位，8表示八个单位，x表示按十六进制显示。
 
-30. sensor能够查看硬件温度，psensor能够gui显示。
+31. sensor能够查看硬件温度，psensor能够gui显示。
 
-31. vscode 中alt + 方向键能交换相邻行。
+32. vscode 中alt + 方向键能交换相邻行。
 
-32. 根据时间删除文件和文件夹
+33. 根据时间删除文件和文件夹
 
     ```
     sudo find . -mtime +2 -name "*" -exec rm -rf {} \;
@@ -278,7 +289,7 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
     rm -rf：强制删除文件，包括目录
      {} \; ：固定写法，一对大括号+空格+/+;
 
-33. vim中能够画代码树的插件——[DrawIt](http://www.drchip.org/astronaut/vim/index.html#DRAWIT)
+34. vim中能够画代码树的插件——[DrawIt](http://www.drchip.org/astronaut/vim/index.html#DRAWIT)
 
     下载后用vim打开DrawIt.vba.gz
 
@@ -332,7 +343,7 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
                     to be transparent
     ```
 
-34. objcopy
+35. objcopy
 
     将目标文件的一部分或者全部内容拷贝到另外一个目标文件中，或者实现目标文件的格式转换。
 
@@ -351,7 +362,7 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
     objcopy -O binary test.o test.bin
     ```
 
-35. spacevim 快捷键
+36. spacevim 快捷键
     ```
     space f t 		打开/关闭目录
     f3        		快捷键打开/关闭目录
@@ -378,7 +389,7 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
     r				替换或者重命名
     ```
 
-36. 利用 voidkiss/folaterm 可以实现将终端以 float window 的形式打开，映射的快捷键分别为:
+37. 利用 voidkiss/folaterm 可以实现将终端以 float window 的形式打开，映射的快捷键分别为:
     ```
     Ctrl n : 创建新的 terminal window
     Ctrl p : 切换到 prev 的 terminal window

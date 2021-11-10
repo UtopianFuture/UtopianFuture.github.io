@@ -16,13 +16,13 @@ repos:
     -   id: format-code
         name: format code
         description: check whether modified code is formatted or not
-        entry: script/hook/format-code.sh
+        entry: /home/guanshun/gitlab/UFuture.github.io/script/hook/format-code.sh
         language: script
 
     -   id: lint-md
         name: lint-md
         description: check Chinese doc
-        entry: script/hook/lint-md.sh
+        entry: /home/guanshun/gitlab/UFuture.github.io/script/hook/lint-md.sh
         language: script
 
         #-   id: code-test
@@ -34,5 +34,5 @@ repos:
     -   id: separate-doc-code
         name: separate-doc-code
         description: Don't mix code and doc
-        entry: script/hook/separate-doc-code.sh
+        entry: /home/guanshun/gitlab/UFuture.github.io/script/hook/separate-doc-code.sh
         language: script

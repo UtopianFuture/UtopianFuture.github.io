@@ -29,7 +29,7 @@
 
 5. gdb在3a5000不能用layout：
 
-   ​	安装ncurses-base包，之后用./configure --enable-tui –disable-werror配置gdb，编译，make install安装。
+   ​	安装ncurses-base包，之后用./configure --enable-tui --disable-werror配置gdb，make编译，make install安装。
 
 6. 这个命令用来配置qemu，用qemu跑同样的程序，输出和latx对比，看有哪些不同。
 
