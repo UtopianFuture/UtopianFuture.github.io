@@ -574,7 +574,126 @@ static int setup_routing_entry(struct kvm *kvm,
 
 ##### 2.2.2. QEMU 中 PIC 的初始化
 
+QEMU 虚拟机的中断状态由 `GSIState` 表示。
 
+```c
+typedef struct GSIState {
+    qemu_irq i8259_irq[ISA_NUM_IRQS];
+    qemu_irq ioapic_irq[IOAPIC_NUM_PINS];
+    qemu_irq ioapic2_irq[IOAPIC_NUM_PINS];
+} GSIState;
+```
+
+```c
+typedef struct IRQState *qemu_irq;
+struct IRQState { // 表示一个中断引脚
+    Object parent_obj;
+    qemu_irq_handler handler; // 该中断的处理函数
+    void *opaque;
+    int n; // 引脚号
+};
+```
+
+首先调用 `pc_gsi_create` 创建虚拟机的 GSIState ，之后再创建具体的外设。这里 `x86ms->gsi`就是 guestos 中断路由的起点。
+
+```c
+GSIState *pc_gsi_create(qemu_irq **irqs, bool pci_enabled)
+{
+    GSIState *s;
+
+    s = g_new0(GSIState, 1);
+    if (kvm_ioapic_in_kernel()) {
+        kvm_pc_setup_irq_routing(pci_enabled);
+    }
+    *irqs = qemu_allocate_irqs(gsi_handler, s, GSI_NUM_PINS);
+
+    return s;
+}
+```
+
+这里 `gsi_handler` 就是中断处理函数，它会根据中断号请求对应的中断。0~15 号是 `i8259_irq` 中断，16~23 是 `ioapic_irq` 中断，24 是`ioapic2_irq` 中断。
+
+```c
+void gsi_handler(void *opaque, int n, int level)
+{
+    GSIState *s = opaque;
+
+    trace_x86_gsi_interrupt(n, level);
+    switch (n) {
+    case 0 ... ISA_NUM_IRQS - 1:
+        if (s->i8259_irq[n]) {
+            /* Under KVM, Kernel will forward to both PIC and IOAPIC */
+            qemu_set_irq(s->i8259_irq[n], level);
+        }
+        /* fall through */
+    case ISA_NUM_IRQS ... IOAPIC_NUM_PINS - 1:
+        qemu_set_irq(s->ioapic_irq[n], level);
+        break;
+    case IO_APIC_SECONDARY_IRQBASE
+        ... IO_APIC_SECONDARY_IRQBASE + IOAPIC_NUM_PINS - 1:
+        qemu_set_irq(s->ioapic2_irq[n - IO_APIC_SECONDARY_IRQBASE], level);
+        break;
+    }
+}
+```
+
+而 `qemu_allocate_irqs` 则是分配一组 `qemu_irq` 。这就是初始化 `x86ms->gsi` ，为所有的中断号分配 handler ，而 opaque 则是指向的 GSIState 的指针。
+
+```c
+qemu_irq *qemu_extend_irqs(qemu_irq *old, int n_old, qemu_irq_handler handler,
+                           void *opaque, int n)
+{
+    qemu_irq *s;
+    int i;
+
+    if (!old) {
+        n_old = 0;
+    }
+    s = old ? g_renew(qemu_irq, old, n + n_old) : g_new(qemu_irq, n);
+    for (i = n_old; i < n + n_old; i++) {
+        s[i] = qemu_allocate_irq(handler, opaque, i);
+    }
+    return s;
+}
+
+qemu_irq *qemu_allocate_irqs(qemu_irq_handler handler, void *opaque, int n)
+{
+    return qemu_extend_irqs(NULL, 0, handler, opaque, n);
+}
+
+qemu_irq qemu_allocate_irq(qemu_irq_handler handler, void *opaque, int n)
+{
+    struct IRQState *irq;
+
+    irq = IRQ(object_new(TYPE_IRQ));
+    irq->handler = handler;
+    irq->opaque = opaque;
+    irq->n = n;
+
+    return irq;
+}
+```
+
+初始化之后的中断处理是这样的。
+
+```
+PCMachineState         qemu_irq
++------------+  |---->+----------+
+|            |  |     |  gsi[0]  |
+|------------+  |     |----------+ 			qemu_irq
+|     gsi    |---     |  gsi[1]  |-------->+-----------+
+|------------+        |----------+         | parent_obj|
+|            |        |   ...    |		   |-----------+
+|------------+        |----------+		   |  handler  |----->kvm_pc_gsi_handler
+  					  |  gsi[22] |		   |-----------+	   GSIState
+  					  |----------+         |  opaque   |----->+-------------+
+  					  |  gsi[23] |		   |-----------+	  |  i8259_irq  |
+  					  |----------+		   |     n     |      |-------------+
+  					  					   |-----------+      | ioapic_irq  |
+  					  					   					  |-------------+
+  					  					   					  | ioapic2_ira |
+  					  					   					  |-------------+
+```
 
 `x86ms->gsi`就是 guestos 中断路由的起点，在调用`pc_gsi_create`初始化之后，`x86ms->gsi`会被赋值给南桥 piix3 的 PIC 成员，PCI 设备的中断会从这里开始分发。
 
@@ -608,6 +727,7 @@ if (pcmc->pci_enabled) {
         pcms->hpet_enabled = false;
     }
     isa_bus_irqs(isa_bus, x86ms->gsi);
+	pc_i8259_create(isa_bus, gsi_state->i8259_irq);
 ```
 
 ##### 2.2.3. 设备使用 PIC 中断
