@@ -103,3 +103,9 @@
                This ensures that you have no unresolved references to internal GCC library subroutines.  (An example of such an internal subroutine is "__main", used to ensure C++ constructors are called.)
 
     即不使用标准库，仅使用gcc自带的`libgcc.a`。
+
+14. gcc 中的 -H
+
+    ```
+    除了其他普通的操作, GCC 显示引用过的头文件名.
+    ```

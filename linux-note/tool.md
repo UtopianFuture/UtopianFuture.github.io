@@ -176,9 +176,27 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
 
 22. truncate可以设置文件的大小，如`truncate --size 50M qemu_log`，超过50M的就会截断。
 
-23. sed可以删除文件的任意行，`sed ‘n, md’ filename`；或者删除含有某个字符的行，将结果输出到指定文件，`sed ‘/xxx/d’  filename1 > filename2`，删除不包含某一字符的行，`sed ‘/xxx/!d’  filename1 > filename2`。
+23. sed可以删除文件的任意行，`sed ‘n, md’ filename`；
 
-24. du查看文件大小
+    或者删除含有某个字符的行，将结果输出到指定文件，`sed ‘/xxx/d’  filename1 > filename2`；
+
+    删除不包含某一字符的行，`sed ‘/xxx/!d’  filename1 > filename2`；
+
+    删除某一字符 `sed 's/a//g' filename1 > filename2` ；
+
+24. sort - sort lines of text files
+
+    ```
+    - Sort a file in ascending order:
+      sort {{path/to/file}}
+
+    - Sort a file in descending order:
+      sort --reverse {{path/to/file}}
+    ```
+
+    同时也能去除文件中相同的行 `sort -n headpath1.md | uniq > headpath2.md`
+
+25. du查看文件大小
 
     ```
     - List the sizes of a directory and any subdirectories, in the given unit (B/KB/MB):
@@ -194,7 +212,7 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
        du -ah {{path/to/directory}}
     ```
 
-25. df查看磁盘使用情况。
+26. df查看磁盘使用情况。
 
     ```
     - Display all filesystems and their disk usage:
@@ -213,9 +231,9 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
        df -x {{squashfs}} -x {{tmpfs}}
     ```
 
-26. wc -l 查看文件行数。
+27. wc -l 查看文件行数。
 
-27. Loongarch下的gdb不能查看浮点寄存器，将
+28. Loongarch下的gdb不能查看浮点寄存器，将
 
     ```
     gdb/features/loongarch/lbt64.c
@@ -226,7 +244,7 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
 
     中的lasx等变量修改成NULL，然后重新编译，记得修改环境变量。
 
-28. pkg-config
+29. pkg-config
 
     ```
     pkg-config - Return metainformation about installed libraries
@@ -237,7 +255,7 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
        pkg-config --cflags --libs {{library1 library2 ...}}
     ```
 
-29. gdb显示数据的不同格式：
+30. gdb显示数据的不同格式：
 
     ​	x  按十六进制格式显示变量。
 
@@ -255,7 +273,7 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
 
     ​	f  按浮点数格式显示变量。
 
-30. gdb使用examine命令（简写是x）来查看内存地址中的值。x命令的语法如下所示：
+31. gdb使用examine命令（简写是x）来查看内存地址中的值。x命令的语法如下所示：
 
     ​	x/<n/f/u> <addr>  n、f、u是可选的参数。
 
@@ -271,11 +289,11 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
 
     ​	命令：x/8xb 0x54320 表示，从内存地址0x54320读取内容，b表示以字节为一个单位，8表示八个单位，x表示按十六进制显示。
 
-31. sensor能够查看硬件温度，psensor能够gui显示。
+32. sensor能够查看硬件温度，psensor能够gui显示。
 
-32. vscode 中alt + 方向键能交换相邻行。
+33. vscode 中alt + 方向键能交换相邻行。
 
-33. 根据时间删除文件和文件夹
+34. 根据时间删除文件和文件夹
 
     ```
     sudo find . -mtime +2 -name "*" -exec rm -rf {} \;
@@ -289,7 +307,7 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
     rm -rf：强制删除文件，包括目录
      {} \; ：固定写法，一对大括号+空格+/+;
 
-34. vim中能够画代码树的插件——[DrawIt](http://www.drchip.org/astronaut/vim/index.html#DRAWIT)
+35. vim中能够画代码树的插件——[DrawIt](http://www.drchip.org/astronaut/vim/index.html#DRAWIT)
 
     下载后用vim打开DrawIt.vba.gz
 
@@ -343,7 +361,7 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
                     to be transparent
     ```
 
-35. objcopy
+36. objcopy
 
     将目标文件的一部分或者全部内容拷贝到另外一个目标文件中，或者实现目标文件的格式转换。
 
@@ -362,7 +380,7 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
     objcopy -O binary test.o test.bin
     ```
 
-36. spacevim 快捷键
+37. spacevim 快捷键
     ```
     space f t 		打开/关闭目录
     f3        		快捷键打开/关闭目录
@@ -389,7 +407,7 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
     r				替换或者重命名
     ```
 
-37. 利用 voidkiss/folaterm 可以实现将终端以 float window 的形式打开，映射的快捷键分别为:
+38. 利用 voidkiss/folaterm 可以实现将终端以 float window 的形式打开，映射的快捷键分别为:
     ```
     Ctrl n : 创建新的 terminal window
     Ctrl p : 切换到 prev 的 terminal window
@@ -439,3 +457,10 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
     省略option时仅对每行第一个匹配串进行替换;
 
     如果在源字符串和目的字符串中出现特殊字符，需要用”\”转义 如 \t 。
+
+39. cloc - Count, or compute differences of, lines of source code and comments
+
+    ```
+    - Count all the lines of code in a directory:                                                             	cloc {{path/to/directory}}                                                                             - Count all the lines of code in a directory, displaying a progress bar during the counting process:
+      cloc --progress=1 {{path/to/directory}}
+    ```
