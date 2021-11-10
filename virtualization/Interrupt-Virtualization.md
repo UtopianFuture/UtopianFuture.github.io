@@ -90,17 +90,17 @@ APIC 包含两个部分：`LAPIC`和`I/O APIC`， LAPIC 位于处理器一端，
     		| -- qemu_entend_irqs()
 ```
 
-
-
 #### 2.1. 虚拟化环境下的中断注入
 
-在 KVM 模拟虚拟 CPU 的数据结构中有字段 VM-entry interruption-information field 即用来设定虚拟机的中断信息。物理机产生的中断要注入到这个字段中，虚拟机的虚拟中断才能处理。
+在 KVM 模拟虚拟 CPU 的数据结构中有字段 `VM-entry interruption-information field` 即用来设定虚拟机的中断信息。物理机产生的中断要注入到这个字段中，虚拟机的虚拟中断才能处理。
 
 ![image-20211025120600116](/home/guanshun/.config/Typora/typora-user-images/image-20211025120600116.png)
 
 中断注入的大致流程如下：
 
-在进入 VMX non-root 之前，KVM 会调用`vcpu_enter_guest()` -> `inject_pending_event()`检查并处理其中的 pending request。
+在进入 VMX non-root 之前，KVM 会调用`vcpu_enter_guest` -> `inject_pending_event`检查并处理其中的 pending request。这里不单单处理设备中断，还有 smi 和 nmi 中断的注入，在注入之前还要检查之前是否有异常需要注入。
+
+这里有一个问题，pending 和 injected 分别代表什么？
 
 ```c
 static int inject_pending_event(struct kvm_vcpu *vcpu, bool *req_immediate_exit)
@@ -110,7 +110,7 @@ static int inject_pending_event(struct kvm_vcpu *vcpu, bool *req_immediate_exit)
 
 	/* try to reinject previous events if any */
 
-	if (vcpu->arch.exception.injected) {
+	if (vcpu->arch.exception.injected) { // 检查是否有异常需要注入
 		kvm_inject_exception(vcpu);
 		can_inject = false;
 	}
@@ -128,11 +128,11 @@ static int inject_pending_event(struct kvm_vcpu *vcpu, bool *req_immediate_exit)
 	 * serviced prior to recognizing any new events in order to
 	 * fully complete the previous instruction.
 	 */
-	else if (!vcpu->arch.exception.pending) {
+	else if (!vcpu->arch.exception.pending) { // 没有异常检查 nmi
 		if (vcpu->arch.nmi_injected) {
 			static_call(kvm_x86_set_nmi)(vcpu);
 			can_inject = false;
-		} else if (vcpu->arch.interrupt.injected) {
+		} else if (vcpu->arch.interrupt.injected) { // 为啥这里就 set_irq 了
 			static_call(kvm_x86_set_irq)(vcpu);
 			can_inject = false;
 		}
@@ -154,7 +154,7 @@ static int inject_pending_event(struct kvm_vcpu *vcpu, bool *req_immediate_exit)
 	}
 
 	/* try to inject new event if pending */
-	if (vcpu->arch.exception.pending) {
+	if (vcpu->arch.exception.pending) { // 注入异常事件
 		trace_kvm_inj_exception(vcpu->arch.exception.nr,
 					vcpu->arch.exception.has_error_code,
 					vcpu->arch.exception.error_code);
@@ -193,7 +193,7 @@ static int inject_pending_event(struct kvm_vcpu *vcpu, bool *req_immediate_exit)
 	 * in order to make progress and get back here for another iteration.
 	 * The kvm_x86_ops hooks communicate this by returning -EBUSY.
 	 */
-	if (vcpu->arch.smi_pending) {
+	if (vcpu->arch.smi_pending) { // 为什么前面没有检查
 		r = can_inject ? static_call(kvm_x86_smi_allowed)(vcpu, true) : -EBUSY;
 		if (r < 0)
 			goto out;
@@ -254,6 +254,8 @@ out:
 
 ```
 
+问题：如果有多个异常或中断需要注入怎么办？
+
 将中断向量写入`arch.interrupt.nr`
 
 ```c
@@ -266,7 +268,7 @@ static inline void kvm_queue_interrupt(struct kvm_vcpu *vcpu, u8 vector,
 }
 ```
 
-然后通过调用 vmx_inject_irq()进行写入
+然后通过调用 `vmx_inject_irq` 进行写入
 
 ```c
 static void vmx_inject_irq(struct kvm_vcpu *vcpu)
@@ -298,15 +300,289 @@ static void vmx_inject_irq(struct kvm_vcpu *vcpu)
 }
 ```
 
-#### 2.2. PIC 的初始化
+#### 2.2. PIC 中断模拟
 
-`x86ms->gsi`就是 guestos 中断路由的起点，在调用`pc_gsi_create()`初始化之后，`x86ms->gsi`会被赋值给南桥 piix3 的 PIC 成员，PCI 设备的中断会从这里开始分发。
+##### 2.2.1. KVM 中 PIC 的创建
+
+和 CPU 一样，终端设备的模拟也分 KVM 端和 QEMU 端。QEMU 端在 `kvm_init` 中通过 ioctl 向 vmfd （这个 fd 在前面介绍过）发起创建 irqchip 的请求，KVM 进行处理。
+
+```c
+static int kvm_init(MachineState *ms)
+{
+    MachineClass *mc = MACHINE_GET_CLASS(ms);
+
+    ...
+
+    if (s->kernel_irqchip_allowed) {
+        kvm_irqchip_create(s);
+    }
+
+	...
+
+    return ret;
+}
+```
+
+```c
+static void kvm_irqchip_create(KVMState *s)
+{
+    int ret;
+
+    ...
+
+    /* First probe and see if there's a arch-specific hook to create the
+     * in-kernel irqchip for us */
+    ret = kvm_arch_irqchip_create(s);
+    if (ret == 0) {
+        if (s->kernel_irqchip_split == ON_OFF_AUTO_ON) {
+            perror("Split IRQ chip mode not supported.");
+            exit(1);
+        } else {
+            ret = kvm_vm_ioctl(s, KVM_CREATE_IRQCHIP);
+        }
+    }
+
+    ...
+
+    kvm_init_irq_routing(s);
+
+    s->gsimap = g_hash_table_new(g_direct_hash, g_direct_equal);
+}
+```
+
+然后 KVM 对 `ioctl` 请求进行处理。
+
+```c
+long kvm_arch_vm_ioctl(struct file *filp,
+		       unsigned int ioctl, unsigned long arg)
+{
+	...
+
+	switch (ioctl) {
+	...
+	case KVM_CREATE_IRQCHIP: {
+		mutex_lock(&kvm->lock);
+
+		r = -EEXIST;
+		if (irqchip_in_kernel(kvm))
+			goto create_irqchip_unlock;
+
+		r = -EINVAL;
+		if (kvm->created_vcpus)
+			goto create_irqchip_unlock;
+
+		r = kvm_pic_init(kvm);
+		if (r)
+			goto create_irqchip_unlock;
+
+		r = kvm_ioapic_init(kvm);
+		if (r) {
+			kvm_pic_destroy(kvm);
+			goto create_irqchip_unlock;
+		}
+
+		r = kvm_setup_default_irq_routing(kvm);
+		if (r) {
+			kvm_ioapic_destroy(kvm);
+			kvm_pic_destroy(kvm);
+			goto create_irqchip_unlock;
+		}
+		/* Write kvm->irq_routing before enabling irqchip_in_kernel. */
+		smp_wmb();
+		kvm->arch.irqchip_mode = KVM_IRQCHIP_KERNEL;
+	create_irqchip_unlock:
+		mutex_unlock(&kvm->lock);
+		break;
+	}
+	...
+}
+```
+
+`KVM_CREATE_IRQCHIP` 主要调用 `kvm_pic_init` 创建 PIC 设备，`kvm_ioapic_init` 创建 IOAPIC 设备，`kvm_setup_default_irq_routing` 初始化中断路由表。
+
+这里比较复杂的是初始化中断路由表。`default_routing` 是默认路由信息。
+
+```c
+#define IOAPIC_ROUTING_ENTRY(irq) \
+	{ .gsi = irq, .type = KVM_IRQ_ROUTING_IRQCHIP,	\
+	  .u.irqchip = { .irqchip = KVM_IRQCHIP_IOAPIC, .pin = (irq) } }
+#define ROUTING_ENTRY1(irq) IOAPIC_ROUTING_ENTRY(irq)
+
+#define PIC_ROUTING_ENTRY(irq) \
+	{ .gsi = irq, .type = KVM_IRQ_ROUTING_IRQCHIP,	\
+	  .u.irqchip = { .irqchip = SELECT_PIC(irq), .pin = (irq) % 8 } }
+#define ROUTING_ENTRY2(irq) \
+	IOAPIC_ROUTING_ENTRY(irq), PIC_ROUTING_ENTRY(irq)
+
+static const struct kvm_irq_routing_entry default_routing[] = {
+	ROUTING_ENTRY2(0), ROUTING_ENTRY2(1),
+	ROUTING_ENTRY2(2), ROUTING_ENTRY2(3),
+	ROUTING_ENTRY2(4), ROUTING_ENTRY2(5),
+	ROUTING_ENTRY2(6), ROUTING_ENTRY2(7),
+	ROUTING_ENTRY2(8), ROUTING_ENTRY2(9),
+	ROUTING_ENTRY2(10), ROUTING_ENTRY2(11),
+	ROUTING_ENTRY2(12), ROUTING_ENTRY2(13),
+	ROUTING_ENTRY2(14), ROUTING_ENTRY2(15),
+	ROUTING_ENTRY1(16), ROUTING_ENTRY1(17),
+	ROUTING_ENTRY1(18), ROUTING_ENTRY1(19),
+	ROUTING_ENTRY1(20), ROUTING_ENTRY1(21),
+	ROUTING_ENTRY1(22), ROUTING_ENTRY1(23),
+};
+
+int kvm_setup_default_irq_routing(struct kvm *kvm)
+{
+	return kvm_set_irq_routing(kvm, default_routing,
+				   ARRAY_SIZE(default_routing), 0);
+}
+```
+
+`kvm_set_irq_routing` 将 `kvm_irq_routing_entry` 转化成 `kvm_kernel_irq_routing_entry` ，后者用于在内核中记录中断信息，除了基本的中断号 `gsi` ，中断类型信息 `type` ，还有用于处理中断的回调函数 `set` 。
+
+```c
+struct kvm_kernel_irq_routing_entry {
+	u32 gsi;
+	u32 type;
+	int (*set)(struct kvm_kernel_irq_routing_entry *e,
+		   struct kvm *kvm, int irq_source_id, int level,
+		   bool line_status);
+	union {
+		struct {
+			unsigned irqchip;
+			unsigned pin;
+		} irqchip;
+		struct {
+			u32 address_lo;
+			u32 address_hi;
+			u32 data;
+			u32 flags;
+			u32 devid;
+		} msi;
+		struct kvm_s390_adapter_int adapter;
+		struct kvm_hv_sint hv_sint;
+	};
+	struct hlist_node link;
+};
+```
+
+```c
+#ifdef CONFIG_HAVE_KVM_IRQ_ROUTING
+struct kvm_irq_routing_table {
+	int chip[KVM_NR_IRQCHIPS][KVM_IRQCHIP_NUM_PINS];
+	u32 nr_rt_entries;
+	/*
+	 * Array indexed by gsi. Each entry contains list of irq chips
+	 * the gsi is connected to.
+	 */
+	struct hlist_head map[];
+};
+#endif
+
+```
+
+```c
+int kvm_set_irq_routing(struct kvm *kvm,
+			const struct kvm_irq_routing_entry *ue,
+			unsigned nr,
+			unsigned flags)
+{
+	struct kvm_irq_routing_table *new, *old; // 这个是虚拟机的中断路由表
+	struct kvm_kernel_irq_routing_entry *e; // 内核中断路由信息
+	u32 i, j, nr_rt_entries = 0;
+	int r;
+
+	for (i = 0; i < nr; ++i) {
+		if (ue[i].gsi >= KVM_MAX_IRQ_ROUTES)
+			return -EINVAL;
+		nr_rt_entries = max(nr_rt_entries, ue[i].gsi);
+	}
+
+	nr_rt_entries += 1;
+
+	new = kzalloc(struct_size(new, map, nr_rt_entries), GFP_KERNEL_ACCOUNT);
+	if (!new)
+		return -ENOMEM;
+
+	new->nr_rt_entries = nr_rt_entries;
+	for (i = 0; i < KVM_NR_IRQCHIPS; i++)
+		for (j = 0; j < KVM_IRQCHIP_NUM_PINS; j++)
+			new->chip[i][j] = -1; // chip[][]，第一维表示3个 pic 设备，第二维表示引脚数
+
+	for (i = 0; i < nr; ++i) {
+		r = -ENOMEM;
+		e = kzalloc(sizeof(*e), GFP_KERNEL_ACCOUNT);
+		if (!e)
+			goto out;
+
+		r = -EINVAL;
+		switch (ue->type) {
+		case KVM_IRQ_ROUTING_MSI:
+			if (ue->flags & ~KVM_MSI_VALID_DEVID)
+				goto free_entry;
+			break;
+		default:
+			if (ue->flags)
+				goto free_entry;
+			break;
+		}
+		r = setup_routing_entry(kvm, new, e, ue); // 建立中断路由信息
+		if (r)
+			goto free_entry;
+		++ue;
+	}
+
+	...
+
+	return r;
+}
+```
+
+`setup_routing_entry` 将 `kvm_irq_routing_entry` 中的 gsi 和 type 复制到 `kvm_kernel_irq_routing_entry` 中，并根据 `kvm_irq_routing_entry` 中的中断类型设置回调函数。还没有完全搞懂。
+
+```c
+static int setup_routing_entry(struct kvm *kvm,
+			       struct kvm_irq_routing_table *rt, // 虚拟机中断路由信息
+			       struct kvm_kernel_irq_routing_entry *e, // 内核
+			       const struct kvm_irq_routing_entry *ue) // 默认
+{
+	struct kvm_kernel_irq_routing_entry *ei;
+	int r;
+	u32 gsi = array_index_nospec(ue->gsi, KVM_MAX_IRQ_ROUTES);
+
+	/*
+	 * Do not allow GSI to be mapped to the same irqchip more than once.
+	 * Allow only one to one mapping between GSI and non-irqchip routing.
+	 */
+	hlist_for_each_entry(ei, &rt->map[gsi], link)
+		if (ei->type != KVM_IRQ_ROUTING_IRQCHIP ||
+		    ue->type != KVM_IRQ_ROUTING_IRQCHIP ||
+		    ue->u.irqchip.irqchip == ei->irqchip.irqchip)
+			return -EINVAL;
+
+	e->gsi = gsi;
+	e->type = ue->type;
+	r = kvm_set_routing_entry(kvm, e, ue);
+	if (r)
+		return r;
+	if (e->type == KVM_IRQ_ROUTING_IRQCHIP)
+		rt->chip[e->irqchip.irqchip][e->irqchip.pin] = e->gsi; // 虚拟机中每个引脚的中断号为内核中的中断号
+
+	hlist_add_head(&e->link, &rt->map[e->gsi]); // 为什么是 e 加到 rt 中？
+
+	return 0;
+}
+```
+
+##### 2.2.2. QEMU 中 PIC 的初始化
+
+
+
+`x86ms->gsi`就是 guestos 中断路由的起点，在调用`pc_gsi_create`初始化之后，`x86ms->gsi`会被赋值给南桥 piix3 的 PIC 成员，PCI 设备的中断会从这里开始分发。
 
 ```c
 gsi_state = pc_gsi_create(&x86ms->gsi, pcmc->pci_enabled);
 ```
 
-南桥会创建一条 isa 总线`isa_bus`，并调用`isa_bus_irqs()`将`x86ms->gsi`赋值给 isabus 的 irq 成员。
+南桥会创建一条 isa 总线`isa_bus`，并调用`isa_bus_irqs`将`x86ms->gsi`赋值给 isabus 的 irq 成员。
 
 ```c
 if (pcmc->pci_enabled) {
@@ -334,6 +610,4 @@ if (pcmc->pci_enabled) {
     isa_bus_irqs(isa_bus, x86ms->gsi);
 ```
 
-问题
-
-（1）痛苦面具了，看的很艰难，理不清头绪，可能是我打开方式错了。准备老老实实从头开始看。
+##### 2.2.3. 设备使用 PIC 中断
