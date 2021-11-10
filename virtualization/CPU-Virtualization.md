@@ -622,7 +622,7 @@ void qemu_wait_io_event(CPUState *cpu)
 }
 ```
 
-当在 main 中执行 `vm_start` -> `resume_all_vcpus` -> `qemu_cpu_kick` 时，qemu_cpu_kick 会将 VCPU 唤醒。
+当在 main 中执行 `vm_start` -> `resume_all_vcpus` -> `qemu_cpu_kick` 时，`qemu_cpu_kick` 会将 VCPU 唤醒。
 
 ```C
 void qemu_cpu_kick(CPUState *cpu)
