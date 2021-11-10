@@ -119,7 +119,30 @@ static void x86_cpu_register_types(void)
 }
 ```
 
- `builtin_x86_defs` 是 QEMU 定义的一系列的 CPU 类型。
+ `builtin_x86_defs` 是 QEMU 定义的一系列的 CPU 类型，其类型是 `X86CPUDefinition`
+
+```c
+typedef struct X86CPUDefinition {
+    const char *name;                   // cpu 名字
+    uint32_t level;                     // CPUID 支持的最大功能号
+    uint32_t xlevel;                    // CPUID 扩展质量支持的最大功能号
+    /* vendor is zero-terminated, 12 character ASCII string */
+    char vendor[CPUID_VENDOR_SZ + 1];
+    int family;
+    int model;
+    int stepping;
+    FeatureWordArray features;
+    const char *model_id;
+    CPUCaches *cache_info;
+    /*
+     * Definitions for alternative versions of CPU model.
+     * List is terminated by item with version == 0.
+     * If NULL, version 1 will be registered automatically.
+     */
+    const X86CPUVersionDefinition *versions;
+    const char *deprecation_note;
+} X86CPUDefinition;
+```
 
 `type_register_static` 最终调用到 `type_register_internal` ，它的功能比较简单， `type_new`  通过 `TypeInfo` 构建出 `TypeImpl`，这两者包含的变量基本相同，其区别是 `TypeInfo` 保存静态注册的数据，而 `TypeImpl` 保存运行时数据。之后通过 `type_table_add` 将 `TypeImpl` 添加到一个哈希表中。
 
