@@ -400,7 +400,7 @@ long kvm_arch_vm_ioctl(struct file *filp,
 
 `KVM_CREATE_IRQCHIP` 主要调用 `kvm_pic_init` 创建 PIC 设备，`kvm_ioapic_init` 创建 IOAPIC 设备，`kvm_setup_default_irq_routing` 初始化中断路由表。
 
-这里比较复杂的是初始化中断路由表。`default_routing` 是默认路由信息。
+这里比较复杂的是初始化中断路由表。`default_routing` 是默认路由信息。没有完全搞懂，还需要进一步分析。
 
 ```c
 #define IOAPIC_ROUTING_ENTRY(irq) \
@@ -1089,3 +1089,48 @@ static void pic_unlock(struct kvm_pic *s)
 最后再经过上文介绍的中断注入过程向 guestos 注入中断。之后在进入 non-root 模式时会读取注入的中断进行处理。
 
 #### 2.3. I/O APIC 中断模拟
+
+I/O apic 模拟的关键是这两个数据结构。`kvm_ioapic` 是 kvm 中用来表示 I/O apic 中断控制器，`kvm_ioapic_redirect_entry` 则表示重定位表项，I/O apic 有 24 个端口，且可以通过编程设置。
+
+```c
+union kvm_ioapic_redirect_entry {
+	u64 bits;
+	struct {
+		u8 vector;
+		u8 delivery_mode:3;
+		u8 dest_mode:1;
+		u8 delivery_status:1;
+		u8 polarity:1;
+		u8 remote_irr:1;
+		u8 trig_mode:1;
+		u8 mask:1;
+		u8 reserve:7;
+		u8 reserved[4];
+		u8 dest_id;
+	} fields;
+};
+
+struct kvm_ioapic {
+	u64 base_address; // I/O apic 的 MMIO 地址
+	u32 ioregsel;
+	u32 id;
+	u32 irr;
+	u32 pad;
+	union kvm_ioapic_redirect_entry redirtbl[IOAPIC_NUM_PINS];
+	unsigned long irq_states[IOAPIC_NUM_PINS];
+	struct kvm_io_device dev;
+	struct kvm *kvm; //
+	void (*ack_notifier)(void *opaque, int irq);
+	spinlock_t lock;
+	struct rtc_status rtc_status;
+	struct delayed_work eoi_inject;
+	u32 irq_eoi[IOAPIC_NUM_PINS];
+	u32 irr_delivered;
+};
+```
+
+
+
+#### 2.4. MSI 中断模拟
+
+### 3. APIC 虚拟化
