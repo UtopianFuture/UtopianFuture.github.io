@@ -67,6 +67,12 @@ APIC 包含两个部分：`LAPIC`和`I/O APIC`， LAPIC 位于处理器一端，
 
 [详情](https://stackoverflow.com/questions/40583848/differences-among-various-interrupts-sci-smi-nmi-and-normal-interrupt)。
 
+#### 1.7. IRQ号，中断向量和GSI。
+
+- IRQ号是PIC时代引入的概念，由于ISA设备通常是直接连接到到固定的引脚，所以对于IRQ号描述了设备连接到了PIC的哪个引脚上，同IRQ号直接和中断优先级相关，例如IRQ0比IRQ3的中断优先级更高。
+- GSI号是ACPI引入的概念，全称是Global System Interrupt，用于为系统中每个中断源指定一个唯一的中断编号。注：ACPI Spec规定PIC的IRQ号必须对应到GSI0-GSI15上。kvm默认支持最大1024个GSI。
+- 中断向量是针对逻辑CPU的概念，用来表示中断在IDT表的索引号，每个IRQ（或者GSI）最后都会被定向到某个Vecotor上。对于PIC上的中断，中断向量 = 32(start vector) + IRQ号。在IOAPIC上的中断被分配的中断向量则是由操作系统分配。
+
 ### 2. 中断模拟
 
 与中断有关的函数，包括创建中断设备，发起中断，中断注入等等。
@@ -88,6 +94,43 @@ APIC 包含两个部分：`LAPIC`和`I/O APIC`， LAPIC 位于处理器一端，
     | -- pc_gsi_create() // PIC中断向量的初始化，初始化完后PIC设备就能分发中断   (1)
     	| -- qemu_allocate_irqs() // 24个中断向量
     		| -- qemu_entend_irqs()
+```
+
+首先对整体有个了解，keyboard 中断的过程如下：
+
+```
+#0  ps2_put_keycode (opaque=0x555557786640, keycode=240) at ../hw/input/ps2.c:258
+#1  0x0000555555add60a in ps2_keyboard_event (dev=0x555557786640, src=0x555556a4a800, evt=0x555557677e90) at ../hw/input/ps2.c:472
+#2  0x0000555555acae43 in qemu_input_event_send_impl (src=0x555556a4a800, evt=0x555557677e90) at ../ui/input.c:349
+#3  0x0000555555ad645a in replay_input_event (src=0x555556a4a800, evt=0x555557677e90) at ../replay/replay-input.c:127
+#4  0x0000555555acaf06 in qemu_input_event_send (src=0x555556a4a800, evt=0x555557677e90) at ../ui/input.c:378
+#5  0x0000555555acb06f in qemu_input_event_send_key (src=0x555556a4a800, key=0x555556a2aed0, down=false) at ../ui/input.c:422
+#6  0x0000555555acb159 in qemu_input_event_send_key_qcode (src=0x555556a4a800, q=Q_KEY_CODE_RET, down=false) at ../ui/input.c:444
+#7  0x0000555555911e08 in qkbd_state_key_event (kbd=0x555556a29390, qcode=Q_KEY_CODE_RET, down=false) at ../ui/kbd-state.c:102
+#8  0x000055555591b043 in gd_key_event (widget=0x5555576ef0f0, key=0x555556a02a80, opaque=0x555556bf0ca0) at ../ui/gtk.c:1179
+#9  0x00007ffff76a14fb in ?? () from /lib/x86_64-linux-gnu/libgtk-3.so.0
+#10 0x00007ffff7a7f802 in g_closure_invoke () from /lib/x86_64-linux-gnu/libgobject-2.0.so.0
+#11 0x00007ffff7a93814 in ?? () from /lib/x86_64-linux-gnu/libgobject-2.0.so.0
+#12 0x00007ffff7a9e47d in g_signal_emit_valist () from /lib/x86_64-linux-gnu/libgobject-2.0.so.0
+#13 0x00007ffff7a9f0f3 in g_signal_emit () from /lib/x86_64-linux-gnu/libgobject-2.0.so.0
+#14 0x00007ffff764bc23 in ?? () from /lib/x86_64-linux-gnu/libgtk-3.so.0
+#15 0x00007ffff766d5db in gtk_window_propagate_key_event () from /lib/x86_64-linux-gnu/libgtk-3.so.0
+#16 0x00007ffff766d626 in ?? () from /lib/x86_64-linux-gnu/libgtk-3.so.0
+#17 0x00007ffff76a15ef in ?? () from /lib/x86_64-linux-gnu/libgtk-3.so.0
+#18 0x00007ffff7a7fa56 in ?? () from /lib/x86_64-linux-gnu/libgobject-2.0.so.0
+#19 0x00007ffff7a9ddf1 in g_signal_emit_valist () from /lib/x86_64-linux-gnu/libgobject-2.0.so.0
+#20 0x00007ffff7a9f0f3 in g_signal_emit () from /lib/x86_64-linux-gnu/libgobject-2.0.so.0
+#21 0x00007ffff764bc23 in ?? () from /lib/x86_64-linux-gnu/libgtk-3.so.0
+#22 0x00007ffff75071df in ?? () from /lib/x86_64-linux-gnu/libgtk-3.so.0
+#23 0x00007ffff75093db in gtk_main_do_event () from /lib/x86_64-linux-gnu/libgtk-3.so.0
+#24 0x00007ffff71eff79 in ?? () from /lib/x86_64-linux-gnu/libgdk-3.so.0
+#25 0x00007ffff7223106 in ?? () from /lib/x86_64-linux-gnu/libgdk-3.so.0
+#26 0x00007ffff7cfe17d in g_main_context_dispatch () from /lib/x86_64-linux-gnu/libglib-2.0.so.0
+#27 0x0000555555ecad16 in glib_pollfds_poll () at ../util/main-loop.c:231
+#28 0x0000555555ecad94 in os_host_main_loop_wait (timeout=15908260) at ../util/main-loop.c:254
+#29 0x0000555555ecaea8 in main_loop_wait (nonblocking=0) at ../util/main-loop.c:530
+#30 0x0000555555d061a0 in qemu_main_loop () at ../softmmu/runstate.c:725
+#31 0x0000555555822f2a in main (argc=6, argv=0x7fffffffe378, envp=0x7fffffffe3b0) at ../softmmu/main.c:50
 ```
 
 #### 2.1. 虚拟化环境下的中断注入
@@ -400,6 +443,54 @@ long kvm_arch_vm_ioctl(struct file *filp,
 
 `KVM_CREATE_IRQCHIP` 主要调用 `kvm_pic_init` 创建 PIC 设备，`kvm_ioapic_init` 创建 IOAPIC 设备，`kvm_setup_default_irq_routing` 初始化中断路由表。
 
+```c
+int kvm_pic_init(struct kvm *kvm)
+{
+	struct kvm_pic *s;
+	int ret;
+
+	s = kzalloc(sizeof(struct kvm_pic), GFP_KERNEL_ACCOUNT);
+	if (!s)
+		return -ENOMEM;
+	spin_lock_init(&s->lock);
+	s->kvm = kvm;
+	s->pics[0].elcr_mask = 0xf8;
+	s->pics[1].elcr_mask = 0xde;
+	s->pics[0].pics_state = s;
+	s->pics[1].pics_state = s;
+
+	/*
+	 * Initialize PIO device
+	 */
+	kvm_iodevice_init(&s->dev_master, &picdev_master_ops);
+	kvm_iodevice_init(&s->dev_slave, &picdev_slave_ops);
+	kvm_iodevice_init(&s->dev_elcr, &picdev_elcr_ops);
+	mutex_lock(&kvm->slots_lock);
+	ret = kvm_io_bus_register_dev(kvm, KVM_PIO_BUS, 0x20, 2,
+				      &s->dev_master);
+	if (ret < 0)
+		goto fail_unlock;
+
+	ret = kvm_io_bus_register_dev(kvm, KVM_PIO_BUS, 0xa0, 2, &s->dev_slave);
+	if (ret < 0)
+		goto fail_unreg_2;
+
+	ret = kvm_io_bus_register_dev(kvm, KVM_PIO_BUS, 0x4d0, 2, &s->dev_elcr);
+	if (ret < 0)
+		goto fail_unreg_1;
+
+	mutex_unlock(&kvm->slots_lock);
+
+	kvm->arch.vpic = s;
+
+	return 0;
+
+	...
+
+	return ret;
+}
+```
+
 这里比较复杂的是初始化中断路由表。`default_routing` 是默认路由信息。没有完全搞懂，还需要进一步分析。
 
 ```c
@@ -574,7 +665,7 @@ static int setup_routing_entry(struct kvm *kvm,
 
 ##### 2.2.2. QEMU 中 PIC 的初始化
 
-QEMU 虚拟机的中断状态由 `GSIState` 表示。其中 qemu_irq 表示一个中断引脚。
+QEMU 虚拟机的中断状态由 `GSIState` 表示。其中 `qemu_irq` 表示一个中断引脚。
 
 ```c
 typedef struct GSIState {
@@ -596,7 +687,7 @@ struct IRQState { // 表示一个中断引脚
 };
 ```
 
-首先调用 `pc_gsi_create` 创建虚拟机的 GSIState ，之后再创建具体的外设。这里 `x86ms->gsi`就是 guestos 中断路由的起点。但是在该函数中，只是分配一个空间向一个指向该 GSIState 的指针，然后所有的设备所有一个指向 GSIState 的指针，而 GSIState 本身还没有赋值。
+首先调用 `pc_gsi_create` 创建虚拟机的 `GSIState` ，之后再创建具体的外设。这里 `x86ms->gsi`就是 guestos 中断路由的起点。但是在该函数中，只是分配一个空间向一个指向该 `GSIState` 的指针，然后所有的设备所有一个指向 `GSIState` 的指针，而 `GSIState` 本身还没有赋值。
 
 ```c
 GSIState *pc_gsi_create(qemu_irq **irqs, bool pci_enabled)
@@ -613,7 +704,39 @@ GSIState *pc_gsi_create(qemu_irq **irqs, bool pci_enabled)
 }
 ```
 
-这里 `gsi_handler` 就是中断处理函数，所有的中断引脚 `IRQState * irq -> handler` 都是指向这个处理函数，它会根据中断号请求对应的中断。0~15 号是 `i8259_irq` 中断，16~23 是 `ioapic_irq` 中断，24 是`ioapic2_irq` 中断。opaque 则是一个全局中断处理器 GSIState 的指针。最重要的 `x86ms->gsi` 已经准备好了。
+这里 `gsi_handler` 就是中断处理函数，所有的中断引脚 `IRQState * irq -> handler` 都是指向这个处理函数，它会根据中断号请求对应的中断。0~15 号是 `i8259_irq` 中断，16~23 是 `ioapic_irq` 中断，24 是`ioapic2_irq` 中断。这里有个问题，`s->i8259_irq[n]` 为什么就会指向 `kvm_pic_set_irq` ？ `kvm_pc_setup_irq_routing` 这个函数初始化的。
+
+```c
+/* PC Utility function */
+void kvm_pc_setup_irq_routing(bool pci_enabled)
+{
+    KVMState *s = kvm_state;
+    int i;
+
+    assert(kvm_has_gsi_routing());
+    for (i = 0; i < 8; ++i) {
+        if (i == 2) {
+            continue;
+        }
+        kvm_irqchip_add_irq_route(s, i, KVM_IRQCHIP_PIC_MASTER, i);
+    }
+    for (i = 8; i < 16; ++i) {
+        kvm_irqchip_add_irq_route(s, i, KVM_IRQCHIP_PIC_SLAVE, i - 8);
+    }
+    if (pci_enabled) {
+        for (i = 0; i < 24; ++i) {
+            if (i == 0) {
+                kvm_irqchip_add_irq_route(s, i, KVM_IRQCHIP_IOAPIC, 2);
+            } else if (i != 2) {
+                kvm_irqchip_add_irq_route(s, i, KVM_IRQCHIP_IOAPIC, i);
+            }
+        }
+    }
+    kvm_irqchip_commit_routes(s);
+}
+```
+
+ opaque 则是一个全局中断处理器 `GSIState` 的指针。最重要的 `x86ms->gsi` 已经准备好了。
 
 ```c
 void gsi_handler(void *opaque, int n, int level)
@@ -734,6 +857,8 @@ if (pcmc->pci_enabled) {
 
 `pc_i8259_create` 除了调用 `kvm_i8259_init` 创建 pic 设备，还会指定 pic 设备的中断回调函数 `kvm_pic_set_irq` 。之后发生 pic 设备中断就由 `kvm_pic_set_irq` 进行处理，这个之后会分析。
 
+`pc_i8259_create` 在创建 pic 设备的时候会根据是否使用 kvm 模拟来选择不同的初始化函数。
+
 ```c
 void pc_i8259_create(ISABus *isa_bus, qemu_irq *i8259_irqs)
 {
@@ -755,6 +880,8 @@ void pc_i8259_create(ISABus *isa_bus, qemu_irq *i8259_irqs)
 }
 ```
 
+对于 kvm 模拟，使用的是 `kvm_i8259_init` ， 并指定控制器的回调函数为 `kvm_pic_set_irq` 。
+
 ```c
 qemu_irq *kvm_i8259_init(ISABus *bus)
 {
@@ -764,6 +891,129 @@ qemu_irq *kvm_i8259_init(ISABus *bus)
     return qemu_allocate_irqs(kvm_pic_set_irq, NULL, ISA_NUM_IRQS);
 }
 ```
+
+而对于用 tcg 模拟，使用的是 `i8259_init` 。
+
+```c
+qemu_irq *i8259_init(ISABus *bus, qemu_irq parent_irq)
+{
+    qemu_irq *irq_set;
+    DeviceState *dev;
+    ISADevice *isadev;
+    int i;
+
+    irq_set = g_new0(qemu_irq, ISA_NUM_IRQS);
+
+    isadev = i8259_init_chip(TYPE_I8259, bus, true);
+    dev = DEVICE(isadev);
+
+    qdev_connect_gpio_out(dev, 0, parent_irq);
+    for (i = 0 ; i < 8; i++) {
+        irq_set[i] = qdev_get_gpio_in(dev, i);
+    }
+
+    isa_pic = dev;
+
+    isadev = i8259_init_chip(TYPE_I8259, bus, false);
+    dev = DEVICE(isadev);
+
+    qdev_connect_gpio_out(dev, 0, irq_set[2]);
+    for (i = 0 ; i < 8; i++) {
+        irq_set[i + 8] = qdev_get_gpio_in(dev, i);
+    }
+
+    slave_pic = PIC_COMMON(dev);
+
+    return irq_set;
+}
+```
+
+初始化的逻辑是类似的，但是回调函数不同，tcg 的是 `pic_irq_request` ，设备发起中断的详细过程如下：
+
+```
+#0  pic_irq_request (opaque=0x0, irq=0, level=0) at ../hw/i386/x86.c:530
+#1  0x0000555555ce3a77 in qemu_set_irq (irq=0x555556b045a0, level=0) at ../hw/core/irq.c:45
+#2  0x00005555558bdc07 in qemu_irq_lower (irq=0x555556b045a0) at /home/guanshun/gitlab/qemu/include/hw/irq.h:17
+#3  0x00005555558be508 in pic_update_irq (s=0x555556ae5800) at ../hw/intc/i8259.c:116
+#4  0x00005555558be6ad in pic_set_irq (opaque=0x555556ae5800, irq=1, level=0) at ../hw/intc/i8259.c:156
+#5  0x0000555555ce3a77 in qemu_set_irq (irq=0x555556b67680, level=0) at ../hw/core/irq.c:45
+#6  0x0000555555b01fb5 in gsi_handler (opaque=0x555556b2d970, n=1, level=0) at ../hw/i386/x86.c:596
+#7  0x0000555555ce3a77 in qemu_set_irq (irq=0x555556aec400, level=0) at ../hw/core/irq.c:45
+#8  0x0000555555a8c544 in kbd_update_irq (s=0x5555576825d8) at ../hw/input/pckbd.c:177
+#9  0x0000555555a8c5b3 in kbd_update_kbd_irq (opaque=0x5555576825d8, level=0) at ../hw/input/pckbd.c:189
+#10 0x00005555558ebfcf in ps2_common_reset (s=0x55555774d200) at ../hw/input/ps2.c:916
+#11 0x00005555558ec134 in ps2_kbd_reset (opaque=0x55555774d200) at ../hw/input/ps2.c:953
+#12 0x0000555555ce1d42 in qemu_devices_reset () at ../hw/core/reset.c:69
+#13 0x0000555555b07d9e in pc_machine_reset (machine=0x55555691a400) at ../hw/i386/pc.c:1643
+#14 0x0000555555bee3d4 in qemu_system_reset (reason=SHUTDOWN_CAUSE_NONE) at ../softmmu/runstate.c:442
+#15 0x000055555589f839 in qdev_machine_creation_done () at ../hw/core/machine.c:1292
+#16 0x0000555555be81ed in qemu_machine_creation_done () at ../softmmu/vl.c:2613
+#17 0x0000555555be82c0 in qmp_x_exit_preconfig (errp=0x5555566ce528 <error_fatal>) at ../softmmu/vl.c:2636
+#18 0x0000555555bea989 in qemu_init (argc=5, argv=0x7fffffffe398, envp=0x7fffffffe3c8) at ../softmmu/vl.c:3669
+#19 0x000055555581fe85 in main (argc=5, argv=0x7fffffffe398, envp=0x7fffffffe3c8) at ../softmmu/main.c:49
+```
+
+和开始给出的 kvm 调用过程类似，keyboard 设备还是通过 `kbd_update_kbd_irq` 发起中断。现在分析 `pic_irq_request` 函数是怎样向 guestos 注入中断的。
+
+```c
+/* IRQ handling */
+static void pic_irq_request(void *opaque, int irq, int level)
+{
+    CPUState *cs = first_cpu;
+    X86CPU *cpu = X86_CPU(cs);
+
+    trace_x86_pic_interrupt(irq, level);
+    if (cpu->apic_state && !kvm_irqchip_in_kernel() &&
+        !whpx_apic_in_platform()) {
+        CPU_FOREACH(cs) {
+            cpu = X86_CPU(cs);
+            if (apic_accept_pic_intr(cpu->apic_state)) {
+                apic_deliver_pic_intr(cpu->apic_state, level);
+            }
+        }
+    } else {
+        if (level) {
+            cpu_interrupt(cs, CPU_INTERRUPT_HARD);
+        } else {
+            cpu_reset_interrupt(cs, CPU_INTERRUPT_HARD);
+        }
+    }
+}
+```
+
+```c
+void cpu_interrupt(CPUState *cpu, int mask)
+{
+    if (cpus_accel->handle_interrupt) {
+        cpus_accel->handle_interrupt(cpu, mask);
+    } else {
+        generic_handle_interrupt(cpu, mask);
+    }
+}
+```
+
+这里 `handle_interrupt` 回调函数指的是 `tcg_handle_interrupt` ，也就是说，用 tcg 模拟时所有的中断都是由 `tcg_handle_interrupt` 最后处理。
+
+```c
+void tcg_handle_interrupt(CPUState *cpu, int mask)
+{
+    g_assert(qemu_mutex_iothread_locked());
+
+    cpu->interrupt_request |= mask;
+
+    /*
+     * If called from iothread context, wake the target cpu in
+     * case its halted.
+     */
+    if (!qemu_cpu_is_self(cpu)) {
+        qemu_cpu_kick(cpu);
+    } else {
+        qatomic_set(&cpu_neg(cpu)->icount_decr.u16.high, -1);
+    }
+}
+```
+
+最后就是 `qemu_cpu_kick` 通知 CPU 进行处理。
 
 ##### 2.2.3. 设备使用 PIC 中断
 
@@ -814,7 +1064,15 @@ void isa_init_irq(ISADevice *dev, qemu_irq *p, unsigned isairq) // isairq 表示
 }
 ```
 
-这里 `isabus->irqs[isairq]` 就是 `x86ms->gsi`，也就是说申请的 `qemu_irq` 就是 `pc_gsi_create` 创建的。
+这里 `isabus->irqs[isairq]` 就是 `x86ms->gsi`，也就是说申请的 `qemu_irq` 就是 `pc_gsi_create` 创建的。对于 pic 设备，申请的 `qemu_irq` 对应的就是 `gsi_handler` 中的 `i8259_irq` 。
+
+```c
+	case 0 ... ISA_NUM_IRQS - 1:
+        if (s->i8259_irq[n]) {
+            /* Under KVM, Kernel will forward to both PIC and IOAPIC */
+            qemu_set_irq(s->i8259_irq[n], level);
+        }
+```
 
 ```c
 isa_bus_irqs(isa_bus, x86ms->gsi);
@@ -1027,7 +1285,7 @@ int kvm_pic_set_irq(struct kvm_pic *s, int irq, int irq_source_id, int level)
 }
 ```
 
-pic_set_irq1 根据电平设置中断控制器的状态，根据控制器的触发类型设置 `kvm_kpic_state->irr` 和 `kvm_kpic_state->last_irr` 。
+`pic_set_irq1` 根据电平设置中断控制器的状态，根据控制器的触发类型设置 `kvm_kpic_state->irr` 和 `kvm_kpic_state->last_irr` 。
 
 ```c
 /*
