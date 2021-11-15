@@ -143,3 +143,7 @@ DESCRIPTION
 二进制兼容：在升级库文件的时候，不必**重新编译**使用此库的可执行文件或其他库文件，并且程序的功能不被破坏。
 
 源码兼容：在升级库文件的时候，不必**修改**使用此库的可执行文件或其他库文件的**源代码**，只需重新编译应用程序，即可使程序的功能不被破坏。
+
+### SMBIOS
+
+SMBIOS is an industry-standard mechanism for low-level system software to export hardware configuration information to higher-level system management software.
