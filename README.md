@@ -26,6 +26,9 @@
 - [kvm 原理简介](./virtualization/kvm.md)
 - [linux 系统虚拟化](./virtualization/linux-system-virtualization.md)
 - [run "hello world" in LA bare metal](./virtualization/run-helloworld-in-LA-bare-metal.md)
+- [CPU Virtualization](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/CPU-Virtualization.md)
+- [Interrupt Virtualization](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Interrupt-Virtualization.md)
+- [QOM](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/QOM.md)
 
 ## firends
 
