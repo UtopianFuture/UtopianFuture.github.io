@@ -43,6 +43,14 @@
    ssh guanshun /home/guanshun/gitlab/qemu/build/qemu-x86_64 -d cpu -singlestep /home/guanshun/GDB/hello 2> /home/guanshun/research/loongson/qemu_log
    ```
 
+   也可以将标准输出和标准错误流都输出到一个文件
+
+   ```
+   build_loongson/kernel.bin 1> loongson.md 2>&1
+   ```
+
+   1 表示标准输出流，`2>&1` 表示将标准错误流也输出到标准输出流中，也就是 loongson.md 中。
+
 7. 将需要对比的文件加到vscode中，然后select for compare，就可以对比两个文件的不同。如果文件过大还是用diff和vimdiff。
 
 8. 终极的调试手段就是将目标程序与标准程序对比，将两个程序的执行环境设置为一样，然后printf出程序的reg信息，一个个对比。这其中要设置环境变量一样，两个程序的执行命令一样，还要知道reg信息怎么打印。
