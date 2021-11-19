@@ -106,6 +106,23 @@ The `munmap()` system call deletes the mappings for the specified address range,
 
 Usually, the `#include <xxx>` makes it look into system folders first, like `/usr/local/include`, `/usr/include`, the `#include "xxx"` makes it look into the current or custom folders first.
 
+在文件首尾的地方添加
+
+```c
+#ifndef _XXXXXX_H_
+#define _XXXXXX_H_
+
+....
+
+#endif
+```
+
+用以确保声明只被 `#include` 一次。可以定义一个头文件，引用项目所有的头文件，然后其他的 .c 文件只需要引用这个头文件就可以。
+
+对于自定义的头文件，如果需要引用，需要给 gcc 加上 `-I` 参数，设置头文件所在的目录。
+
+用 `#include` 引用头文件时，编译器在预处理时会将头文件在引用的地方展开。
+
 ### 交叉编译
 
 在x86机器上编译x86的可执行文件叫本地编译， 即在当前编译平台下，编译出来的程序只能放到当前平台下运行。
