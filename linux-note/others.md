@@ -164,3 +164,39 @@ DESCRIPTION
 ### SMBIOS
 
 SMBIOS is an industry-standard mechanism for low-level system software to export hardware configuration information to higher-level system management software.
+
+### Midware
+
+Middleware is software that provides common services and capabilities to applications outside of what’s offered by the operating system. Data management, application services, messaging, authentication, and API management are all commonly handled by middleware.
+
+Middleware helps developers build applications more efficiently. It acts like the connective tissue between applications, data, and users.
+
+Middleware can support application environments that work smoothly and consistently across a highly distributed platform.
+
+### What Are the Components of a Linux Distribution?
+
+- [Linux Kernel](https://fosspost.org/what-are-the-components-of-a-linux-distribution/#Linux_Kernel)
+
+- [GNU Tools](https://fosspost.org/what-are-the-components-of-a-linux-distribution/#GNU_Tools)
+
+- [Display Server or Windows System](https://fosspost.org/what-are-the-components-of-a-linux-distribution/#Display_Server_or_Windows_System)
+
+  A display server is the responsible software about drawing the graphical user interface on the screen. From icons to windows and menus, every graphical thing you see on the screen is done by a display server (known also as windows system).
+
+- [Display Manager](https://fosspost.org/what-are-the-components-of-a-linux-distribution/#Display_Manager)
+
+  DMs are used to show the welcome screen after the boot loader and start desktop sessions as a connection with the X display server.
+
+- [Daemons](https://fosspost.org/what-are-the-components-of-a-linux-distribution/#Daemons)
+
+  Daemons are programs that run in the background of the operating system instead of being normal applications with windows on the user interface. They run some specific jobs and processes that are needed by the operating system, like the network-manager daemon which allows you to connect to the network automatically when you login to your system.
+
+  The most famous daemon is called “[systemd](https://en.wikipedia.org/wiki/Systemd)” which is the main daemon controlling the whole operating system jobs. It is the first process that is executed after loading the Linux kernel. Its job is simply to control other daemons and run them when needed at boot time or at any time you want, it controls all the services available on the operating system and it can turn it on or off or modify it when needed.
+
+  ![Daemons and other software running under the OS, By Shmuel Csaba Otto Traian, CC BY-SA 3.0, https://commons.wikimedia.org/w/index.php?curid=27799196](https://fosspost.org/wp-content/uploads/2016/07/1200px-Free_and_open-source-software_display_servers_and_UI_toolkits.svg_.png)
+
+- [Package Manager](https://fosspost.org/what-are-the-components-of-a-linux-distribution/#Package_Manager)
+
+- [Desktop Environment](https://fosspost.org/what-are-the-components-of-a-linux-distribution/#Desktop_Environment)
+
+- [User Applications](https://fosspost.org/what-are-the-components-of-a-linux-distribution/#User_Applications)
