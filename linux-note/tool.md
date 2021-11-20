@@ -464,3 +464,25 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
     - Count all the lines of code in a directory:                                                             	cloc {{path/to/directory}}                                                                             - Count all the lines of code in a directory, displaying a progress bar during the counting process:
       cloc --progress=1 {{path/to/directory}}
     ```
+
+40. locate 查找文件比 find 快，配合 grep 使用很方便
+
+    ```
+    Find filenames quickly.
+     - Look for pattern in the database. Note: the database is recomputed periodically (usually weekly or daily):
+       locate {{pattern}}
+     - Look for a file by its exact filename (a pattern containing no globbing characters is interpreted as *pattern*):
+       locate */{{filename}}
+     - Recompute the database. You need to do it if you want to find recently added files:
+       sudo updatedb
+    ```
+
+    ```
+    locate cpu.h|grep gitlab/bmbt
+    /home/guanshun/gitlab/bmbt/.ccls-cache/@home@guanshun@gitlab@bmbt/include@hw@core@cpu.h
+    /home/guanshun/gitlab/bmbt/.ccls-cache/@home@guanshun@gitlab@bmbt/include@hw@core@cpu.h.blob
+    /home/guanshun/gitlab/bmbt/.ccls-cache/@home@guanshun@gitlab@bmbt/src@i386@cpu.h
+    /home/guanshun/gitlab/bmbt/.ccls-cache/@home@guanshun@gitlab@bmbt/src@i386@cpu.h.blob
+    /home/guanshun/gitlab/bmbt/include/hw/core/cpu.h
+    /home/guanshun/gitlab/bmbt/src/i386/cpu.h
+    ```
