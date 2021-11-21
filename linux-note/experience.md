@@ -89,10 +89,4 @@ KexAlgorithms +diffie-hellman-group14-sha1
     ../configure --enable-kvm --enable-debug --enable-werror --target-list=x86_64-softmmu --enable-vte --enable-sdl
     ```
 
-14. 系统启动过程是这样的
-
-    cpu 上电之后要加载文件系统，也就是 / ，但是 / 是存储在磁盘中的，而读取磁盘需要驱动，而这时文件系统都没起来，驱动也没有，这就陷入一个死循环，所以 linux 做了一个初级的文件系统 initramfs ，initramfs 足够小，存储在 rom 中，grub 会指定 initramfs 存放的地址信息，这些信息放在一个单独的空页，并把这个页的地址提供给内核，内核根据地址找到 initramfs ，再通过 initramfs 启动 / ，启动 / 之后再 chroot ，切换到 / 。
-
-    开机时会进入 bios ，bios 初始化硬件信息，并跳转到 bootloader ，也就是 grub ，在 grub 中可以加入 break=mount ，使得在之后的启动中进入 initramfs 的 shell ，而不是直接执行 initramfs 。
-
-    细节还需要补充。
+14.
