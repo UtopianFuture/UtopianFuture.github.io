@@ -200,3 +200,59 @@ Middleware can support application environments that work smoothly and consisten
 - [Desktop Environment](https://fosspost.org/what-are-the-components-of-a-linux-distribution/#Desktop_Environment)
 
 - [User Applications](https://fosspost.org/what-are-the-components-of-a-linux-distribution/#User_Applications)
+
+### HT 总线
+
+和 PCI 总线的区别在于 pci 总线是系统总线，用于连接外设，而 HT 总线速度更快，带宽更高，可以用来多核芯片的核间互联。
+
+### Super I/O
+
+Super I/O 是主板上用来连接像 floppy-disk controller, parallel port, serial port, RTC 之类的低速设备的芯片。
+
+### extioi
+
+extioi 是 LA 架构上的一个中断控制器。
+
+### 系统启动过程
+
+cpu 上电之后先从 rom 中加载 bios ，bios 完成的主要任务如下：
+
+（1）上电自检（Power On Self Test, POST）指的是对硬件，如 CPU、主板、DRAM 等设备进行检测。POST 之后会有 Beep 声表示 POST 检查结果。一声简短的 beep 声意味着系统是 OK 的，两声 beep 则表示检查失败，错误码会显示在屏幕上；
+
+（2）POST 之后初始化与启动相关的硬件，如磁盘、键盘控制器等；
+
+（3）位 OS 创建一些参数，如 ACPI 表；
+
+（4）选择引导设备，从设备中加载 bootloader。
+
+bios 在完成对硬件进行检测，为 OS 准备相关参数之后，按照 BIOS 中设定的启动次序（Boot Sequence)逐一查找可启动设备，找到可启动的设备后，会把该设备第一个扇区（512 字节）—— MBR，的内容复制到内存的`0x7c00`处，然后检查内存的`0x7dfe`处（也就是从`0x7c00`开始的第 510 字节）开始的两个字节（510，511 字节，即 magic number）组成的数字是否是`0xaa55`。
+
+```plain
+                    512 bytes
+     +-----------------------+---------+--+
+     |                       | parti-  |  |
+     |    boot loader        | tion    |  | --> magic number(2 bytes)
+     |                       | table   |  |
+     +-----------------------+---------+--+
+            446 bytes       /           \
+                           /  64 bytes   \
+                          /               \
+                          p1   p2   p3   p4(为啥有4个分区)
+```
+
+如果是，那么 bios 认为前 510 字节是一段可执行文件，于是 jump 到`0x7c00`处开始执行这段程序，即 MBR 开始执行；若不等于则转去尝试其他启动设备，如果没有启动设备满足要求则显示"NO ROM BASIC"然后死机。
+
+```plain
+qemu-img create -f qcow2 hello.img 10M
+qemu-system-x86_64 hello.img
+```
+
+![image-20211018162600419](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/run.1.png?raw=true)
+
+但 MBR 容量太小，放不下完整的 boot loader 代码，所以现在的 MBR 中的功能也从直接启动操作系统变为了启动 boot loader，一般是 grub。
+
+kernel 要加载文件系统，也就是 / ，但是 / 是存储在磁盘中的，而读取磁盘需要驱动，而这时文件系统都没起来，驱动也没有，这就陷入一个死循环，所以 linux 做了一个初级的文件系统 initramfs ，initramfs 足够小，可以通过 bios 从磁盘加载到内存中，grub 会指定 initramfs 存放在内存的位置信息，这些信息放在一个单独的空页，并把这个页的地址提供给内核，内核根据地址找到 initramfs ，再通过 initramfs 启动 / ，启动 / 之后再 chroot ，切换到 / 。
+
+开机时会进入 bios ，bios 初始化硬件信息，并跳转到 bootloader ，也就是 grub ，在 grub 中可以加入 break=mount ，使得在之后的启动中进入 initramfs 的 shell ，而不是直接执行 initramfs 。
+
+细节还需要补充。
