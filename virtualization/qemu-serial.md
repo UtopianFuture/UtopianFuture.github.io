@@ -1,5 +1,7 @@
 ## QEMU Serial
 
+### Serial in QEMU
+
 串口通信是通过总线或信道向设备每次发送一比特的数据。QEMU 模拟的是 16550A UART 芯片，具体实现在 serial.c 文件中。现在分析 serial 是怎么将数据转发到不同的设备中。
 
 QEMU 中 `SerialState` 用来模拟串口设备。
@@ -54,7 +56,7 @@ typedef struct SerialState SerialState;
 
 serial 过程如下：
 
-```
+```plain
 #0  serial_ioport_write (opaque=0x555556a20aa0, addr=1, val=2, size=1) at ../hw/char/serial.c:334
 #1  0x0000555555c3c200 in memory_region_write_accessor (mr=0x555556a20c00, addr=1, value=0x7ffff135af58, size=1, shift=0, mask=255, attrs=...) at ../softmmu/memory.c:491
 #2  0x0000555555c3c437 in access_with_adjusted_size (addr=1, value=0x7ffff135af58, size=1, access_size_min=1, access_size_max=1, access_fn=0x555555c3c113 <memory_region_write_accessor>,
@@ -116,7 +118,7 @@ static void serial_ioport_write(void *opaque, hwaddr addr, uint64_t val,
 
 关键在于怎样 serial 的注册过程，因为 bmbt 简化了 QOM 的 realize ，下面为正常 qemu 的注册流程。
 
-```
+```plain
 #0  serial_realize (dev=0x555556a20a00, errp=0x7fffffffd300) at ../hw/char/serial.c:924
 #1  0x0000555555ce0f03 in device_set_realized (obj=0x555556a20a00, value=true, errp=0x7fffffffd408) at ../hw/core/qdev.c:761
 #2  0x0000555555cff560 in property_set_bool (obj=0x555556a20a00, v=0x55555766fbb0, name=0x555556041bd9 "realized", opaque=0x555556768b70, errp=0x7fffffffd408) at ../qom/object.c:2257
@@ -148,11 +150,15 @@ static void serial_ioport_write(void *opaque, hwaddr addr, uint64_t val,
 #26 0x000055555581fe85 in main (argc=5, argv=0x7fffffffdda8, envp=0x7fffffffddd8) at ../softmmu/main.c:49
 ```
 
-可以看出来非常复杂。让我们对比一下 qemu 和 bmbt 中 pci 的注册流程。
+可以看出来非常复杂。
+
+### PCI in QEMU
+
+也对比一下 qemu 和 bmbt 中 pci 的注册流程。
 
 qemu:
 
-```
+```plain
 #0  pci_qdev_realize (qdev=0x555556db7b10, errp=0x7fffffffd5e0) at ../hw/pci/pci.c:2089
 #1  0x0000555555ce0f03 in device_set_realized (obj=0x555556db7b10, value=true, errp=0x7fffffffd6e8) at ../hw/core/qdev.c:761
 #2  0x0000555555cff560 in property_set_bool (obj=0x555556db7b10, v=0x555556a47fd0, name=0x555556041bd9 "realized", opaque=0x555556768b70, errp=0x7fffffffd6e8) at ../qom/object.c:2257
@@ -179,7 +185,7 @@ qemu:
 
 bmbt:
 
-```
+```plain
 #0  pci_qdev_realize (pci_dev=0x5555559360a0 <__pci_i440fx>, name=0x5555556f00d2 "i440FX") at src/hw/pci/pci.c:1930
 #1  0x00005555555f8dda in pci_create_simple_multifunction (bus=0x5555559304a0 <__pci_bus>, devfn=0, multifunction=false, name=0x5555556f00d2 "i440FX") at src/hw/pci/pci.c:2030
 #2  0x00005555555f8e6a in pci_create_simple (bus=0x5555559304a0 <__pci_bus>, devfn=0, name=0x5555556f00d2 "i440FX") at src/hw/pci/pci.c:2039
@@ -197,9 +203,11 @@ bmbt:
 
 可以看出来大大简化了，去除了 qdev 那一套。
 
+### Port92 in QEMU
+
 pci 设备比较复杂，我们分析一个简单的，和 serial 类似的设备  port92 这是一个 tcp/udp 用来通讯的端口。先看看 qemu 中的注册流程：
 
-```
+```plain
 #0  isa_init_ioport (dev=0x5555568df650, ioport=146) at ../hw/isa/isa-bus.c:123
 #1  0x0000555555ad8d54 in isa_register_ioport (dev=0x5555568df650, io=0x5555568df6f0, start=146) at ../hw/isa/isa-bus.c:131
 #2  0x0000555555b0423a in port92_realizefn (dev=0x5555568df650, errp=0x7fffffffd5b0) at ../hw/i386/port92.c:96
@@ -258,7 +266,7 @@ void isa_register_ioport(ISADevice *dev, MemoryRegion *io, uint16_t start)
 
 而 bmbt 则大大简化了。
 
-```
+```plain
 #0  QOM_port92_init () at src/hw/i386/pc.c:905
 #1  0x00005555555f235e in pc_superio_init (isa_bus=0x5555559369e8 <__isabus>, create_fdctrl=true, no_vmport=false) at src/hw/i386/pc.c:1379
 #2  0x00005555555f2477 in pc_basic_device_init (isa_bus=0x5555559369e8 <__isabus>, gsi=0x5555559de4d0, rtc_state=0x7fffffffdb98, create_fdctrl=true, no_vmport=false, has_pit=true,
@@ -336,6 +344,107 @@ static inline void qdev_connect_gpio_out(GPIOList *dev_gpio, int n,
 
 那么我们移植 serial 的思路就很清晰了，去掉 qdev 一系列复杂的调用，直接分配 memory region 和 qemu_irq 。当然 serial 会有和 port92 不一样的细节，搞清楚这些细节，哪些需要移植，哪些干掉。
 
-background
+### 问题
 
-One drawback of the earlier 8250 UARTs and 16450 UARTs was that interrupts were generated for each byte received. This generated high rates of interrupts as transfer speeds increased. More critically, with only a 1-byte buffer there is a genuine risk that a received byte will be overwritten if interrupt service delays occur. To overcome these shortcomings, the 16550 series UARTs incorporated a 16-byte FIFO buffer with a programmable interrupt trigger of 1, 4, 8, or 14 bytes.
+- 在 4.2.1 版本的 QEMU 中，superio 是挂载在 ISA 总线上的，但是 bmbt 中 ISA 形同虚设，那么 superio 设备要怎样和 CPU 进行数据交互呢？
+
+- qdev 中的结构是设备挂载在总线上，那么设备怎样通过总线和 CPU 或 memory 交互呢？这个是物理设备的实现，而软件上的表现就是 PCIBus 结构体中的 PCIDevice 数组。
+
+  ```c
+  struct PCIBus {
+    // BusState qbus;
+    enum PCIBusFlags flags;
+    PCIIOMMUFunc iommu_fn;
+    void *iommu_opaque;
+    uint8_t devfn_min;
+    uint32_t slot_reserved_mask;
+    pci_set_irq_fn set_irq;
+    pci_map_irq_fn map_irq;
+    pci_route_irq_fn route_intx_to_irq;
+    void *irq_opaque;
+    PCIDevice *devices[PCI_SLOT_MAX * PCI_FUNC_MAX];
+    PCIDevice *parent_dev;
+    MemoryRegion *address_space_mem;
+    MemoryRegion *address_space_io;
+
+    QLIST_HEAD(, PCIBus) child;  /* this will be replaced by qdev later */
+    QLIST_ENTRY(PCIBus) sibling; /* this will be replaced by qdev later */
+
+    /* The bus IRQ state is the logical OR of the connected devices.
+       Keep a count of the number of devices with raised IRQs.  */
+    int nirq;
+    int *irq_count;
+
+    Notifier machine_done;
+  };
+  ```
+
+  如下就是在 ISAbus 上挂载设备的过程。
+
+  ```c
+  ISADevice *isa_create(ISABus *bus, const char *name)
+  {
+      DeviceState *dev;
+
+      dev = qdev_create(BUS(bus), name);
+      return ISA_DEVICE(dev);
+  }
+
+  ISADevice *isa_try_create(ISABus *bus, const char *name)
+  {
+      DeviceState *dev;
+
+      dev = qdev_try_create(BUS(bus), name);
+      return ISA_DEVICE(dev);
+  }
+
+  ISADevice *isa_create_simple(ISABus *bus, const char *name)
+  {
+      ISADevice *dev;
+
+      dev = isa_create(bus, name);
+      qdev_init_nofail(DEVICE(dev));
+      return dev;
+  }
+  ```
+
+  这样设计是为了便于管理，比如在虚拟机迁移的时候，我只需要知道一根总线就可以加载出下面挂载的所有设备。
+
+- bmbt  应该是所有的设备都放在 PCIDevice 数组中，通过这个去访问。这种说法不全对，访问的设备的方法是给设备分配了 memory region 之后就就可以根据分配到 I/O 端口号去操作设备，而不是说有一个指向设备结构体的指针就行。
+
+- serial 怎样在 bmbt 中申请 qemu_irq ，这是在 qemu 中申请的过程。
+
+  ```c
+  /*
+   * isa_get_irq() returns the corresponding qemu_irq entry for the i8259.
+   *
+   * This function is only for special cases such as the 'ferr', and
+   * temporary use for normal devices until they are converted to qdev.
+   */
+  qemu_irq isa_get_irq(ISADevice *dev, int isairq)
+  {
+      assert(!dev || ISA_BUS(qdev_get_parent_bus(DEVICE(dev))) == isabus);
+      if (isairq < 0 || isairq > 15) {
+          hw_error("isa irq %d invalid", isairq);
+      }
+      return isabus->irqs[isairq];
+  }
+
+  void isa_init_irq(ISADevice *dev, qemu_irq *p, int isairq)
+  {
+      assert(dev->nirqs < ARRAY_SIZE(dev->isairq));
+      dev->isairq[dev->nirqs] = isairq;
+      *p = isa_get_irq(dev, isairq);
+      dev->nirqs++;
+  }
+  ```
+
+  很简单，就是用 `isa_bus` 的 `irqs`
+
+  ```c
+  // serial_hds_isa_init(isa_bus, 0, MAX_ISA_SERIAL_PORTS);
+    SerialState * serial;
+    qemu_irq serial_irq;
+    serial_irq = isa_bus->irqs[4];
+    serial = QOM_serial_init(serial_irq);
+  ```
