@@ -256,3 +256,11 @@ kernel 要加载文件系统，也就是 / ，但是 / 是存储在磁盘中的�
 开机时会进入 bios ，bios 初始化硬件信息，并跳转到 bootloader ，也就是 grub ，在 grub 中可以加入 break=mount ，使得在之后的启动中进入 initramfs 的 shell ，而不是直接执行 initramfs 。
 
 细节还需要补充。
+
+### 16550A UART
+
+One drawback of the earlier 8250 UARTs and 16450 UARTs was that interrupts were generated for each byte received. This generated high rates of interrupts as transfer speeds increased. More critically, with only a 1-byte buffer there is a genuine risk that a received byte will be overwritten if interrupt service delays occur. To overcome these shortcomings, the 16550 series UARTs incorporated a 16-byte FIFO buffer with a programmable interrupt trigger of 1, 4, 8, or 14 bytes.
+
+### QEMU 虚拟机热迁移
+
+虚拟机在运行过程中透明的从源宿主机迁移到目的宿主机。QEMU 中的 migration 子目录负责这部分工作，通过每个设备中有一个 VMStateDesrciption 的结构记录了热迁移过程中需要的迁移数据及相关回调函数。
