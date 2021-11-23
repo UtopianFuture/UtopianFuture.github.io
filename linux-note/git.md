@@ -40,13 +40,13 @@
 
    ​	使用 git rebase -i HEAD~n 命令在默认文本编辑器中显示最近 n 个提交的列表。
 
-   ​	
+   ​
 
    1. *# 	Displays a list of the last 3 commits on the current branch*
 
    2. *$ 	git rebase -i HEAD~3*
 
-   3. 
+   3.
 
    ​	 (2) -reset：man git-reset
 
@@ -54,7 +54,7 @@
 
    ​	 (4) --amend：git commit –amend，重写head的commit消息。
 
-   ​	 (5) format-patch：If you want to format only <commit> itself, you can do this with  
+   ​	 (5) format-patch：If you want to format only <commit> itself, you can do this with
 
    ​	 git format-patch -1 <commit>.
 
@@ -158,12 +158,12 @@
 
     ```
     guanshun@Jack-ubuntu ~/g/UFuture.github.io (master)> git push origin maste
-    To github.com:UtopianFuture/UFuture.github.io.git                         
-     ! [rejected]        master -> master (non-fast-forward)                  
+    To github.com:UtopianFuture/UFuture.github.io.git
+     ! [rejected]        master -> master (non-fast-forward)
     error: failed to push some refs to 'git@github.com:UtopianFuture/UFuture.g
     hint: Updates were rejected because the tip of your current branch is behi
-    hint: its remote counterpart. Integrate the remote changes (e.g.          
-    hint: 'git pull ...') before pushing again.                               
+    hint: its remote counterpart. Integrate the remote changes (e.g.
+    hint: 'git pull ...') before pushing again.
     hint: See the 'Note about fast-forwards' in 'git push --help' for details.
     ```
 
@@ -174,3 +174,5 @@ git push -f origin master
 ```
 
 强行推上去，覆盖远程仓库的commit。
+
+21. git format-patch commit-id 可以生成对应的 patch， git apply xxx.patch 可以将 patch 集成到项目中。
