@@ -100,7 +100,7 @@ static void __attribute__((constructor)) do_qemu_init_ ## function(void)    \
 
 即各个类最终通过函数 `register_module_init` 注册到系统，其中 function 是每个类型都要实现的初始化函数，如上面的 `x86_cpu_register_types`。这里的 constructor 是编译器属性，带有这个属性的函数会早于 main 函数执行，也就是说所有的 QOM 类型注册在 main 之前就已经完成了。这里对 `register_module_init` 不做详细分析，只需要知道它把所有的类都加载到一个 `init_type_list` 表中，然后进行初始化。
 
-我们着重分析每个类的注册函数，这里分析上面的 `register_module_init` ，它会调用 `type_register_static` 注册所有的 `x86_cpu` 类。
+我们着重分析每个类的注册函数，这里分析上面的 `x86_cpu_register_types` ，它会调用 `type_register_static` 注册所有的 `x86_cpu` 类。
 
 ```
 static void x86_cpu_register_types(void)
@@ -757,6 +757,12 @@ ObjectClass *object_class_dynamic_cast(ObjectClass *class,
 
 ### 5. 属性
 
+前面几步构造出了具体的设备，但是设备中的数据没有初始化，这里通过将 realized 属性设置为 true 来填充数据。下面分析是怎样填充的。
+
+```
+
+```
+
 对于属性，目前还没有完全搞懂，只知道每个类中都会设置属性，如在 `x86_cpu_common_class_init` 中添加属性，
 
 ```
@@ -795,6 +801,33 @@ object_class_property_add(oc, "family", "int",
 ```
 
 但具体怎么用的还不知道，在接下来的源码阅读中如果有遇到再进行分析。
+
+QOM 和 Qdev
+
+Qdev 是 qemu 管理总线和设备的方式。如下所示，所有的设备都是挂载在 bus 上的。
+
+```
+/machine (pc-i440fx-6.1-machine)
+  /fw_cfg (fw_cfg_io)
+    /\x2from@etc\x2facpi\x2frsdp[0] (memory-region)
+    /\x2from@etc\x2facpi\x2ftables[0] (memory-region)
+    /\x2from@etc\x2ftable-loader[0] (memory-region)
+    /fwcfg.dma[0] (memory-region)
+    /fwcfg[0] (memory-region)
+  /i440fx (i440FX-pcihost)
+    /ioapic (ioapic)
+      /ioapic[0] (memory-region)
+      /unnamed-gpio-in[0] (irq)
+  /unattached (container)
+    /device[0] (qemu64-x86_64-cpu)
+      /lapic (apic)
+        /apic-msi[0] (memory-region)
+      /memory[0] (memory-region)
+      /memory[1] (memory-region)
+      /smram[0] (memory-region)
+```
+
+QOM 则是通过面对对象的方法来实现这种管理（个人理解）。
 
 ### reference
 
