@@ -448,3 +448,148 @@ static inline void qdev_connect_gpio_out(GPIOList *dev_gpio, int n,
     serial_irq = isa_bus->irqs[4];
     serial = QOM_serial_init(serial_irq);
   ```
+
+### DEBUG
+
+移植 serial 前：
+
+![image-20211123085757901](/home/guanshun/.config/Typora/typora-user-images/image-20211123085757901.png)
+
+移植 serial 后：
+
+![image-20211123085709528](/home/guanshun/.config/Typora/typora-user-images/image-20211123085709528.png)
+
+可以看出来，在同一个地方 ERROR。首先分析为什么这个地方会 ERROR 掉。
+
+问题出在有些设备没有实现，如 ps2, serial, dma controller 等，而 seabios 中会用到这些设备，所以需要在 seabios 中将这些设备注释掉。
+
+```tex
+diff --git a/src/hw/dma.c b/src/hw/dma.c
+index 20c9fbb..f048560 100644
+--- a/src/hw/dma.c
++++ b/src/hw/dma.c
+@@ -57,6 +57,7 @@ dma_floppy(u32 addr, int count, int isWrite)
+ void
+ dma_setup(void)
+ {
++  return;
+     // first reset the DMA controllers
+     outb(0, PORT_DMA1_MASTER_CLEAR);
+     outb(0, PORT_DMA2_MASTER_CLEAR);
+diff --git a/src/hw/ps2port.c b/src/hw/ps2port.c
+index 9b099e8..117bea8 100644
+--- a/src/hw/ps2port.c
++++ b/src/hw/ps2port.c
+@@ -59,7 +59,7 @@ i8042_flush(void)
+ {
+     dprintf(7, "i8042_flush\n");
+     int i;
+-    for (i=0; i<I8042_BUFFER_SIZE; i++) {
++    for (i=0; i<0; i++) {
+         u8 status = inb(PORT_PS2_STATUS);
+         if (! (status & I8042_STR_OBF))
+             return 0;
+diff --git a/src/hw/timer.c b/src/hw/timer.c
+index b6f102e..67dd95c 100644
+--- a/src/hw/timer.c
++++ b/src/hw/timer.c
+@@ -111,7 +111,7 @@ timer_setup(void)
+     cpuid(0, &eax, &ebx, &ecx, &edx);
+     if (eax > 0)
+         cpuid(1, &eax, &ebx, &ecx, &cpuid_features);
+-    if (cpuid_features & CPUID_TSC)
++    if (cpuid_features & CPUID_TSC & 0)
+         tsctimer_setup();
+ }
+
+diff --git a/src/serial.c b/src/serial.c
+index 88349c8..84a7646 100644
+--- a/src/serial.c
++++ b/src/serial.c
+@@ -206,7 +206,8 @@ lpt_setup(void)
+ {
+     if (! CONFIG_LPT)
+         return;
+-    dprintf(3, "init lpt\n");
++    dprintf(1, "init lpt\n");
++    return;
+
+     u16 count = 0;
+     count += detect_parport(PORT_LPT1, 0x14, count);
+```
+
+打上 patch 后，ERROR 还是一样的，出在这：
+
+![](/home/guanshun/.config/Typora/typora-user-images/image-20211123105822406.png)
+
+注意 `REGS=0x3f8` ，应该就是没有找到 serial 设备。通过 gdb 看一下 serial 注册之后是什么样的，
+
+![image-20211123143912166](/home/guanshun/.config/Typora/typora-user-images/image-20211123143912166.png)
+
+再对比一下 port92 ，看看哪里出问题了。
+
+![image-20211123144559549](/home/guanshun/.config/Typora/typora-user-images/image-20211123144559549.png)
+
+这样看没有问题阿，为什么 bios 会挂呢？
+
+其实没有挂，因为只实现了 serial 的一个 port ，而 serial 有 4 个 port ，所以剩下的报错，在每个 `detect_serial` 后都加入 `dprintf` 就发现是正常的。
+
+```c
+static const int isa_serial_io[MAX_ISA_SERIAL_PORTS] = {
+    0x3f8, 0x2f8, 0x3e8, 0x2e8
+};
+static const int isa_serial_irq[MAX_ISA_SERIAL_PORTS] = {
+    4, 3, 4, 3
+};
+```
+
+```c
+void
+serial_setup(void)
+{
+    if (! CONFIG_SERIAL)
+        return;
+    dprintf(1, "init serial\n");
+
+    u16 count = 0;
+    count += detect_serial(PORT_SERIAL1, 0x0a, count);
+    dprintf(1, "Found %d serial ports\n", count);
+    count += detect_serial(PORT_SERIAL2, 0x0a, count);
+    dprintf(1, "Found %d serial ports\n", count);
+    count += detect_serial(PORT_SERIAL3, 0x0a, count);
+    dprintf(1, "Found %d serial ports\n", count);
+    count += detect_serial(PORT_SERIAL4, 0x0a, count);
+    dprintf(1, "Found %d serial ports\n", count);
+
+    // Equipment word bits 9..11 determing # serial ports
+    set_equipment_flags(0xe00, count << 9);
+}
+```
+
+![image-20211123153823962](/home/guanshun/.config/Typora/typora-user-images/image-20211123153823962.png)
+
+接下来就把 4 个 port 都实现。这个很简单，加个 for 循环就行。
+
+```c
+static void serial_isa_realizefn(SerialState *s, qemu_irq irq, const hwaddr offset)
+{
+  serial_realize_core(s);
+  memory_region_init_io(&s->io, &serial_io_ops, s, "serial", 8);
+  qdev_init_gpio_out(&s->gpio, &s->irq, 1);
+  io_add_memory_region(offset, &s->io);
+  qdev_connect_gpio_out(&s->gpio, 0, irq);
+}
+
+void QOM_serial_init(ISABus *isa_bus) {
+   for (int i = 0; i < MAX_ISA_SERIAL_PORTS; i++) {
+      SerialState *serial = &__serial[i];
+      serial_isa_realizefn(serial, isa_bus->irqs[isa_serial_irq[i]], isa_serial_io[i]);
+   }
+}
+```
+
+最后 bios 跑完就是这样的，会出现 "Found 4 serial ports" 。
+
+![image-20211123161403005](/home/guanshun/.config/Typora/typora-user-images/image-20211123161403005.png)
+
+接下来将 serial 的输出重定向到特定的文件中。
