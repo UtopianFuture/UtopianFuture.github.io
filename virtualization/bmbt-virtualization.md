@@ -1295,3 +1295,22 @@ NUMA 内存体系中，每个节点都要初始化一个 bootmem 分配器。
 （1）正常在 LA 架构上运行 LA 内核是这样的，那如果在 LA 架构上运行 x86 内核是怎样的，BootLoader 直接传递 x86 内核的入口地址么。bios 要怎样把 LA 内核拉起来。
 
 （2）源码要结合书一起看，而且要多找即本书，对比着看，因为有些内容，如 ACPI，bootmem 不是所有的书都会详细介绍。我用到的参考书有《基于龙芯的 Linux 内核探索解析》、《深入理解 LINUX 内核》、《深入 LINUX 内核架构》。
+
+### 四、DEGUG
+
+4.1. 各种[配置参数](https://github.com/Martins3/Martins3.github.io/blob/master/hack/qemu/x64-e1000/alpine.sh)
+
+### 五、BMBT 杂记
+
+- PAM: Programmable Attribute Map registers
+
+- 这两个 bios 地址区间有什么区别？
+
+  ```c
+  include/hw/pci-host/pam.h
+  #define PAM_EXBIOS_BASE 0xe0000
+  #define PAM_EXBIOS_SIZE 0x04000
+
+  #define PAM_BIOS_BASE 0xf0000
+  #define PAM_BIOS_END 0xfffff
+  ```
