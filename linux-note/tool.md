@@ -486,3 +486,26 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
     /home/guanshun/gitlab/bmbt/include/hw/core/cpu.h
     /home/guanshun/gitlab/bmbt/src/i386/cpu.h
     ```
+
+41. alias 比 ln -s 更好用，例如：
+
+    ```
+    alias gc 'git commit'
+    alias gs 'git status'
+    alias lg lazygit
+    ```
+
+    之后就可以直接使用 gc, gs, lg 等等。
+
+    ```
+     - List all aliases:
+       alias
+     - Create a generic alias:
+       alias {{word}}="{{command}}"
+     - View the command associated to a given alias:
+       alias {{word}}
+     - Remove an aliased command:
+       unalias {{word}}
+    ```
+
+    不过 alias 的生存期只是当前终端，终端关了就失效。

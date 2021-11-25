@@ -40,7 +40,7 @@
 
    ​	使用 git rebase -i HEAD~n 命令在默认文本编辑器中显示最近 n 个提交的列表。
 
-   ​
+
 
    1. *# 	Displays a list of the last 3 commits on the current branch*
 
@@ -122,13 +122,13 @@
 
     这是因为两个commit的Change-ID相同，先用git-rebase -i HEAD~~查看commit的情况，然后选择一个commit进行squash即可。
 
-12. fit reset commitid只是改变git的指针，如果要将内容也切换过去，要用git reset –hard commitid或者是git checkout -f commitid, 不过这个命令会将本地的修改丢弃，有风险。
+12. git reset commitid只是改变git的指针，如果要将内容也切换过去，要用git reset –hard commitid或者是git checkout -f commitid, 不过这个命令会将本地的修改丢弃，有风险。
 
-13. ferge conflict在code里修改之后要git add, git commit，这样conflict才算解决了。
+13. merge conflict在code里修改之后要git add, git commit，这样conflict才算解决了。
 
-14. fit status看到的未提交的文件可以用git checkout + filename删掉，如果有需要保存的文件，但是库里同步过来又会覆盖的，用git stash保存，然后在pull –rebase，之后再git stash apply恢复。
+14. git status看到的未提交的文件可以用git checkout + filename删掉，如果有需要保存的文件，但是库里同步过来又会覆盖的，用git stash保存，然后在pull –rebase，之后再git stash apply恢复。
 
-15. git diff的不用使用：
+15. git diff的不同使用：
 
     ```
     git diff            // 工作区 vs 暂存区

@@ -263,4 +263,4 @@ One drawback of the earlier 8250 UARTs and 16450 UARTs was that interrupts were 
 
 ### QEMU 虚拟机热迁移
 
-虚拟机在运行过程中透明的从源宿主机迁移到目的宿主机。QEMU 中的 migration 子目录负责这部分工作，通过每个设备中有一个 VMStateDesrciption 的结构记录了热迁移过程中需要的迁移数据及相关回调函数。
+虚拟机在运行过程中透明的从源宿主机迁移到目的宿主机。QEMU 中的 migration 子目录负责这部分工作，通过每个设备中有一个 `VMStateDesrciption` 的结构记录了热迁移过程中需要的迁移数据及相关回调函数。
