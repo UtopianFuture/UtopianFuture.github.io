@@ -117,3 +117,16 @@
     ```
     除了其他普通的操作, GCC 显示引用过的头文件名.
     ```
+
+15. gdb 中出现
+
+    ![image-20211127104830859](/home/guanshun/.config/Typora/typora-user-images/image-20211127104830859.png)
+
+    ```
+    因为暂时适应的是 signal 来实现 timer 的
+    这个会导致 qemu 提前停下来
+
+    使用这个命令可以屏蔽信号:
+    handle SIG127 nostop noprint
+    https://stackoverflow.com/questions/24999208/how-to-handle-all-signals-in-gdb
+    ```

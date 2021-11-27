@@ -89,4 +89,6 @@ KexAlgorithms +diffie-hellman-group14-sha1
     ../configure --enable-kvm --enable-debug --enable-werror --target-list=x86_64-softmmu --enable-vte --enable-sdl
     ```
 
-14.
+14. 发现一个有用的[网站](https://documentation.suse.com/zh-cn/sles/15-SP2/html/SLES-all/book-virt.html)
+
+15. 运行 qemu 通过 ctrl alt 2 进入 monitor ，ctrl alt 1 进入 guest os ，可以通过 -monitor stdio 将 monitor 重定向到终端。
