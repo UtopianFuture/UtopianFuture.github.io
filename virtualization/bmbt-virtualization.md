@@ -1314,3 +1314,32 @@ NUMA 内存体系中，每个节点都要初始化一个 bootmem 分配器。
   #define PAM_BIOS_BASE 0xf0000
   #define PAM_BIOS_END 0xfffff
   ```
+
+- 交叉验证
+
+  用 bmbt 和 qemu 分别跑 tiny kernel ，编译 tiny kernel  参考这篇 [blog](https://weeraman.com/building-a-tiny-linux-kernel-8c07579ae79d)。其中 tty 和 printk 两个选项要打开。
+
+  qemu 跑 tiny kernel 的命令
+
+  ```plain
+  ./qemu-system-x86_64 --enable-kvm -m 8192 -chardev file,path=/home/guanshun/gitlab/bmbt/seabios.log,id=seabios -device isa-debugcon,iobase=0x402,chardev=seabios -kernel /home/guanshun/gitlab/bmbt/image/bzImage -append "console=ttyS0 earlyprintk=serial debug"
+  ```
+
+- 用如下命令跑 kernel 时出现如下界面是因为没有给 qemu 指定输出。
+
+  ```plain
+  ./qemu-system-i386 -m 8192 -kernel /home/guanshun/research/bmbt/bzImage -append "console=ttyS0 earlyprintk=serial debug"
+  ```
+
+  ![image-20211126171915639](/home/guanshun/.config/Typora/typora-user-images/image-20211126171915639.png)
+
+  加上 --nographic 命令就行。
+
+  ```plain
+  ./qemu-system-i386 -m 8192 -kernel /home/guanshun/research/bmbt/bzImage -append "console=ttyS0 earlyprintk=serial debug" --nographic
+  ```
+
+
+- AioContext
+
+  这个结构体是 QEMU 事件循环机制的事件源，但是 bmbt 中不用事件循环机制，所以所有涉及到的函数都不需要。

@@ -119,6 +119,26 @@ static void serial_ioport_write(void *opaque, hwaddr addr, uint64_t val,
 关键在于怎样 serial 的注册过程，因为 bmbt 简化了 QOM 的 realize ，下面为正常 qemu 的注册流程。
 
 ```plain
+#0  serial_realize_core (s=0x5555567dc6c0, errp=0x7fffffffdae0) at hw/char/serial.c:938
+#1  0x0000555555a67d86 in serial_isa_realizefn (dev=0x5555567dc620, errp=0x7fffffffdae0) at hw/char/serial-isa.c:78
+#2  0x0000555555a6b97a in device_set_realized (obj=0x5555567dc620, value=true, errp=0x7fffffffdca0) at hw/core/qdev.c:876
+#3  0x0000555555c9577a in property_set_bool (obj=0x5555567dc620, v=0x55555738fda0, name=0x555555f55211 "realized", opaque=0x5555572fe510, errp=0x7fffffffdca0) at qom/object.c:2078
+#4  0x0000555555c93931 in object_property_set (obj=0x5555567dc620, v=0x55555738fda0, name=0x555555f55211 "realized", errp=0x7fffffffdca0) at qom/object.c:1270
+#5  0x0000555555c96b65 in object_property_set_qobject (obj=0x5555567dc620, value=0x55555738fcf0, name=0x555555f55211 "realized", errp=0x7fffffffdca0) at qom/qom-qobject.c:26
+#6  0x0000555555c93c2a in object_property_set_bool (obj=0x5555567dc620, value=true, name=0x555555f55211 "realized", errp=0x7fffffffdca0) at qom/object.c:1336
+#7  0x0000555555a6a5d5 in qdev_init_nofail (dev=0x5555567dc620) at hw/core/qdev.c:363
+#8  0x0000555555a67f4d in serial_isa_init (bus=0x55555683edf0, index=0, chr=0x555556882170) at hw/char/serial-isa.c:137
+#9  0x0000555555a67fe5 in serial_hds_isa_init (bus=0x55555683edf0, from=0, to=4) at hw/char/serial-isa.c:149
+#10 0x0000555555934d24 in pc_superio_init (isa_bus=0x55555683edf0, create_fdctrl=true, no_vmport=false) at /home/guanshun/gitlab/qemu/hw/i386/pc.c:1342
+#11 0x00005555559351ff in pc_basic_device_init (isa_bus=0x55555683edf0, gsi=0x5555567bebf0, rtc_state=0x7fffffffde90, create_fdctrl=true, no_vmport=false, has_pit=true, hpet_irqs=4)
+    at /home/guanshun/gitlab/qemu/hw/i386/pc.c:1445
+#12 0x0000555555938576 in pc_init1 (machine=0x555556769e30, host_type=0x555555f1a9fc "i440FX-pcihost", pci_type=0x555555f1a9f5 "i440FX") at /home/guanshun/gitlab/qemu/hw/i386/pc_piix.c:235
+#13 0x0000555555938cbe in pc_init_v4_2 (machine=0x555556769e30) at /home/guanshun/gitlab/qemu/hw/i386/pc_piix.c:436
+#14 0x0000555555a75faa in machine_run_board_init (machine=0x555556769e30) at hw/core/machine.c:1143
+#15 0x00005555559f8027 in main (argc=8, argv=0x7fffffffe2f8, envp=0x7fffffffe340) at vl.c:4348
+```
+
+```plain
 #0  serial_realize (dev=0x555556a20a00, errp=0x7fffffffd300) at ../hw/char/serial.c:924
 #1  0x0000555555ce0f03 in device_set_realized (obj=0x555556a20a00, value=true, errp=0x7fffffffd408) at ../hw/core/qdev.c:761
 #2  0x0000555555cff560 in property_set_bool (obj=0x555556a20a00, v=0x55555766fbb0, name=0x555556041bd9 "realized", opaque=0x555556768b70, errp=0x7fffffffd408) at ../qom/object.c:2257
@@ -616,9 +636,183 @@ void serial_hds_isa_init(ISABus *isa_bus) {
 
 ![image-20211125215906463](/home/guanshun/.config/Typora/typora-user-images/image-20211125215906463.png)
 
-那为什么 QEMU 不会报错呢？
+这个报错是出现在这里：
 
+```c
+static void unimplemented_io(AddressSpaceDispatch *dispatch, hwaddr offset) {
+  CPUX86State *env = ((CPUX86State *)current_cpu->env_ptr);
+  printf("guest ip : %x\n", env->segs[R_CS].base + env->eip);
+  printf("failed in [%s] with offset=[%lx]\n", dispatch->name, offset);
+}
+```
 
+也就是说，当访问未分配的内存空间就会报错，
+
+```c
+static MemoryRegion *mem_mr_look_up(struct AddressSpace *as, hwaddr offset,
+                                    hwaddr *xlat, hwaddr *plen) {
+  MemoryRegion *mr = isa_bios_access(offset, xlat, plen);
+  if (mr) {
+    return mr;
+  }
+
+  if (is_smram_access(offset)) {
+    if (!as->smm && smram_region_enable) {
+      mr = &low_vga;
+    }
+
+    if (as->smm && !smram_enable && smram_region_enable) {
+      mr = &low_vga;
+    }
+  }
+
+  if (mr == &low_vga) {
+    unimplemented_io(as->dispatch, offset);
+    exit(0);
+  }
+
+  if (mr == NULL) {
+    mr = memory_region_look_up(as->dispatch, offset);
+  }
+
+  *xlat = offset - mr->offset;
+
+  if (memory_region_is_ram(mr)) {
+    duck_check(plen != NULL);
+    hwaddr diff = mr->size - *xlat;
+    *plen = MIN(diff, *plen);
+  }
+  return mr;
+}
+```
+
+```c
+static MemoryRegion *memory_region_look_up(AddressSpaceDispatch *dispatch,
+                                           hwaddr offset) {
+  for (int i = 0; i < dispatch->segment_num; ++i) {
+    MemoryRegion *mr = dispatch->segments[i];
+    duck_check(mr != NULL);
+    if (mr_match(mr, offset)) {
+      return mr;
+    }
+  }
+  unimplemented_io(dispatch, offset);
+  exit(0);
+}
+```
+
+那为什么 QEMU 不会报错呢？在 QEMU 中是这样检查地址是否有效的，但是当地址无效时不会报错，只是返回 `MEMTX_DECODE_ERROR`
+
+```c
+#define MEMTX_DECODE_ERROR      (1U << 1) /* nothing at that address */
+```
+
+```c
+MemTxResult memory_region_dispatch_write(MemoryRegion *mr,
+                                         hwaddr addr,
+                                         uint64_t data,
+                                         MemOp op,
+                                         MemTxAttrs attrs)
+{
+    unsigned size = memop_size(op);
+
+    if (!memory_region_access_valid(mr, addr, size, true, attrs)) {
+        unassigned_mem_write(mr, addr, data, size);
+        return MEMTX_DECODE_ERROR;
+    }
+
+    ...
+
+}
+```
+
+```c
+bool memory_region_access_valid(MemoryRegion *mr,
+                                hwaddr addr,
+                                unsigned size,
+                                bool is_write,
+                                MemTxAttrs attrs)
+{
+    int access_size_min, access_size_max;
+    int access_size, i;
+
+    if (!mr->ops->valid.unaligned && (addr & (size - 1))) {
+        return false;
+    }
+
+    if (!mr->ops->valid.accepts) {
+        return true;
+    }
+
+    access_size_min = mr->ops->valid.min_access_size;
+    if (!mr->ops->valid.min_access_size) {
+        access_size_min = 1;
+    }
+
+    access_size_max = mr->ops->valid.max_access_size;
+    if (!mr->ops->valid.max_access_size) {
+        access_size_max = 4;
+    }
+
+    access_size = MAX(MIN(size, access_size_max), access_size_min);
+    for (i = 0; i < size; i += access_size) {
+        if (!mr->ops->valid.accepts(mr->opaque, addr + i, access_size,
+                                    is_write, attrs)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+```
+
+```c
+static void unassigned_mem_write(void *opaque, hwaddr addr,
+                                 uint64_t val, unsigned size)
+{
+#ifdef DEBUG_UNASSIGNED
+    printf("Unassigned mem write " TARGET_FMT_plx " = 0x%"PRIx64"\n", addr, val);
+#endif
+}
+```
+
+所以在 BMBT 中也进行类似的操作即可。
+
+```c
+static uint64_t unassigned_io_read(void *opaque, hwaddr addr, unsigned size) {
+  printf("huxueshi:%s %lx %d\n", __FUNCTION__, addr, size);
+  return -1ULL;
+}
+
+static void unassigned_io_write(void *opaque, hwaddr addr, uint64_t val,
+                                unsigned size) {
+  printf("huxueshi:%s %lx %d\n", __FUNCTION__, addr, size);
+}
+
+const MemoryRegionOps unassigned_io_ops = {
+    .read = unassigned_io_read,
+    .write = unassigned_io_write,
+    .endianness = DEVICE_NATIVE_ENDIAN,
+};
+
+static void register_unassigned_io(const char *name, int offset, int size) {
+  MemoryRegion *unknown = g_new0(MemoryRegion, 1);
+  memory_region_init_io(unknown, &unassigned_io_ops, NULL, name, size);
+  io_add_memory_region(offset, unknown);
+}
+
+static void unassigned_io_setup() {
+  // In QEMU, unassigned io can be accessed sliently.
+  // For debug reason, that's not permitted. Register the ioport used by guest
+  // here explicitly
+  register_unassigned_io("ioportF1", 0xf1, 1);
+  register_unassigned_io("unknow serial 0x2f9", 0x2f9, 1);
+  register_unassigned_io("unknow serial 0x3e9", 0x3e9, 1);
+  register_unassigned_io("unknow serial 0x2e9", 0x2e9, 1);
+}
+```
+
+即在读的时候 `return -1ULL;` ，写的时候打印出地址即可。
 
 接下来将 serial 的输出重定向到特定的文件中。
 
@@ -688,6 +882,18 @@ static void serial_isa_realizefn(SerialState *s, qemu_irq irq,
 
 `qdev_prop_set_uint32` 和 `qdev_prop_set_chr` 不能简单的注释掉，这两个函数是注册设备属性的，而设备属性不是很懂，下面进一步分析。
 
+县看看各个类之间的继承关系。
+
+```plain
+
+                (BUS)          ()                     (DEVICE)
+    ISABus(bus) ----> BusState ----> DeviceState(dev) -------> Object(obj)
+                                            ^
+                                            |(DEVICE)
+                      ISADevice(isadev) -----
+
+```
+
 首先看看 qemu 是怎样注册设备并设置属性的。
 
 ```c
@@ -700,7 +906,16 @@ ISADevice *isa_create(ISABus *bus, const char *name)
 }
 ```
 
-这里 BUS 宏最终会调用到这里，
+这里 BUS 宏调用过程如下：
+
+```c
+#define BUS(obj) OBJECT_CHECK(BusState, (obj), TYPE_BUS)
+#define OBJECT_CHECK(type, obj, name) \
+    ((type *)object_dynamic_cast_assert(OBJECT(obj), (name), \
+                                        __FILE__, __LINE__, __func__))
+#define OBJECT(obj) \
+    ((Object *)(obj))
+```
 
 ```c
 Object *object_dynamic_cast_assert(Object *obj, const char *typename,
@@ -743,65 +958,45 @@ out:
 }
 ```
 
-我们来看看为什么需要这要注册。QEMU 中设备是通过 qdev 管理的，然后又用 QOM 实现，所以追踪一下 ISABus 所有的父类。
+其实 `object_dynamic_cast_assert` 没有做什么工作，重要的是 `OBJECT_CHECK` 宏的强制类型转换。但不同类型的[指针强制转换](https://docs.microsoft.com/zh-cn/cpp/c-language/conversions-to-and-from-pointer-types?view=msvc-170)不会造成变量解释错误么？
+
+也就是说我们只要创建一个变量就行，前面的一系列操作都是构建 qdev 相关的操作，包括将 device 挂载到 bus 上，看 object 中有没有对应的 TypeImpl 等等，
 
 ```c
-struct ISABus {
-    /*< private >*/
-    BusState parent_obj;
-    /*< public >*/
+ 	isadev = isa_create(bus, TYPE_ISA_SERIAL);
+    dev = DEVICE(isadev);
+    qdev_prop_set_uint32(dev, "index", index);
+    qdev_prop_set_chr(dev, "chardev", chr);
+```
 
-    MemoryRegion *address_space;
-    MemoryRegion *address_space_io;
-    qemu_irq *irqs;
-    IsaDma *dma[2];
-}
+而 bmbt 不需要这些操作，所以可以直接这样操作。我们只是需要一个指向 `SerialState` 或其他类型的指针即可，在对这个指针初始化即可。
+
+```c
+static Chardev __chardev;
+static ChardevClass __chardevclass;
+
+  Chardev *chardev = &__chardev;
+  ChardevClass *chardevclass = &__chardevclass;
+  CHARDEV_SET_CLASS(chardev, chardevclass);
+  s->chr.chr = &__chardev;
 ```
 
 ```c
-struct BusState {
-    Object obj;
-    DeviceState *parent;
-    char *name;
-    HotplugHandler *hotplug_handler;
-    int max_index;
-    bool realized;
-    int num_children;
-    QTAILQ_HEAD(, BusChild) children;
-    QLIST_ENTRY(BusState) sibling;
-};
-```
-
-```c
-struct Object
+DeviceState *qdev_create(BusState *bus, const char *name)
 {
-    /*< private >*/
-    ObjectClass *class;
-    ObjectFree *free;
-    GHashTable *properties;
-    uint32_t ref;
-    Object *parent;
-};
-```
+    DeviceState *dev;
 
-```c
-struct DeviceState {
-    /*< private >*/
-    Object parent_obj;
-    /*< public >*/
+    dev = qdev_try_create(bus, name);
+    if (!dev) {
+        if (bus) {
+            error_report("Unknown device '%s' for bus '%s'", name,
+                         object_get_typename(OBJECT(bus)));
+        } else {
+            error_report("Unknown device '%s' for default sysbus", name);
+        }
+        abort();
+    }
 
-    const char *id;
-    char *canonical_path;
-    bool realized;
-    bool pending_deleted_event;
-    QemuOpts *opts;
-    int hotplugged;
-    bool allow_unplug_during_migration;
-    BusState *parent_bus;
-    QLIST_HEAD(, NamedGPIOList) gpios;
-    QLIST_HEAD(, BusState) child_bus;
-    int num_child_bus;
-    int instance_id_alias;
-    int alias_required_for_version;
-};
+    return dev;
+}
 ```
