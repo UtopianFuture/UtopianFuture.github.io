@@ -191,7 +191,7 @@ out:
 
 具体的调用过程如下：
 
-```
+```plain
 #0  qemu_thread_create (thread=0x5555569aa130, name=0x7fffffffd5e0 "CPU 0/KVM", start_routine=0x555555c84991 <kvm_vcpu_thread_fn>, arg=0x55555699d430, mode=0)
     at ../util/qemu-thread-posix.c:529
 #1  0x0000555555c84b8b in kvm_start_vcpu_thread (cpu=0x55555699d430) at ../accel/kvm/kvm-accel-ops.c:73
@@ -228,7 +228,7 @@ CPUX86State *env = &cpu->env;
 
 它们的关系如下：
 
-```
+```plain
        / 		     +---------+
        |   CPUState  | env_ptr |---  所有 CPU 都有的数据
 	   | 		     +---------+  |
@@ -439,7 +439,7 @@ static struct file_operations kvm_vm_fops = {
 };
 ```
 
-其主要操作也是 `ioctl` ，对应的函数是 `kvm_vm_ioctl` ，这个函数是处理虚拟机级别的 `ioctl` 入口，前面的 `kvm_dev_ioctl` 是设备级别的处理入口，不要搞混了。`kvm_vm_ioctl`  会处理各种请求，刚刚我们分析的 QEMU 中的 `kvm_vm_ioctl` 请求就是在这里进行处理（注意一个是 QEMU 中的函数，一个是kernel KVM 中的函数，不要搞混了），这里先分析 `KVM_CREATE_VCPU` 即创建 VCPU 的情况。
+其主要操作也是 `ioctl` ，对应的函数是 `kvm_vm_ioctl` ，这个函数是处理虚拟机级别的 `ioctl` 入口，前面的 `kvm_dev_ioctl` 是设备级别的处理入口，不要搞混了。`kvm_vm_ioctl`  会处理各种请求，刚刚我们分析的 QEMU 中的 `kvm_vm_ioctl` 请求就是在这里进行处理（注意一个是 QEMU 中的函数，一个是 kernel KVM 中的函数，不要搞混了），这里先分析 `KVM_CREATE_VCPU` 即创建 VCPU 的情况。
 
 ```c
 static long kvm_vm_ioctl(struct file *filp,

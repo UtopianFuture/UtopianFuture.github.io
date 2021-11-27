@@ -67,11 +67,11 @@ APIC 包含两个部分：`LAPIC`和`I/O APIC`， LAPIC 位于处理器一端，
 
 [详情](https://stackoverflow.com/questions/40583848/differences-among-various-interrupts-sci-smi-nmi-and-normal-interrupt)。
 
-#### 1.7. IRQ号，中断向量和GSI。
+#### 1.7. IRQ 号，中断向量和 GSI
 
-- IRQ号是PIC时代引入的概念，由于ISA设备通常是直接连接到到固定的引脚，所以对于IRQ号描述了设备连接到了PIC的哪个引脚上，同IRQ号直接和中断优先级相关，例如IRQ0比IRQ3的中断优先级更高。
-- GSI号是ACPI引入的概念，全称是Global System Interrupt，用于为系统中每个中断源指定一个唯一的中断编号。注：ACPI Spec规定PIC的IRQ号必须对应到GSI0-GSI15上。kvm默认支持最大1024个GSI。
-- 中断向量是针对逻辑CPU的概念，用来表示中断在IDT表的索引号，每个IRQ（或者GSI）最后都会被定向到某个Vecotor上。对于PIC上的中断，中断向量 = 32(start vector) + IRQ号。在IOAPIC上的中断被分配的中断向量则是由操作系统分配。
+- IRQ 号是 PIC 时代引入的概念，由于 ISA 设备通常是直接连接到到固定的引脚，所以对于 IRQ 号描述了设备连接到了 PIC 的哪个引脚上，同 IRQ 号直接和中断优先级相关，例如 IRQ0 比 IRQ3 的中断优先级更高。
+- GSI 号是 ACPI 引入的概念，全称是 Global System Interrupt，用于为系统中每个中断源指定一个唯一的中断编号。注：ACPI Spec 规定 PIC 的 IRQ 号必须对应到 GSI0-GSI15 上。kvm 默认支持最大 1024 个 GSI。
+- 中断向量是针对逻辑 CPU 的概念，用来表示中断在 IDT 表的索引号，每个 IRQ（或者 GSI）最后都会被定向到某个 Vecotor 上。对于 PIC 上的中断，中断向量 = 32(start vector) + IRQ 号。在 IOAPIC 上的中断被分配的中断向量则是由操作系统分配。
 
 ### 2. 中断模拟
 
@@ -98,7 +98,7 @@ APIC 包含两个部分：`LAPIC`和`I/O APIC`， LAPIC 位于处理器一端，
 
 首先对整体有个了解，keyboard 中断的过程如下：
 
-```
+```plain
 #0  ps2_put_keycode (opaque=0x555557786640, keycode=240) at ../hw/input/ps2.c:258
 #1  0x0000555555add60a in ps2_keyboard_event (dev=0x555557786640, src=0x555556a4a800, evt=0x555557677e90) at ../hw/input/ps2.c:472
 #2  0x0000555555acae43 in qemu_input_event_send_impl (src=0x555556a4a800, evt=0x555557677e90) at ../ui/input.c:349
@@ -801,7 +801,7 @@ qemu_irq qemu_allocate_irq(qemu_irq_handler handler, void *opaque, int n)
 
 初始化之后的中断处理是这样的。之后创建了不同的设备之后，如后面的 `pc_i8259_create` 创建 pic 设备，中断就会由 pic 设备发起。
 
-```
+```plain
 PCMachineState         qemu_irq
 +------------+  |---->+----------+
 |            |  |     |  gsi[0]  |
@@ -930,7 +930,7 @@ qemu_irq *i8259_init(ISABus *bus, qemu_irq parent_irq)
 
 初始化的逻辑是类似的，但是回调函数不同，tcg 的是 `pic_irq_request` ，设备发起中断的详细过程如下：
 
-```
+```plain
 #0  pic_irq_request (opaque=0x0, irq=0, level=0) at ../hw/i386/x86.c:530
 #1  0x0000555555ce3a77 in qemu_set_irq (irq=0x555556b045a0, level=0) at ../hw/core/irq.c:45
 #2  0x00005555558bdc07 in qemu_irq_lower (irq=0x555556b045a0) at /home/guanshun/gitlab/qemu/include/hw/irq.h:17

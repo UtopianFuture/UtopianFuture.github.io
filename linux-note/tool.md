@@ -1,12 +1,12 @@
 # 快捷工具
 
-1. SwitchyOmega结合Qv2ray能够解决科学上网问题。在SwitchyOmega里配置端口信息，会将所有的数据通过设置的端口传输。将端口信息设置成和Qv2ray一致即可。https://github.com/FelisCatus/SwitchyOmega
+1. SwitchyOmega 结合 Qv2ray 能够解决科学上网问题。在 SwitchyOmega 里配置端口信息，会将所有的数据通过设置的端口传输。将端口信息设置成和 Qv2ray 一致即可。https://github.com/FelisCatus/SwitchyOmega
 
-2. tldr可以用来快速查询工具的用法，会给出一些常用，简单的变量信息，如tldr git-config, tldr git-push等。
+2. tldr 可以用来快速查询工具的用法，会给出一些常用，简单的变量信息，如 tldr git-config, tldr git-push 等。
 
-3. ocrmypdf 可以将图片形式的pdf转换成文字形式的pdf。
+3. ocrmypdf 可以将图片形式的 pdf 转换成文字形式的 pdf。
 
-   ```
+   ```plain
    ocrmypdf                      # it's a scriptable command line program
       -l eng+fra                 # it supports multiple languages
       --rotate-pages             # it can fix pages that are misrotated
@@ -18,15 +18,15 @@
       output_searchable.pdf      # produces validated PDF output
    ```
 
-4. qpdf可以remove the encryption
+4. qpdf 可以 remove the encryption
 
-   ```
+   ```plain
    qpdf --decrypt [--password=[password]] infilename outfilename
    ```
 
-5. uname查看内核版本。
+5. uname 查看内核版本。
 
-   ```
+   ```plain
    - Print hardware-related information: machine and processor:
       uname -mp
     - Print software-related information: operating system, release number, and version:
@@ -37,13 +37,13 @@
       uname -a
    ```
 
-6. xclip可以复制标准输出到粘贴板，具体使用待探索。
+6. xclip 可以复制标准输出到粘贴板，具体使用待探索。
 
-7. fish能自动联想指令，安装过程很简单，sudo apt install fish，之后直接`fish`即可使用。亦可将其作为默认shell。
+7. fish 能自动联想指令，安装过程很简单，sudo apt install fish，之后直接`fish`即可使用。亦可将其作为默认 shell。
 
 8. stat 查看文件的状态
 
-   ```
+   ```plain
    Display file and filesystem information.
     - Show file properties such as size, permissions, creation and access dates among others:
       stat {{file}}
@@ -61,7 +61,7 @@
 
 9. tar 文件解压，最常用的参数是`-xvf`
 
-   ```
+   ```plain
    - [c]reate an archive and write it to a [f]ile:
       tar cf {{target.tar}} {{file1}} {{file2}} {{file3}}
     - [c]reate a g[z]ipped archive and write it to a [f]ile:
@@ -80,9 +80,9 @@
       tar xf {{source.tar}} --wildcards "{{*.html}}"
    ```
 
-10. tmux工具可以用来分屏，常用的快捷键：
+10. tmux 工具可以用来分屏，常用的快捷键：
 
-```
+```plain
 Ctrl+a %					划分左右两个窗格；
 Ctrl+a "					划分上下两个窗格；
 Ctrl+a <arrow key>			光标切换到其他窗格。<arrow key>是指向要切换到的窗格的方向键，比如切换到下方窗格，就按方向键↓。
@@ -102,17 +102,17 @@ Ctrl+q s					列出所有会话
 
 tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tmux source ~/.tmux/tmux.conf`来更新配置。可以将 `.tmux.conf` 移到 `~/` 目录下，tmux 就会将其作为默认配置文件，下次开机使用 tmux 会默认读取这个配置文件。
 
-按下PREFIX+[快捷键进入复制模式，在复制模式下按下q字符退出复制模式。
+按下 PREFIX+[快捷键进入复制模式，在复制模式下按下 q 字符退出复制模式。
 
-复制模式类似于Vim的普通模式，键盘操作风格也类似，在复制模式下，按下v字符，进行待复制内容的选取，类似于进入Vim的可视模式，键盘操作风格也类似。
+复制模式类似于 Vim 的普通模式，键盘操作风格也类似，在复制模式下，按下 v 字符，进行待复制内容的选取，类似于进入 Vim 的可视模式，键盘操作风格也类似。
 
-在复制模式下crtl + s进入查找模式，同样按q退出。
+在复制模式下 crtl + s 进入查找模式，同样按 q 退出。
 
-11. termux: arm中使用的终端。
+11. termux: arm 中使用的终端。
 
 12. 输入输出重定向是
 
-    ```
+    ```plain
     missing:~$ echo hello > hello.txt
     missing:~$ cat hello.txt
     hello
@@ -124,13 +124,13 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
      通过“>” “<”完成的。
     ```
 
-13. history程序可以查询所有用过的指令。
+13. history 程序可以查询所有用过的指令。
 
-14. split可以将文件分为大小不同的块。如split -l 1000000 latx_log -d -a 4 latx_log_，-l表示每个文件多少行，也可以按比特分；-d表示后缀用数字表示，-a 4表示后缀是4位数字。
+14. split 可以将文件分为大小不同的块。如 split -l 1000000 latx_log -d -a 4 latx_log_，-l 表示每个文件多少行，也可以按比特分；-d 表示后缀用数字表示，-a 4 表示后缀是 4 位数字。
 
-15. rsync可以用来在不同机器上同步文件，注意host和target文件名最后不加斜杠表示同步整个文件夹到目的文件夹中。
+15. rsync 可以用来在不同机器上同步文件，注意 host 和 target 文件名最后不加斜杠表示同步整个文件夹到目的文件夹中。
 
-    ```
+    ```plain
     rsync -avzP /home/guanshun/gitlab/latx/target guanshun:/home/guanshun/gitlab/latx-x64
     ```
 
@@ -142,9 +142,9 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
 
     ​	ctrl v   块选
 
-    ​	块选之后’d’批量删除，’I’ + ESC批量添加。
+    ​	块选之后’d’批量删除，’I’ + ESC 批量添加。
 
-    ​	visual模式下：
+    ​	visual 模式下：
 
     ​	d   ------ 剪切操作
 
@@ -152,13 +152,13 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
 
     ​	p   -------粘贴操作
 
-    ​	^  --------选中当前行，光标位置到行首（或者使用键盘的HOME键）
+    ​	^  --------选中当前行，光标位置到行首（或者使用键盘的 HOME 键）
 
-    ​	$  --------选中当前行，光标位置到行尾（或者使用键盘的END键）
+    ​	$  --------选中当前行，光标位置到行尾（或者使用键盘的 END 键）
 
-17. pkill：杀进程，-9强制杀死
+17. pkill：杀进程，-9 强制杀死
 
-    ```
+    ```plain
      - Kill all processes which match:
        pkill -9 "{{process_name}}"
 
@@ -166,17 +166,17 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
        pkill -9 --full "{{command_name}}"
     ```
 
-18. diff和vimdiff可以以行为单位对比两个文件的不同。
+18. diff 和 vimdiff 可以以行为单位对比两个文件的不同。
 
 19. lsblk - list block devices
 
 20. mmap, munmap - map or unmap files or devices into memory
 
-21. cat file1 file2 file3… > file将多个文件合并成同一个文件。
+21. cat file1 file2 file3…… > file 将多个文件合并成同一个文件。
 
-22. truncate可以设置文件的大小，如`truncate --size 50M qemu_log`，超过50M的就会截断。
+22. truncate 可以设置文件的大小，如`truncate --size 50M qemu_log`，超过 50M 的就会截断。
 
-23. sed可以删除文件的任意行，`sed ‘n, md’ filename`；
+23. sed 可以删除文件的任意行，`sed ‘n, md’ filename`；
 
     或者删除含有某个字符的行，将结果输出到指定文件，`sed ‘/xxx/d’  filename1 > filename2`；
 
@@ -186,7 +186,7 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
 
 24. sort - sort lines of text files
 
-    ```
+    ```plain
     - Sort a file in ascending order:
       sort {{path/to/file}}
 
@@ -196,7 +196,7 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
 
     同时也能去除文件中相同的行 `sort -n headpath1.md | uniq > headpath2.md`
 
-25. du查看文件大小
+25. du 查看文件大小
 
     ```
     - List the sizes of a directory and any subdirectories, in the given unit (B/KB/MB):
@@ -212,9 +212,9 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
        du -ah {{path/to/directory}}
     ```
 
-26. df查看磁盘使用情况。
+26. df 查看磁盘使用情况。
 
-    ```
+    ```plain
     - Display all filesystems and their disk usage:
        df
 
@@ -233,20 +233,20 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
 
 27. wc -l 查看文件行数。
 
-28. Loongarch下的gdb不能查看浮点寄存器，将
+28. Loongarch 下的 gdb 不能查看浮点寄存器，将
 
-    ```
+    ```plain
     gdb/features/loongarch/lbt64.c
     gdb/features/loongarch/lbt32.c
     gdb/features/loongarch/lasx.c
     gdb/features/loongarch/lsx.c
     ```
 
-    中的lasx等变量修改成NULL，然后重新编译，记得修改环境变量。
+    中的 lasx 等变量修改成 NULL，然后重新编译，记得修改环境变量。
 
 29. pkg-config
 
-    ```
+    ```plain
     pkg-config - Return metainformation about installed libraries
     - Get the list of libraries and their dependencies:
        pkg-config --libs {{library1 library2 ...}}
@@ -255,7 +255,7 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
        pkg-config --cflags --libs {{library1 library2 ...}}
     ```
 
-30. gdb显示数据的不同格式：
+30. gdb 显示数据的不同格式：
 
     ​	x  按十六进制格式显示变量。
 
@@ -273,58 +273,58 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
 
     ​	f  按浮点数格式显示变量。
 
-31. gdb使用examine命令（简写是x）来查看内存地址中的值。x命令的语法如下所示：
+31. gdb 使用 examine 命令（简写是 x）来查看内存地址中的值。x 命令的语法如下所示：
 
-    ​	x/<n/f/u> <addr>  n、f、u是可选的参数。
+    ​	x/<n/f/u> <addr>  n、f、u 是可选的参数。
 
     ​	n 是一个正整数，表示显示内存的长度，也就是说从当前地址向后显示几个地址的内容。
 
-    ​	f 表示显示的格式，参见44。
+    ​	f 表示显示的格式，参见 44。
 
-    ​	u表示显示的单位，b表示单字节，h表示双字节，w表示四字节，g表示八字节。当我们指定了字节长度后，GDB会从指内存定的内存地址开始，读写指定字节，并把其当作一个值取出来。
+    ​	u 表示显示的单位，b 表示单字节，h 表示双字节，w 表示四字节，g 表示八字节。当我们指定了字节长度后，GDB 会从指内存定的内存地址开始，读写指定字节，并把其当作一个值取出来。
 
     ​	<addr>表示一个内存地址。
 
-    ​	n/f/u三个参数可以一起使用。例如：
+    ​	n/f/u 三个参数可以一起使用。例如：
 
-    ​	命令：x/8xb 0x54320 表示，从内存地址0x54320读取内容，b表示以字节为一个单位，8表示八个单位，x表示按十六进制显示。
+    ​	命令：x/8xb 0x54320 表示，从内存地址 0x54320 读取内容，b 表示以字节为一个单位，8 表示八个单位，x 表示按十六进制显示。
 
-32. sensor能够查看硬件温度，psensor能够gui显示。
+32. sensor 能够查看硬件温度，psensor 能够 gui 显示。
 
-33. vscode 中alt + 方向键能交换相邻行。
+33. vscode 中 alt + 方向键能交换相邻行。
 
 34. 根据时间删除文件和文件夹
 
-    ```
+    ```plain
     sudo find . -mtime +2 -name "*" -exec rm -rf {} \;
     ```
 
     . ：准备要进行清理的任意目录
     -mtime：标准语句写法
-    ＋2：查找2天前的文件，这里用数字代表天数，＋30表示查找30天前的文件
-    "*.*"：希望查找的数据类型，"*.jpg"表示查找扩展名为jpg的所有文件，"*"表示查找所有文件
+    ＋2：查找 2 天前的文件，这里用数字代表天数，＋30 表示查找 30 天前的文件
+    "*.*"：希望查找的数据类型，"*.jpg"表示查找扩展名为 jpg 的所有文件，"*"表示查找所有文件
     -exec：固定写法
     rm -rf：强制删除文件，包括目录
      {} \; ：固定写法，一对大括号+空格+/+;
 
-35. vim中能够画代码树的插件——[DrawIt](http://www.drchip.org/astronaut/vim/index.html#DRAWIT)
+35. vim 中能够画代码树的插件——[DrawIt](http://www.drchip.org/astronaut/vim/index.html#DRAWIT)
 
-    下载后用vim打开DrawIt.vba.gz
+    下载后用 vim 打开 DrawIt.vba.gz
 
-    ```
+    ```plain
     vim DrawIt.vba.gz
     ```
 
     然后使用 `:so %` 进行解压，最后 `:q` 退出 `vim`，`DrawIt` 就安装完成。
 
-    进入vim后用`\di`，`\ds`即可进入，退出DrawIt。
+    进入 vim 后用`\di`，`\ds`即可进入，退出 DrawIt。
 
-    ```
+    ```plain
     \di to start DrawIt，
     \ds to stop  DrawIt.
     ```
 
-    ```
+    ```plain
     Supported Features
        <left>       move and draw left
        <right>      move and draw right, inserting lines/space as needed
@@ -365,7 +365,7 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
 
     将目标文件的一部分或者全部内容拷贝到另外一个目标文件中，或者实现目标文件的格式转换。
 
-    ```
+    ```plain
     SYNOPSIS
            objcopy [-F bfdname|--target=bfdname]
                    [-I bfdname|--input-target=bfdname]
@@ -376,12 +376,12 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
 
     例如：
 
-    ```
+    ```plain
     objcopy -O binary test.o test.bin
     ```
 
 37. spacevim 快捷键
-    ```
+    ```plain
     space f t 		打开/关闭目录
     f3        		快捷键打开/关闭目录
     space f o 		打开当前文件所在目录
@@ -408,7 +408,7 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
     ```
 
 38. 利用 voidkiss/folaterm 可以实现将终端以 float window 的形式打开，映射的快捷键分别为:
-    ```
+    ```plain
     Ctrl n : 创建新的 terminal window
     Ctrl p : 切换到 prev 的 terminal window
     Fn5 : 显示/隐藏窗口
@@ -426,19 +426,19 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
 
 38. vim 替换
 
-    ```
+    ```plain
     :[addr]s/源字符串/目的字符串/[option]
     ```
 
     全局替换命令为：
 
-    ```
+    ```plain
     :%s/源字符串/目的字符串/g
     ```
 
     **（1）[addr] 表示检索范围，省略时表示当前行。**
 
-    “1,20” ：表示从第1行到20行；
+    “1,20” ：表示从第 1 行到 20 行；
 
     “%” ：表示整个文件，同“1,$”；
 
@@ -452,22 +452,22 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
 
     c 表示进行确认；
 
-    p 表示替代结果逐行显示（Ctrl + L恢复屏幕）;
+    p 表示替代结果逐行显示（Ctrl + L 恢复屏幕）;
 
-    省略option时仅对每行第一个匹配串进行替换;
+    省略 option 时仅对每行第一个匹配串进行替换;
 
     如果在源字符串和目的字符串中出现特殊字符，需要用”\”转义 如 \t 。
 
 39. cloc - Count, or compute differences of, lines of source code and comments
 
-    ```
+    ```plain
     - Count all the lines of code in a directory:                                                             	cloc {{path/to/directory}}                                                                             - Count all the lines of code in a directory, displaying a progress bar during the counting process:
       cloc --progress=1 {{path/to/directory}}
     ```
 
 40. locate 查找文件比 find 快，配合 grep 使用很方便
 
-    ```
+    ```plain
     Find filenames quickly.
      - Look for pattern in the database. Note: the database is recomputed periodically (usually weekly or daily):
        locate {{pattern}}
@@ -477,7 +477,7 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
        sudo updatedb
     ```
 
-    ```
+    ```plain
     locate cpu.h|grep gitlab/bmbt
     /home/guanshun/gitlab/bmbt/.ccls-cache/@home@guanshun@gitlab@bmbt/include@hw@core@cpu.h
     /home/guanshun/gitlab/bmbt/.ccls-cache/@home@guanshun@gitlab@bmbt/include@hw@core@cpu.h.blob
@@ -489,7 +489,7 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
 
 41. alias 比 ln -s 更好用，例如：
 
-    ```
+    ```plain
     alias gc 'git commit'
     alias gs 'git status'
     alias lg lazygit
@@ -497,7 +497,7 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
 
     之后就可以直接使用 gc, gs, lg 等等。
 
-    ```
+    ```plain
      - List all aliases:
        alias
      - Create a generic alias:

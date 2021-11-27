@@ -2,9 +2,9 @@
 
 ## page coloring
 
-系统在为进程分配内存空间时，是按照virtual memory分配的，然后virtual memory会映射到不同的physical memory，这样会导致一个问题，相邻的virtual memory会映射到不相邻的physical memory中，然后在缓存到cache中时，相邻的virtual memory会映射到同一个cache line，从而导致局部性降低，性能损失。
+系统在为进程分配内存空间时，是按照 virtual memory 分配的，然后 virtual memory 会映射到不同的 physical memory，这样会导致一个问题，相邻的 virtual memory 会映射到不相邻的 physical memory 中，然后在缓存到 cache 中时，相邻的 virtual memory 会映射到同一个 cache line，从而导致局部性降低，性能损失。
 
-Page coloring则是将physical memory分为不同的color，不同color的physical memory缓存到不同的cache line，然后映射到virtual memory时，virtual memory也有不同的color。这样就不存在相邻的virtual memory缓存到cache时在同一个cache line。（很有意思，现在没能完全理解。和组相联映射有什么关系？4k页和16k页和这个又有什么关系？）
+Page coloring 则是将 physical memory 分为不同的 color，不同 color 的 physical memory 缓存到不同的 cache line，然后映射到 virtual memory 时，virtual memory 也有不同的 color。这样就不存在相邻的 virtual memory 缓存到 cache 时在同一个 cache line。（很有意思，现在没能完全理解。和组相联映射有什么关系？4k 页和 16k 页和这个又有什么关系？）
 
 ![](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/others.1.png?raw=true)
 
@@ -44,23 +44,23 @@ gcc -Og -pg xxx.c -o xxx
 
 代理服务器提供代理服务。一个完整的代理请求过程为：客户端首先与代理服务器创建连接，接着根据代理服务器所使用的代理协议，请求对目标服务器创建连接、或者获得目标服务器的指定资源。在后一种情况中，代理服务器可能对目标服务器的资源下载至本地缓存，如果客户端所要获取的资源在代理服务器的缓存之中，则代理服务器并不会向目标服务器发送请求，而是直接传回已缓存的资源。一些代理协议允许代理服务器改变客户端的原始请求、目标服务器的原始响应，以满足代理协议的需要。代理服务器的选项和设置在计算机程序中，通常包括一个“防火墙”，允许用户输入代理地址，它会遮盖他们的网络活动，可以允许绕过互联网过滤实现网络访问。
 
-代理服务器的基本行为就是接收客户端发送的请求后转发给其他服务器。代理不改变请求URI，并不会直接发送给前方持有资源的目标服务器。
+代理服务器的基本行为就是接收客户端发送的请求后转发给其他服务器。代理不改变请求 URI，并不会直接发送给前方持有资源的目标服务器。
 
 HTTP/HTTPS/SOCKS 代理指的是客户端连接代理服务器的协议，指客户端和代理服务器之间交互的协议。
 
 ### Socks
 
-SOCKS是一种网络传输协议，主要用于客户端与外网服务器之间通讯的中间传递。SOCKS工作在比HTTP代理更低的层次：SOCKS使用握手协议来通知代理软件其客户端试图进行的SOCKS连接，然后尽可能透明地进行操作，而常规代理可能会解释和重写报头（例如，使用另一种底层协议，例如FTP；然而，HTTP代理只是将HTTP请求转发到所需的HTTP服务器）。虽然HTTP代理有不同的使用模式，HTTP CONNECT方法允许转发TCP连接；然而，SOCKS代理还可以转发UDP流量（仅SOCKS5），而HTTP代理不能。
+SOCKS 是一种网络传输协议，主要用于客户端与外网服务器之间通讯的中间传递。SOCKS 工作在比 HTTP 代理更低的层次：SOCKS 使用握手协议来通知代理软件其客户端试图进行的 SOCKS 连接，然后尽可能透明地进行操作，而常规代理可能会解释和重写报头（例如，使用另一种底层协议，例如 FTP；然而，HTTP 代理只是将 HTTP 请求转发到所需的 HTTP 服务器）。虽然 HTTP 代理有不同的使用模式，HTTP CONNECT 方法允许转发 TCP 连接；然而，SOCKS 代理还可以转发 UDP 流量（仅 SOCKS5），而 HTTP 代理不能。
 
-### fpu, xmm, mmx之间的关系和区别
+### fpu, xmm, mmx 之间的关系和区别
 
-​		(1) x87 fpu 浮点部分，有8个浮点寄存器，st(i)，top指针指向当前使用的寄存器。
+​		(1) x87 fpu 浮点部分，有 8 个浮点寄存器，st(i)，top 指针指向当前使用的寄存器。
 
 ​       			        ![](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/others.2.png?raw=true)
 
 ![](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/others.3.png?raw=true)
 
-(2) xmm 支持simd指令的技术。8个xmm寄存器，和fpu一样的组织形式。
+(2) xmm 支持 simd 指令的技术。8 个 xmm 寄存器，和 fpu 一样的组织形式。
 
 The MMX state is aliased to the x87 FPU state. No new states or modes have been added to IA-32 architecture to support the MMX technology. The same floating-point instructions that save and restore the x87 FPU state also handle the MMX state.
 
@@ -70,9 +70,9 @@ The MMX state is aliased to the x87 FPU state. No new states or modes have been 
 
 (3) sse extensions(The streaming SIMD extensions)
 
-和mmx一样，也是simd扩展，但是sse是128-bit扩展。在32-bit模式下有8个128-bit寄存器，也称作xmm寄存器，在64-bit模式下有16个128-bit寄存器。
+和 mmx 一样，也是 simd 扩展，但是 sse 是 128-bit 扩展。在 32-bit 模式下有 8 个 128-bit 寄存器，也称作 xmm 寄存器，在 64-bit 模式下有 16 个 128-bit 寄存器。
 
-32-bit的mxcsr寄存器为xmm寄存器提供控制和状态位。
+32-bit 的 mxcsr 寄存器为 xmm 寄存器提供控制和状态位。
 
 ![](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/others.6.png?raw=true)
 
@@ -82,7 +82,7 @@ The MMX state is aliased to the x87 FPU state. No new states or modes have been 
 
 `mmap`, `munmap` - map or unmap files or devices into memory
 
-```
+```plain
 #include <sys/mman.h>
 
 void *mmap(void *addr, size_t length, int prot, int flags,
@@ -125,13 +125,13 @@ Usually, the `#include <xxx>` makes it look into system folders first, like `/us
 
 ### 交叉编译
 
-在x86机器上编译x86的可执行文件叫本地编译， 即在当前编译平台下，编译出来的程序只能放到当前平台下运行。
+在 x86 机器上编译 x86 的可执行文件叫本地编译， 即在当前编译平台下，编译出来的程序只能放到当前平台下运行。
 
-交叉编译可以理解为，在当前编译平台下，编译出来的程序能运行在不同体系结构的机器上，但是编译平台本身却不能运行该程序。比如，我们在 x86 平台上，编译能运行在 loongarch 机器的程序，编译得到的可执行文件在 x86 平台上是不能运行的，必须放到 loongarch机器上才能运行。
+交叉编译可以理解为，在当前编译平台下，编译出来的程序能运行在不同体系结构的机器上，但是编译平台本身却不能运行该程序。比如，我们在 x86 平台上，编译能运行在 loongarch 机器的程序，编译得到的可执行文件在 x86 平台上是不能运行的，必须放到 loongarch 机器上才能运行。
 
 ### ioctl
 
-```
+```plain
 NAME
        ioctl - control device
 SYNOPSIS
@@ -143,7 +143,7 @@ DESCRIPTION
 		An  ioctl() request has encoded in it whether the argument is an in parameter or out parameter, and the size of the argument argp in bytes.  Macros and defines used in specifying an ioctl() request are located in the file <sys/ioctl.h>.
 ```
 
-### C语言中结构体成员变量前的点的作用
+### C 语言中结构体成员变量前的点的作用
 
 结构体中成员变量前的点： 结构体成员指定初始化
 
@@ -153,7 +153,7 @@ DESCRIPTION
 
 （3）初始化语句的元素以固定的顺序出现，和被初始化的数组或结构体中的元素顺序一样，这样可以不用按顺序初始化；
 
-（4）C99才开始支持的。
+（4）C99 才开始支持的。
 
 ### 二进制兼容和源码兼容
 
@@ -173,7 +173,7 @@ Middleware helps developers build applications more efficiently. It acts like th
 
 Middleware can support application environments that work smoothly and consistently across a highly distributed platform.
 
-### What Are the Components of a Linux Distribution?
+### What Are the Components of a Linux Distribution
 
 - [Linux Kernel](https://fosspost.org/what-are-the-components-of-a-linux-distribution/#Linux_Kernel)
 

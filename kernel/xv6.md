@@ -4,9 +4,9 @@
 
 content: Implement the UNIX program `sleep` for xv6.
 
-​	system call会传入2个及以上的参数，第一个参数默认是system call的名称，第二个及之后的参数才是system call需要的参数，如sleep 10，10会作为参数传递给sleep system call。main函数中argc表示参数的数量，argv[]中存储参数。
+​	system call 会传入 2 个及以上的参数，第一个参数默认是 system call 的名称，第二个及之后的参数才是 system call 需要的参数，如 sleep 10，10 会作为参数传递给 sleep system call。main 函数中 argc 表示参数的数量，argv[]中存储参数。
 
-​	每一个指令底层都是使用system call。sysproc.c提供了一系列的system call。
+​	每一个指令底层都是使用 system call。sysproc.c 提供了一系列的 system call。
 
 ​	用户态的参数通过寄存器传入内核态，可以通过`argint()`, `argstr()`, `argaddr()`等函数获取。
 
@@ -22,7 +22,7 @@ background:
 
 （3）`read(fd, buf, sizeof(buf)) system call`则是从`fd`中读取最多`sizeof(buf)`个字符到`buf`中，`fd`表示标准输入。可以通过`pipe`, `read`, `write`完成任意两个进程间的通讯。
 
-（4）`fork()`会创建子进程，对于父进程返回进程的pid，对于子进程，返回0。但是如果子进程再创建子进程，则`getpid()`返回的结果是一样的，即不会再分配新的pid，不知道为什么这样设计。
+（4）`fork()`会创建子进程，对于父进程返回进程的 pid，对于子进程，返回 0。但是如果子进程再创建子进程，则`getpid()`返回的结果是一样的，即不会再分配新的 pid，不知道为什么这样设计。
 
 hint:
 
@@ -76,7 +76,7 @@ pingpong()
         if((m = read(p3[0], receive, sizeof(receive))) < 0){
             printf("parent: read error\n");
         }else{
-            printf("<%d>:received pong-%s \n", getpid(), receive);  
+            printf("<%d>:received pong-%s \n", getpid(), receive);
         }
     }
 }
@@ -100,11 +100,11 @@ UPROGS=\
 
 （6）结果
 
-```
+```plain
 $ pingpong
-4 
-<5>:received ping-00000000 
-<5>:received pingpong-10000000 
+4
+<5>:received ping-00000000
+<5>:received pingpong-10000000
 <4>:received pong-11000000
 ```
 
@@ -114,10 +114,10 @@ $ pingpong
 
 content: use `pipe` and `fork` to set up the pipeline.
 
-（1）开始我设想的是由父进程不断的产生自然数，产生一个素数就创建一个子进程，子进程又创建一个子进程，将下一个素数通过`pipe()`传过去，这样不断的传，直到35，但是`fork()`对于子进程返回的pid是0，不知道怎么遍历所有的子进程。
+（1）开始我设想的是由父进程不断的产生自然数，产生一个素数就创建一个子进程，子进程又创建一个子进程，将下一个素数通过`pipe()`传过去，这样不断的传，直到 35，但是`fork()`对于子进程返回的 pid 是 0，不知道怎么遍历所有的子进程。
 
-（2）然后看网上的解法是一次产生所有的数，用两个数组作为pipe的读写缓冲。
-需要注意的点是`write()`, `read()`的缓冲区都是char * 指针，如果传输的是非char类型，需要强制类型转化。如：
+（2）然后看网上的解法是一次产生所有的数，用两个数组作为 pipe 的读写缓冲。
+需要注意的点是`write()`, `read()`的缓冲区都是 char * 指针，如果传输的是非 char 类型，需要强制类型转化。如：
 
 ```c
 int p[512];
@@ -129,9 +129,9 @@ read(p[0], buf, sizeof(char * ));
 int p[i] == * (int * )buf;
 ```
 
-（3）还有就是`write()`之后要用`close()`将`pipe()`关闭，不然之后的read可能会一直等待结束。
-（4）每个进程结束要用exit退出，不然会出现莫名其妙的bug。
-（5）`wait()`是等待子进程结束，试过如果不用`wait()`会出现zombie，暂时不知道为什么。
+（3）还有就是`write()`之后要用`close()`将`pipe()`关闭，不然之后的 read 可能会一直等待结束。
+（4）每个进程结束要用 exit 退出，不然会出现莫名其妙的 bug。
+（5）`wait()`是等待子进程结束，试过如果不用`wait()`会出现 zombie，暂时不知道为什么。
 
 
 
@@ -139,9 +139,9 @@ int p[i] == * (int * )buf;
 
 content: find all the files in a directory tree with a specific name.
 
-​	这个实验走了弯路，正确的思路应该是用fstat获取文件状态后判断这个文件是文件还是文件夹，如果是文件则比较，然后输出，如果是文件夹则遍历其中的所有文件，然后递归。但要注意对于.和..文件不要遍历。
+​	这个实验走了弯路，正确的思路应该是用 fstat 获取文件状态后判断这个文件是文件还是文件夹，如果是文件则比较，然后输出，如果是文件夹则遍历其中的所有文件，然后递归。但要注意对于.和..文件不要遍历。
 
-​	我之前是先遍历path中的文件。判断是否是文件夹，如果是文件夹在递归调用。但是没有及时的用`fstat()`获取文件的状态，导致一直用当前文件夹的状态去判断，从而一直是T_DIR，不能对T_FILE进行判断。
+​	我之前是先遍历 path 中的文件。判断是否是文件夹，如果是文件夹在递归调用。但是没有及时的用`fstat()`获取文件的状态，导致一直用当前文件夹的状态去判断，从而一直是 T_DIR，不能对 T_FILE 进行判断。
 
 
 
@@ -149,13 +149,13 @@ content: find all the files in a directory tree with a specific name.
 
 content: add a system call tracing feature.
 
-这个实验的思路比较简单，在`syscall.c`中添加printf指令即可。难点主要有以下几点：
+这个实验的思路比较简单，在`syscall.c`中添加 printf 指令即可。难点主要有以下几点：
 
-（1）`mask`怎样传递。开始我以为要通过外部显式传递，但应该像sleep一样，在proc结构体中增加一个参数mask，然后通过`argint()`获取当前process的`mask`，关于这个函数的实现还要研究一下，很重要。函数的参数都是通过寄存器传递的，如果参数多于6个，通过栈传递。
+（1）`mask`怎样传递。开始我以为要通过外部显式传递，但应该像 sleep 一样，在 proc 结构体中增加一个参数 mask，然后通过`argint()`获取当前 process 的`mask`，关于这个函数的实现还要研究一下，很重要。函数的参数都是通过寄存器传递的，如果参数多于 6 个，通过栈传递。
 
-（2）trace的参数开始理解错了，以为直接是syscall的id，但应该是通过移位来判断对应的syscall是否打印。
+（2）trace 的参数开始理解错了，以为直接是 syscall 的 id，但应该是通过移位来判断对应的 syscall 是否打印。
 
-然后关于进程执行，即proc结构体要仔细研究一下。
+然后关于进程执行，即 proc 结构体要仔细研究一下。
 
 hint:
 
@@ -170,7 +170,7 @@ UPROGS=\
 
 （2）add a prototype for the system call to `user/user.h`, a stub to `user/usys.pl`, and a syscall number to `kernel/syscall.h`.
 
-（3）在proc结构体中添加`mask`变量，用来记录是否打印该trace；
+（3）在 proc 结构体中添加`mask`变量，用来记录是否打印该 trace；
 
 ```c
 // Per-process state
@@ -187,7 +187,7 @@ struct proc {
 uint64 sys_trace(void){
   struct proc * p = myproc();
   int n, num = 0;
-  
+
   if(argint(0, &n) < 0)
     return -1;
 
@@ -248,7 +248,7 @@ syscall(void)
 
 （7）结果
 
-```
+```plain
 $ trace 2 usertests forkforkfork
 usertests starting
 3: syscall fork -> 4
@@ -348,7 +348,7 @@ uint64 procnum(void){
 
 （5）结果
 
-```
+```plain
 $ sysinfotest
 sysinfotest: start
 sysinfotest: OK
@@ -356,17 +356,17 @@ sysinfotest: OK
 
 遇到的问题：
 
-​	需要详细了解的函数：`mycpu()`, `myproc()`, `argaddr()`, `copyout()`。同时，没有搞懂用户空间user.h中定义的system calls怎么传递到kernel中，调用kernel中的syscall。
+​	需要详细了解的函数：`mycpu()`, `myproc()`, `argaddr()`, `copyout()`。同时，没有搞懂用户空间 user.h 中定义的 system calls 怎么传递到 kernel 中，调用 kernel 中的 syscall。
 
-​	sysproc.c和sysfile.c中定义所有的syscall，然后proc.c和file.c中定义了syscall的实现。
+​	sysproc.c 和 sysfile.c 中定义所有的 syscall，然后 proc.c 和 file.c 中定义了 syscall 的实现。
 
-（1）在sysproc.c中定义的sys_sysinfo()函数怎样直接修改sysinfo结构体的值。很简单，就是正常的函数结构体，直接定义就好。
+（1）在 sysproc.c 中定义的 sys_sysinfo()函数怎样直接修改 sysinfo 结构体的值。很简单，就是正常的函数结构体，直接定义就好。
 
-（2）mycpu()：通过调用`cpuid()`获取当前cpuid，而`cpuid()`中通过读取tp(thread pointer)寄存器得到core number（tp寄存器怎么处理有待下一步探究)。而cpus结构体变量中保存了所有的cpu上下文。
+（2）mycpu()：通过调用`cpuid()`获取当前 cpuid，而`cpuid()`中通过读取 tp(thread pointer)寄存器得到 core number（tp 寄存器怎么处理有待下一步探究)。而 cpus 结构体变量中保存了所有的 cpu 上下文。
 
-（3）`myproc()`是获取当前process的状态，即运行在当前cpu的process。
+（3）`myproc()`是获取当前 process 的状态，即运行在当前 cpu 的 process。
 
-（4）`argaddr()`是获取对应寄存器的值。（当程序要从user写入数据到kernel中，获取到的寄存器就是保存地址指针？）
+（4）`argaddr()`是获取对应寄存器的值。（当程序要从 user 写入数据到 kernel 中，获取到的寄存器就是保存地址指针？）
 
 （5）`copyout()`: copy from kernel to user, copy len bytes from src to virtual address dstva in a given page table.
 
@@ -418,7 +418,7 @@ void reprint(pagetable_t pagetable, int level){
 
 （3）结果
 
-```
+```plain
 hart 2 starting
 hart 1 starting
 page table 0x0000000087f6e000
@@ -434,7 +434,7 @@ page table 0x0000000087f6e000
 init: starting sh
 ```
 
-​	开始想的是直接递归调用`vmprint()`，但是不知道level和pte index怎么解决，后来才知道要另外声明一个函数`tbprint(pagetable_t pagetable, int level)`，在`vmprint()`里调用，传入level，同时遍历所有的pte，index也就出来了，而不是我之前想的用`PXMASK`，`PXSHIFT`，`PX`宏来计算得到。
+​	开始想的是直接递归调用`vmprint()`，但是不知道 level 和 pte index 怎么解决，后来才知道要另外声明一个函数`tbprint(pagetable_t pagetable, int level)`，在`vmprint()`里调用，传入 level，同时遍历所有的 pte，index 也就出来了，而不是我之前想的用`PXMASK`，`PXSHIFT`，`PX`宏来计算得到。
 
 
 
@@ -442,7 +442,7 @@ init: starting sh
 
 content: modify the kernel so that every process uses its own copy of the kernel page table when executing in the kernel.
 
-​	“every process uses its own copy of the kernel page table when executing in the kernel.”这句话什么意思？每个进程在kernel时使用自己的kernel page table。这个kernel page table要怎么构造，进程怎么使用它。在这个实验中，仅仅是初始化和释放了`kpagetable`，要在下一个实验才会使用`kpagetable`。
+​	“every process uses its own copy of the kernel page table when executing in the kernel.”这句话什么意思？每个进程在 kernel 时使用自己的 kernel page table。这个 kernel page table 要怎么构造，进程怎么使用它。在这个实验中，仅仅是初始化和释放了`kpagetable`，要在下一个实验才会使用`kpagetable`。
 
 （1）首先在`proc`结构体中声明一个`kpagetable`变量；
 
@@ -455,7 +455,7 @@ struct proc {
 };
 ```
 
-（2）然后初始化这个`kpagetable`，初始化的过程和kernel page table的过程一样；同时要重新设计一个函数`ukvmmap()`，用来将`kpagetable`的各个页映射到物理空间，这个函数和原来的`kvmmap()`类似；
+（2）然后初始化这个`kpagetable`，初始化的过程和 kernel page table 的过程一样；同时要重新设计一个函数`ukvmmap()`，用来将`kpagetable`的各个页映射到物理空间，这个函数和原来的`kvmmap()`类似；
 
 ```c
 // add a mapping to the user kernel page table.
@@ -541,9 +541,9 @@ allocproc(void)
 }
 ```
 
-（4）Make sure that each process's kernel page table has a mapping for that process's kernel stack.这个过程不理解，或者说不理解这个kstack是干什么用的。
+（4）Make sure that each process's kernel page table has a mapping for that process's kernel stack.这个过程不理解，或者说不理解这个 kstack 是干什么用的。
 
-​	***kstack***: When the process enters the kernel (for a system call or interrupt), the kernel code executes on the process’s kernel stack. 即process在kernel中执行时，kernel code执行在kernel stack中。
+​	***kstack***: When the process enters the kernel (for a system call or interrupt), the kernel code executes on the process’s kernel stack. 即 process 在 kernel 中执行时，kernel code 执行在 kernel stack 中。
 
 ​	那么这个操作就是为`kstack`分配物理空间，然后映射，将`va`保存到`p->stack`中。
 
@@ -558,14 +558,14 @@ allocproc(void)
   p->kstack = va;
 ```
 
-（5）在切换process前将`kpagetable`保存到`stap`寄存器中。
+（5）在切换 process 前将`kpagetable`保存到`stap`寄存器中。
 
 ```c
 void
 scheduler(void)
 {
   ...
-    
+
     int found = 0;
     for(p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
@@ -587,10 +587,10 @@ scheduler(void)
         found = 1;
       }
       ...
-} 
+}
 ```
 
-（6）最后也是最麻烦的是free kpagetable。
+（6）最后也是最麻烦的是 free kpagetable。
 
 ```c
 static void
@@ -610,7 +610,7 @@ freeproc(struct proc *p)
 ```
 
 
-​	同理，和正常的pagetable释放过程类似，重新设计一个free函数——`proc_freekpagetable()`。稍有不同的是`kpagetable`在分配时和kernel pagetable一样，分配了`UART0`，`VIRTIO0`，`PLIC`，`CLINT`，`kernel text`，`data`，`TRAMPOLINE`，在free时都要一一释放掉。最后`kstack`也要单独free，因为为它分配了物理空间，这一点借鉴了网上的实现，自己想不到。
+​	同理，和正常的 pagetable 释放过程类似，重新设计一个 free 函数——`proc_freekpagetable()`。稍有不同的是`kpagetable`在分配时和 kernel pagetable 一样，分配了`UART0`，`VIRTIO0`，`PLIC`，`CLINT`，`kernel text`，`data`，`TRAMPOLINE`，在 free 时都要一一释放掉。最后`kstack`也要单独 free，因为为它分配了物理空间，这一点借鉴了网上的实现，自己想不到。
 
 ```c
 // Free a process's kernel page table, and free the
@@ -631,7 +631,7 @@ proc_freekpagetable(pagetable_t pagetable, uint64 kstack)
 
 （7）结果
 
-```
+```plain
 $ usertests
 usertests starting
 test execout: OK
@@ -683,7 +683,7 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 
 hint:
 
-（1）Add mappings for user addresses to each process's kernel page table; 开始想的是`kpagetable`和`pagetable`一样的初始化，但应该是`pagetable`初始化后将起直接复制给`kpagetable`. 这里由于kpagetable是执行在kernel中的，所以最后要将pte的PTE_U置为0.
+（1）Add mappings for user addresses to each process's kernel page table; 开始想的是`kpagetable`和`pagetable`一样的初始化，但应该是`pagetable`初始化后将起直接复制给`kpagetable`. 这里由于 kpagetable 是执行在 kernel 中的，所以最后要将 pte 的 PTE_U 置为 0.
 
 ```c
 // copy user kernel pagetable for user process pagetable
@@ -701,7 +701,7 @@ copypage(pagetable_t pagetable, pagetable_t kpagetable, uint64 start, uint64 end
       panic("copypage: pte not exist");
     if ((kpte = walk(kpagetable, i, 1)) == 0)
       panic("copypage: pte alloc failed");
-    
+
     uint64 pa = PTE2PA(*pte);
     // printf("pte: %p, pa, %p, pa2pte: %p\n", *pte, pa, PA2PTE(pa));
     *kpte = PA2PTE(pa) | (PTE_FLAGS(*pte) & (~PTE_U));
@@ -800,7 +800,7 @@ userinit(void)
 }
 ```
 
-（4）需要注意的一点是，由于user address 直接映射到kpagetable，free时只要删除映射关系即可，而不要删除物理内存，直接删除对应的物理内存会在返回user态的时候出现缺页异常。所以在这里重新定义一个unmapping的函数，用来删除kpagetable的pte，具体实现和`vmprint()`相似.
+（4）需要注意的一点是，由于 user address 直接映射到 kpagetable，free 时只要删除映射关系即可，而不要删除物理内存，直接删除对应的物理内存会在返回 user 态的时候出现缺页异常。所以在这里重新定义一个 unmapping 的函数，用来删除 kpagetable 的 pte，具体实现和`vmprint()`相似.
 
 ```c
 // Free a process's kernel page table, donnot free the physical memory.
@@ -822,44 +822,44 @@ proc_freekpagetablenophy(pagetable_t kpagetable)
 
 （5）结果
 
-```
-== Test pte printout == 
+```plain
+== Test pte printout ==
 $ make qemu-gdb
-pte printout: OK (3.0s) 
-== Test answers-pgtbl.txt == answers-pgtbl.txt: FAIL 
+pte printout: OK (3.0s)
+== Test answers-pgtbl.txt == answers-pgtbl.txt: FAIL
     Cannot read answers-pgtbl.txt
-== Test count copyin == 
+== Test count copyin ==
 $ make qemu-gdb
-count copyin: OK (0.4s) 
-== Test usertests == 
+count copyin: OK (0.4s)
+== Test usertests ==
 $ make qemu-gdb
-(151.2s) 
-== Test   usertests: copyin == 
-  usertests: copyin: OK 
-== Test   usertests: copyinstr1 == 
-  usertests: copyinstr1: OK 
-== Test   usertests: copyinstr2 == 
-  usertests: copyinstr2: OK 
-== Test   usertests: copyinstr3 == 
-  usertests: copyinstr3: OK 
-== Test   usertests: sbrkmuch == 
-  usertests: sbrkmuch: OK 
-== Test   usertests: all tests == 
-  usertests: all tests: OK 
-== Test time == 
-time: OK 
+(151.2s)
+== Test   usertests: copyin ==
+  usertests: copyin: OK
+== Test   usertests: copyinstr1 ==
+  usertests: copyinstr1: OK
+== Test   usertests: copyinstr2 ==
+  usertests: copyinstr2: OK
+== Test   usertests: copyinstr3 ==
+  usertests: copyinstr3: OK
+== Test   usertests: sbrkmuch ==
+  usertests: sbrkmuch: OK
+== Test   usertests: all tests ==
+  usertests: all tests: OK
+== Test time ==
+time: OK
 Score: 61/66
 ```
 
 遇到的问题：
 
-（1）遇到bug
+（1）遇到 bug
 
-```
+```plain
 FAILED -- lost some free pages 31964 (out of 32166)
 ```
 
-这是因为在A kernel page table per process实验的（4）中为`p->stack`分配了物理空间，然后在`proc_freekpagetable()`函数中释放了该物理内存，但是这个实验由于定义了新的删除pte的函数`proc_freekpagetablenophy()`，从而没有删除`p->stack`对应的物理内存，导致了该bug。故定义`proc_freekstack()`函数删除`p->kstack`的物理空间。
+这是因为在 A kernel page table per process 实验的（4）中为`p->stack`分配了物理空间，然后在`proc_freekpagetable()`函数中释放了该物理内存，但是这个实验由于定义了新的删除 pte 的函数`proc_freekpagetablenophy()`，从而没有删除`p->stack`对应的物理内存，导致了该 bug。故定义`proc_freekstack()`函数删除`p->kstack`的物理空间。
 
 ```c
 // free kstack's physical space
@@ -873,11 +873,11 @@ proc_freekstack(struct proc * p){
 }
 ```
 
-很多时候遇到这个bug都要着重考虑free相关的函数。
+很多时候遇到这个 bug 都要着重考虑 free 相关的函数。
 
 ## RISC-V assembly
 
-```
+```plain
 1. a1 and a2.
 2. call.asm:44 printf, call.asm:30 return g(x).
 3. 0000000000000630
@@ -950,17 +950,17 @@ sys_sleep(void)
 
 （5）结果
 
-```
+```plain
 $ bttest
 backtrace:
-0x0000000080002e0e 
-0x0000000080002c70 
+0x0000000080002e0e
+0x0000000080002c70
 0x00000000800028c6
 ```
 
-```
-0x0000000080002e0e 
-0x0000000080002c70 
+```plain
+0x0000000080002e0e
+0x0000000080002c70
 0x00000000800028c6
 /home/guanshun/gitlab/xv6-labs-2020/kernel/sysproc.c:74
 /home/guanshun/gitlab/xv6-labs-2020/kernel/syscall.c:161
@@ -969,7 +969,7 @@ backtrace:
 
 难点有二：
 
-（1）`uint64 up = PGROUNDUP((uint64)s0)` 设置stack pointer的上限，用来终止循环。
+（1）`uint64 up = PGROUNDUP((uint64)s0)` 设置 stack pointer 的上限，用来终止循环。
 
 （2）指针的使用，`uint64 *`只是用来修改指针的格式，不改变指针的值。
 
@@ -1002,12 +1002,12 @@ sys_sigalarm(void)
 {
   int n;
   void (*handler)();
-  
+
   if(argint(0, &n) < 0)
     return -1;
   if(argptr(1, (char **)&handler, 1) < 0)
     return -1;
-  
+
   myproc()->alarmticks = n;
   myproc()->alarmhandler = handler;
   return 0;
@@ -1023,7 +1023,7 @@ argptr(int n, char **pp, int size)
 {
   int i;
   struct proc *curproc = myproc();
- 
+
   if(argint(n, &i) < 0)
     return -1;
   if(size < 0 || (uint64)i >= curproc->sz || (uint64)i+size > curproc->sz)
@@ -1073,7 +1073,7 @@ usertrap(void)
     }
     yield();
   }
-  
+
   usertrapret();
 }
 ```
@@ -1097,52 +1097,52 @@ sys_sigreturn()
 （5）结果
 
 ```c
-== Test answers-traps.txt == answers-traps.txt: OK 
-== Test backtrace test == 
+== Test answers-traps.txt == answers-traps.txt: OK
+== Test backtrace test ==
 $ make qemu-gdb
-backtrace test: OK (2.2s) 
-== Test running alarmtest == 
+backtrace test: OK (2.2s)
+== Test running alarmtest ==
 $ make qemu-gdb
-(3.3s) 
-== Test   alarmtest: test0 == 
-  alarmtest: test0: OK 
-== Test   alarmtest: test1 == 
-  alarmtest: test1: OK 
-== Test   alarmtest: test2 == 
-  alarmtest: test2: OK 
-== Test usertests == 
+(3.3s)
+== Test   alarmtest: test0 ==
+  alarmtest: test0: OK
+== Test   alarmtest: test1 ==
+  alarmtest: test1: OK
+== Test   alarmtest: test2 ==
+  alarmtest: test2: OK
+== Test usertests ==
 $ make qemu-gdb
-usertests: OK (210.2s) 
-== Test time == 
-time: OK 
+usertests: OK (210.2s)
+== Test time ==
+time: OK
 Score: 85/85
 ```
 
 遇到的问题：
 
-（1）怎样计算n ticks
+（1）怎样计算 n ticks
 
-Every tick, the hardware clock forces an interrupt.即每个tick，cpu都会检查中断信息。
+Every tick, the hardware clock forces an interrupt.即每个 tick，cpu 都会检查中断信息。
 
-（2）kernel怎样调用alarmtest中的`fn()`。
+（2）kernel 怎样调用 alarmtest 中的`fn()`。
 
-保存了fn的地址，之后将pc置为这个地址即可。
+保存了 fn 的地址，之后将 pc 置为这个地址即可。
 
-这里注意是将epc保存在kernel stack。这个是错误的，保存在哪里不重要，只要保存下来就好，可以在proc中定义变量来保存，将整个trapframe都保存下来，之后再恢复。
+这里注意是将 epc 保存在 kernel stack。这个是错误的，保存在哪里不重要，只要保存下来就好，可以在 proc 中定义变量来保存，将整个 trapframe 都保存下来，之后再恢复。
 
 ## Eliminate allocation from sbrk()
 
-注：`lazy`实验由于无意中drop stash，然后也没有commit，所以没有完整的代码。`lazy`分支的代码并不正确，应该是`cow`实验的部分代码。
+注：`lazy`实验由于无意中 drop stash，然后也没有 commit，所以没有完整的代码。`lazy`分支的代码并不正确，应该是`cow`实验的部分代码。
 
 ## lazy page allocation
 
 content: Modify the code in trap.c to respond to a page fault from user space by mapping a newly-allocated page of physical memory at the faulting address, and then returning back to user space to let the process continue executing.
 
-​	这个实验想要传递的系统设计思想是在进程申请内存时并不直接分配物理内存，而是只更新进程需要的内存空间`pagetable->sz`，之后等进程需要访问物理内存时触发page fault，在usertrap中通过`kalloc()`和`mappages()`来为进程分配物理空间。以下几点需要注意：
+​	这个实验想要传递的系统设计思想是在进程申请内存时并不直接分配物理内存，而是只更新进程需要的内存空间`pagetable->sz`，之后等进程需要访问物理内存时触发 page fault，在 usertrap 中通过`kalloc()`和`mappages()`来为进程分配物理空间。以下几点需要注意：
 
-（1）由于开始没有分配物理内存，也就没有va->pa的映射， 所以遇到这映射的判断时不要触发panic，而是直接检查下一个映射。
+（1）由于开始没有分配物理内存，也就没有 va->pa 的映射， 所以遇到这映射的判断时不要触发 panic，而是直接检查下一个映射。
 
-（2）检查va是否有效。
+（2）检查 va 是否有效。
 
 ​		a. 是否超过了内存需要的地址空间；
 
@@ -1163,7 +1163,7 @@ if(va < PGROUNDDOWN(p->trapframe->sp)){
 }
 ```
 
-关于os的page fault有了新的认知，即重新分配内存，然后mapping。
+关于 os 的 page fault 有了新的认知，即重新分配内存，然后 mapping。
 
 ```c
 if(r_scause() == 0xd || r_scause() == 0xf){
@@ -1171,7 +1171,7 @@ if(r_scause() == 0xd || r_scause() == 0xf){
 	if(mem == 0) // allocate memory failed
 	p->killed = 1;
 	exit(-1);
-	
+
 	uint64 va = r_stval();
 	if(va >= p->sz){ // out of the allocate memory
 	p->killed = 1;
@@ -1184,7 +1184,7 @@ if(r_scause() == 0xd || r_scause() == 0xf){
 	}
 	// printf("mem: %p\n", (uint64)mem);
 	memset(mem, 0, PGSIZE);
-	// printf("pgtbl: %p, stval: %p, mem: %p\n", p->pagetable, r_stval(), mem);	
+	// printf("pgtbl: %p, stval: %p, mem: %p\n", p->pagetable, r_stval(), mem);
 	if(mappages(p->pagetable, va, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
 		kfree(mem);
 		p->killed = 1;
@@ -1199,11 +1199,11 @@ if(r_scause() == 0xd || r_scause() == 0xf){
 
 content: implement copy-on-write fork in the xv6 kernel.
 
-​	COW defers allocating and copying physical memory pages for the child until the copies are actually needed。即`fork()`原本在创建子进程时需要将所有的父进程的内容复制到子进程的进程空间，但是这个很耗时，因此想到子进程和父进程共用进程空间，当子进程和父进程要写某个page时触发page fault，这时再`kalloc()`，将该page的内容复制到新的page，更新pte。
+​	COW defers allocating and copying physical memory pages for the child until the copies are actually needed。即`fork()`原本在创建子进程时需要将所有的父进程的内容复制到子进程的进程空间，但是这个很耗时，因此想到子进程和父进程共用进程空间，当子进程和父进程要写某个 page 时触发 page fault，这时再`kalloc()`，将该 page 的内容复制到新的 page，更新 pte。
 
 hint:
 
-（1）在`uvmcopy()`中将父进程的该页的`pte`置为`PTE_COW`和`~PTE_W`，不需要`kalloc()`， map的时候还是用父进程的pa;
+（1）在`uvmcopy()`中将父进程的该页的`pte`置为`PTE_COW`和`~PTE_W`，不需要`kalloc()`， map 的时候还是用父进程的 pa;
 
 ```c
 int
@@ -1235,7 +1235,7 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 }
 ```
 
-（2）Modify `usertrap()` to recognize page faults; 注意这里和lazy实验不一样，只需要处理`r_scause() == 0xf`，即写的缺页中断。
+（2）Modify `usertrap()` to recognize page faults; 注意这里和 lazy 实验不一样，只需要处理`r_scause() == 0xf`，即写的缺页中断。
 
 ```c
 void
@@ -1256,7 +1256,7 @@ usertrap(void)
 }
 ```
 
-（2）定义一个count变量来确定每一个page的使用情况，以及对应的操作函数。
+（2）定义一个 count 变量来确定每一个 page 的使用情况，以及对应的操作函数。
 
 ```c
 struct COUNT{
@@ -1293,7 +1293,7 @@ void increase(uint64 pa, int n){
 }
 ```
 
-（3）在`kalloc()`初始化时将对应page的count置为1；
+（3）在`kalloc()`初始化时将对应 page 的 count 置为 1；
 
 ```c
 void *
@@ -1309,7 +1309,7 @@ kalloc(void)
 }
 ```
 
-（4）在`kfree()`中，如果count > 1，则说明有多个process使用该页，不需要free，只需要将count - 1，反之free该页。
+（4）在`kfree()`中，如果 count > 1，则说明有多个 process 使用该页，不需要 free，只需要将 count - 1，反之 free 该页。
 
 ```c
 void
@@ -1344,27 +1344,27 @@ kfree(void *pa)
 
 （5）结果
 
-```
-== Test running cowtest == 
+```plain
+== Test running cowtest ==
 $ make qemu-gdb
-(6.3s) 
-== Test   simple == 
-  simple: OK 
-== Test   three == 
-  three: OK 
-== Test   file == 
-  file: OK 
-== Test usertests == 
+(6.3s)
+== Test   simple ==
+  simple: OK
+== Test   three ==
+  three: OK
+== Test   file ==
+  file: OK
+== Test usertests ==
 $ make qemu-gdb
-(62.3s) 
-== Test   usertests: copyin == 
-  usertests: copyin: OK 
-== Test   usertests: copyout == 
-  usertests: copyout: OK 
-== Test   usertests: all tests == 
-  usertests: all tests: OK 
-== Test time == 
-time: OK 
+(62.3s)
+== Test   usertests: copyin ==
+  usertests: copyin: OK
+== Test   usertests: copyout ==
+  usertests: copyout: OK
+== Test   usertests: all tests ==
+  usertests: all tests: OK
+== Test time ==
+time: OK
 Score: 110/110
 ```
 
@@ -1399,7 +1399,7 @@ struct context {
 ```
 
 ```c
-void 
+void
 thread_create(void (*func)())
 {
   struct thread *t;
@@ -1423,14 +1423,14 @@ struct thread *current_thread;
 extern void thread_switch(uint64, uint64); // old, new
 ```
 
-​	主要是创建context，然后将返回地址保存到`ra`寄存器中，将堆栈地址保存在`sp`寄存器中。但为什么堆栈地址要保存成`(uint64)(t→stack + STACK_SIZE)`还不清楚，试过保存`(uint64)(t→stack)`，这样就不能正常的switch，只执行了thread_c。
+​	主要是创建 context，然后将返回地址保存到`ra`寄存器中，将堆栈地址保存在`sp`寄存器中。但为什么堆栈地址要保存成`(uint64)(t→stack + STACK_SIZE)`还不清楚，试过保存`(uint64)(t→stack)`，这样就不能正常的 switch，只执行了 thread_c。
 
-​       在手册中有这样一句话：caller-saved registers are saved on the stack (if needed) by the calling C code. 也就是说`t->context.sp = (uint64)(t->stack + STACK_SIZE)`是保存caller的registers的，如果不加上STACK_SIZE，那么就没有保存caller的registers，之后执行还是在第一个线程的stack中执行，这就是为什么不加STACK_SIZE执行只print thread_c的内容。
+​       在手册中有这样一句话：caller-saved registers are saved on the stack (if needed) by the calling C code. 也就是说`t->context.sp = (uint64)(t->stack + STACK_SIZE)`是保存 caller 的 registers 的，如果不加上 STACK_SIZE，那么就没有保存 caller 的 registers，之后执行还是在第一个线程的 stack 中执行，这就是为什么不加 STACK_SIZE 执行只 print thread_c 的内容。
 
 （2）进程切换；
 
 ```c
-void 
+void
 thread_schedule(void)
 {
   struct thread *t, *next_thread;
@@ -1485,7 +1485,7 @@ thread_switch:
 
 结果：
 
-```
+```plain
 $ uthread
 thread_a started
 thread_b started
@@ -1512,7 +1512,7 @@ thread_schedule: no runnable threads
 
 context: explore parallel programming with threads and locks using a hash table.
 
-​	首先是线程的互斥问题导致的hash miss，那么加锁，让不同的线程互斥访问即可。
+​	首先是线程的互斥问题导致的 hash miss，那么加锁，让不同的线程互斥访问即可。
 
 （1）声明锁；
 
@@ -1520,16 +1520,16 @@ context: explore parallel programming with threads and locks using a hash table.
 pthread_mutex_t lock;            // declare a lock
 ```
 
-（2）初始化，注意在`main()`中初始化一次即可，所有的thread用同一个锁；
+（2）初始化，注意在`main()`中初始化一次即可，所有的 thread 用同一个锁；
 
 ```c
 pthread_mutex_init(&lock, NULL); // initialize the lock
 ```
 
-（3）给put, get加锁；
+（3）给 put, get 加锁；
 
 ```c
-static 
+static
 void put(int key, int value)
 {
   int i = key % NBUCKET;
@@ -1558,11 +1558,11 @@ static struct entry*
 get(int key)
 {
   int i = key % NBUCKET;
-  
+
   pthread_mutex_lock(&lock);       // acquire lock
   struct entry *e = 0;
   for (e = table[i]; e != 0; e = e->next) {
-    if (e->key == key) 
+    if (e->key == key)
       break;
   }
   pthread_mutex_unlock(&lock);     // release lock
@@ -1573,7 +1573,7 @@ get(int key)
 
 （4）结果
 
-```
+```plain
 guanshun@Jack-ubuntu ~/g/xv6-labs-2020 (thread)> make ph
 gcc -o ph -g -O2 notxv6/ph.c -pthread
 guanshun@Jack-ubuntu ~/g/xv6-labs-2020 (thread)> ./ph 1
@@ -1587,10 +1587,10 @@ guanshun@Jack-ubuntu ~/g/xv6-labs-2020 (thread)> ./ph 2
 200000 gets, 11.477 seconds, 17426 gets/second
 ```
 
-但是2个thread并没有比1个thread快两倍，因为两个thread并不是并行插入hash table的，而是一个thread写前半部分，一个thread写后半部分，然后get的时候get两个thread都get一次。那么可以只给会造成冲突的部分加锁，即insert部分，其他部分两个thread同时访问。
+但是 2 个 thread 并没有比 1 个 thread 快两倍，因为两个 thread 并不是并行插入 hash table 的，而是一个 thread 写前半部分，一个 thread 写后半部分，然后 get 的时候 get 两个 thread 都 get 一次。那么可以只给会造成冲突的部分加锁，即 insert 部分，其他部分两个 thread 同时访问。
 
 ```c
-static 
+static
 void put(int key, int value)
 {
   int i = key % NBUCKET;
@@ -1614,7 +1614,7 @@ void put(int key, int value)
 }
 ```
 
-```
+```plain
 guanshun@Jack-ubuntu ~/g/xv6-labs-2020 (thread)> ./ph 1
 100000 puts, 5.414 seconds, 18469 puts/second
 0: 0 keys missing
@@ -1640,7 +1640,7 @@ content: barrier: a point in an application at which all participating threads m
 
 ​	The `pthread_cond_broadcast()` call unblocks **all threads** currently blocked on the specified condition variable cond.
 
-（1）编写`barrier()`函数，在函数开始时加锁，如果当前进程是最后一个进程，则唤醒所有block的进程，如果不是，则`pthread_cond_wait()`，这个函数会释放`barrier_mutex`锁，所以第33行不需要释放`barrier_mutex`，这是开始犯的一个错误，没有仔细看手册。这里用到的条件变量`barrier_cond`，互斥变量`barrier_mutex`都是源码声明好的。
+（1）编写`barrier()`函数，在函数开始时加锁，如果当前进程是最后一个进程，则唤醒所有 block 的进程，如果不是，则`pthread_cond_wait()`，这个函数会释放`barrier_mutex`锁，所以第 33 行不需要释放`barrier_mutex`，这是开始犯的一个错误，没有仔细看手册。这里用到的条件变量`barrier_cond`，互斥变量`barrier_mutex`都是源码声明好的。
 
 ```c
 struct barrier {
@@ -1652,12 +1652,12 @@ struct barrier {
 ```
 
 ```c
-static void 
+static void
 barrier()
 {
   // Block until all threads have called barrier() and
   // then increment bstate.round.
-  
+
   pthread_mutex_lock(&bstate.barrier_mutex);       // acquire lock
   bstate.nthread++;
   // pthread_mutex_unlock(&bstate.barrier_mutex);     // release lock
@@ -1667,7 +1667,7 @@ barrier()
     bstate.round++;
     pthread_cond_broadcast(&bstate.barrier_cond);
     // pthread_mutex_unlock(&bstate.barrier_mutex);     // release lock
-    
+
     // printf("2. round: %d, count: %d\n", bstate.round - 1, bstate.nthread);
   } else {
     pthread_cond_wait(&bstate.barrier_cond, &bstate.barrier_mutex);
@@ -1676,7 +1676,7 @@ barrier()
 }
 ```
 
-```
+```plain
 guanshun@Jack-ubuntu ~/g/xv6-labs-2020 (thread)> ./barrier 128
 OK; passed
 ```
@@ -1687,24 +1687,24 @@ content: redesign the memory allocator to avoid a single lock and list. The basi
 
 background:
 
-spin lock 和sleep lock之间的区别。
+spin lock 和 sleep lock 之间的区别。
 
-Holding a spinlock that long would lead to waste if another process wanted to acquire it, since the acquiring process would waste CPU for a long time while spinning. 即如果其他的process想使用spinlock，它会一直acquire，就是所谓的“忙等”。	而sleeplock在获取到lock后进程会sleep，让出cpu。
+Holding a spinlock that long would lead to waste if another process wanted to acquire it, since the acquiring process would waste CPU for a long time while spinning. 即如果其他的 process 想使用 spinlock，它会一直 acquire，就是所谓的“忙等”。	而 sleeplock 在获取到 lock 后进程会 sleep，让出 cpu。
 
 A process cannot yield the CPU while retaining a spinlock.
 
 Spin-locks are best suited to **short critical sections**, since waiting for them wastes CPU time; sleep-locks work well for **lengthy operations**.
 
-按照hint写完之后遇到bug：
+按照 hint 写完之后遇到 bug：
 
-```
+```plain
 hart 2 starting
 hart 1 starting
 initproc: 0x00000000800127a8
 panic: init exiting
 ```
 
-是因为kinit()只为一个cpu分配了freelist，其他cpu的freelist都是空的，之后kalloc()肯定出错。
+是因为 kinit()只为一个 cpu 分配了 freelist，其他 cpu 的 freelist 都是空的，之后 kalloc()肯定出错。
 
 ```c
 void
@@ -1756,9 +1756,9 @@ kalloc(void)
 }
 ```
 
-也就是说直接将其他cpu的freelist分配给当前cpu，之后free是根据pa，不会产生冲突。未分配物理空间的cpu第一次free的`freelist`是0，之后随着free的次数增多，`freelist`就随即建立起来。
+也就是说直接将其他 cpu 的 freelist 分配给当前 cpu，之后 free 是根据 pa，不会产生冲突。未分配物理空间的 cpu 第一次 free 的`freelist`是 0，之后随着 free 的次数增多，`freelist`就随即建立起来。
 
-```
+```plain
 freelist: 0x0000000000000000, kfree1: cpuid: 3
 freelist: 0x0000000087f73000, kfree2: cpuid: 3
 freelist: 0x0000000087f73000, kfree1: cpuid: 3
@@ -1775,7 +1775,7 @@ struct {
 } kmem[NCPU];
 ```
 
-注意：不能在acquire()中再次使用`acquire()`，必须要`release()`后才能使用。
+注意：不能在 acquire()中再次使用`acquire()`，必须要`release()`后才能使用。
 
 
 
@@ -1783,7 +1783,7 @@ struct {
 
 content: Modify the block cache so that the number of `acquire` loop iterations for all locks in the bcache is close to zero when running `bcachetest`.
 
-The buffer cache has two jobs: 
+The buffer cache has two jobs:
 
 （1）synchronize access to disk blocks to ensure that only one copy of a block is in memory and that only one kernel thread at a time uses that copy;
 
@@ -1791,7 +1791,7 @@ The buffer cache has two jobs:
 
 思路：
 
-（1）hint中说：“We suggest you look up block numbers in the cache with a hash table that has a lock per hash bucket.“，所以对`bcache`数据结构进行修改，以`blockno`作为hash key, buckets = 13。
+（1）hint 中说：“We suggest you look up block numbers in the cache with a hash table that has a lock per hash bucket.“，所以对`bcache`数据结构进行修改，以`blockno`作为 hash key, buckets = 13。
 
 ```c
 #define prime 13
@@ -1802,7 +1802,7 @@ struct {
 } bcache;
 ```
 
-（2）hint4: Remove the list of all buffers (`bcache.head` etc.) and instead time-stamp buffers using the time of their last use. 在buf数据结构中加上ticks变量，用来记录时间戳。
+（2）hint4: Remove the list of all buffers (`bcache.head` etc.) and instead time-stamp buffers using the time of their last use. 在 buf 数据结构中加上 ticks 变量，用来记录时间戳。
 
 ```c
 struct buf {
@@ -1843,11 +1843,11 @@ struct buf {
   return temp;
 ```
 
-遇到的bug：
+遇到的 bug：
 
 （1）panic findslot
 
-```
+```plain
 #0  findslot (lk=0x80084650 <icache+2648>) at kernel/spinlock.c:42
 #1  initlock (lk=lk@entry=0x80084650 <icache+2648>, name=name@entry=0x80008700 "sleep lock") at kernel/spinlock.c:56
 #2  0x000000008000467e in initsleeplock (lk=lk@entry=0x80084648 <icache+2640>, name=name@entry=0x80008638 "inode") at kernel/sleeplock.c:15
@@ -1855,30 +1855,30 @@ struct buf {
 #4  0x0000000080001366 in main () at kernel/main.c:31
 ```
 
-`NBUF`为30，申请的buf大于`NBUF`。
+`NBUF`为 30，申请的 buf 大于`NBUF`。
 
-（2）bcachetest的test1, test2都能通过，但是usertests的manywrites超时。
+（2）bcachetest 的 test1, test2 都能通过，但是 usertests 的 manywrites 超时。
 
-```
+```plain
 $ make qemu-gdb
-(98.2s) 
-== Test   kalloctest: test1 == 
-  kalloctest: test1: OK 
-== Test   kalloctest: test2 == 
-  kalloctest: test2: OK 
-== Test kalloctest: sbrkmuch == 
+(98.2s)
+== Test   kalloctest: test1 ==
+  kalloctest: test1: OK
+== Test   kalloctest: test2 ==
+  kalloctest: test2: OK
+== Test kalloctest: sbrkmuch ==
 $ make qemu-gdb
-kalloctest: sbrkmuch: OK (11.7s) 
-== Test running bcachetest == 
+kalloctest: sbrkmuch: OK (11.7s)
+== Test running bcachetest ==
 $ make qemu-gdb
-(9.1s) 
-== Test   bcachetest: test0 == 
-  bcachetest: test0: OK 
-== Test   bcachetest: test1 == 
-  bcachetest: test1: OK 
-== Test usertests == 
+(9.1s)
+== Test   bcachetest: test0 ==
+  bcachetest: test0: OK
+== Test   bcachetest: test1 ==
+  bcachetest: test1: OK
+== Test usertests ==
 $ make qemu-gdb
-Timeout! usertests: FAIL (300.2s) 
+Timeout! usertests: FAIL (300.2s)
     ...
          hart 1 starting
          init: starting sh
@@ -1889,7 +1889,7 @@ Timeout! usertests: FAIL (300.2s)
     QEMU output saved to xv6.out.usertests
 ```
 
-经过测试，只有manywrites没有通过，进一步研究manywrites的测试部分，应该是导致了deadlock。（这个bug暂未解决）
+经过测试，只有 manywrites 没有通过，进一步研究 manywrites 的测试部分，应该是导致了 deadlock。（这个 bug 暂未解决）
 
 
 
@@ -2019,7 +2019,7 @@ itrunc(struct inode *ip)
 
 （4）结果
 
-```
+```plain
 $ usertests
 usertests starting
 ...
@@ -2036,7 +2036,7 @@ bigfile done; ok
 
 content: add symbolic links to xv6. Symbolic links (or soft links) refer to a linked file by pathname.
 
-思路：开始想的是找到`target`所指向的file，将其赋给`path`，然后写入directtory。但是后来发现这样不行，因为存在target指向的file本身就是symlink，故`create`一个`inode`，它的路径就是`path`，type是`T_SYMLINK`，然后将target指向的file通过`memmove`直接复制到新的`inode`中。
+思路：开始想的是找到`target`所指向的 file，将其赋给`path`，然后写入 directtory。但是后来发现这样不行，因为存在 target 指向的 file 本身就是 symlink，故`create`一个`inode`，它的路径就是`path`，type 是`T_SYMLINK`，然后将 target 指向的 file 通过`memmove`直接复制到新的`inode`中。
 
 （1）添加`sym_symlink()`;
 
@@ -2070,7 +2070,7 @@ int symlink(char *target, char *path){
 }
 ```
 
-（2）在`sys_open()`中处理`T_SYMLINK`类型的文件，注意需要设置`threshold`，超过10次就返回错误。
+（2）在`sys_open()`中处理`T_SYMLINK`类型的文件，注意需要设置`threshold`，超过 10 次就返回错误。
 
 ```c
   if (ip->type == T_SYMLINK) {
@@ -2101,25 +2101,25 @@ int symlink(char *target, char *path){
   }
 ```
 
-这其中有两个关键的函数 `readi(ip, 0, (uint64)target, 0, MAXPATH)` 和 `ip = namei(target)` 前一个是将ip的`offset = 0`, `n = MAXPATH`的数据读取到target中，也就是之前写入的路径名，后一个是通过路径名得到指向的inode。
+这其中有两个关键的函数 `readi(ip, 0, (uint64)target, 0, MAXPATH)` 和 `ip = namei(target)` 前一个是将 ip 的`offset = 0`, `n = MAXPATH`的数据读取到 target 中，也就是之前写入的路径名，后一个是通过路径名得到指向的 inode。
 
 （3）结果
 
-```
+```plain
 $ make qemu-gdb
-running bigfile: OK (75.9s) 
-== Test running symlinktest == 
+running bigfile: OK (75.9s)
+== Test running symlinktest ==
 $ make qemu-gdb
-(0.7s) 
-== Test   symlinktest: symlinks == 
-  symlinktest: symlinks: OK 
-== Test   symlinktest: concurrent symlinks == 
-  symlinktest: concurrent symlinks: OK 
-== Test usertests == 
+(0.7s)
+== Test   symlinktest: symlinks ==
+  symlinktest: symlinks: OK
+== Test   symlinktest: concurrent symlinks ==
+  symlinktest: concurrent symlinks: OK
+== Test usertests ==
 $ make qemu-gdb
-usertests: OK (151.8s) 
-== Test time == 
-time: OK 
+usertests: OK (151.8s)
+== Test time ==
+time: OK
 Score: 100/100
 ```
 
@@ -2155,7 +2155,7 @@ The `munmap()` system call deletes the mappings for the specified address range,
 
 hint:
 
-（1）Define a structure corresponding to the VMA (virtual memory area). 这里需要在`proc`中添加`vma`变量，用来表示该进程的mmap。然后所有的进程公用一个`VMA` array，每次添加新的mmap映射都需要互斥的从array中获取。
+（1）Define a structure corresponding to the VMA (virtual memory area). 这里需要在`proc`中添加`vma`变量，用来表示该进程的 mmap。然后所有的进程公用一个`VMA` array，每次添加新的 mmap 映射都需要互斥的从 array 中获取。
 
 ```c
 #define NVMA 16
@@ -2191,7 +2191,7 @@ struct VMA * getvma(){
 }
 ```
 
-（2）Implement `mmap`.  每个进程添加新的mmap映射时都需要从array中获取一个VMA变量，初始化VMA变量，然后将其添加到proc的VMA链表中，每个进程都维护一个VMA链表。这里需要对flag做一些处理，因为mmap映射的地址空间有不同的权限，这些权限要准确的写入VMA。
+（2）Implement `mmap`.  每个进程添加新的 mmap 映射时都需要从 array 中获取一个 VMA 变量，初始化 VMA 变量，然后将其添加到 proc 的 VMA 链表中，每个进程都维护一个 VMA 链表。这里需要对 flag 做一些处理，因为 mmap 映射的地址空间有不同的权限，这些权限要准确的写入 VMA。
 
 ```c
 uint64 mmap(uint64 addr, uint length, int prot, int flags, int fd, uint offset)
@@ -2243,7 +2243,7 @@ uint64 mmap(uint64 addr, uint length, int prot, int flags, int fd, uint offset)
 }
 ```
 
-（3）Implement `usertrap`. 这部分的代码可以用`lab: lazy`的代码，而最后读文件`readi()`也可以直接用原有的代码。值得注意的是读取文件时使用的偏移量`v->offset + a - v->start`，例如`va = 3000`, `v->start = 3000`，不能直接用`va`当作偏移量，因为`v->start = 3000`的byte是文件的第0 byte。
+（3）Implement `usertrap`. 这部分的代码可以用`lab: lazy`的代码，而最后读文件`readi()`也可以直接用原有的代码。值得注意的是读取文件时使用的偏移量`v->offset + a - v->start`，例如`va = 3000`, `v->start = 3000`，不能直接用`va`当作偏移量，因为`v->start = 3000`的 byte 是文件的第 0 byte。
 
 ```c
     if(r_scause() == 0xd || r_scause() == 0xf){
@@ -2296,15 +2296,15 @@ uint64 mmap(uint64 addr, uint length, int prot, int flags, int fd, uint offset)
       if((r = readi(f->ip, 0, (uint64)mem, v->offset + a - v->start, PGSIZE)) > 0)
         f->off += r;
       iunlock(f->ip);
-      
+
       ...
-      
+
       fault:
   		if(p->killed)
     	exit(-1);
 ```
 
-（4）Implement `munmap`. 主要有三个部分：当flags是`MAP_SHARED`时写回；删除addr对应的映射信息；当这个mmap全部删除后，将引用的文件`refcount--`。
+（4）Implement `munmap`. 主要有三个部分：当 flags 是`MAP_SHARED`时写回；删除 addr 对应的映射信息；当这个 mmap 全部删除后，将引用的文件`refcount--`。
 
 ```c
 int munmap(uint64 addr, uint length)
@@ -2356,7 +2356,7 @@ int munmap(uint64 addr, uint length)
 }
 ```
 
-（5）Modify `exit`. 
+（5）Modify `exit`.
 
 ```c
   // remove all mmap vma
@@ -2401,35 +2401,35 @@ int munmap(uint64 addr, uint length)
 
 （7）结果：
 
-```
-== Test running mmaptest == 
+```plain
+== Test running mmaptest ==
 $ make qemu-gdb
-(3.8s) 
-== Test   mmaptest: mmap f == 
-  mmaptest: mmap f: OK 
-== Test   mmaptest: mmap private == 
-  mmaptest: mmap private: OK 
-== Test   mmaptest: mmap read-only == 
-  mmaptest: mmap read-only: OK 
-== Test   mmaptest: mmap read/write == 
-  mmaptest: mmap read/write: OK 
-== Test   mmaptest: mmap dirty == 
-  mmaptest: mmap dirty: OK 
-== Test   mmaptest: not-mapped unmap == 
-  mmaptest: not-mapped unmap: OK 
-== Test   mmaptest: two files == 
-  mmaptest: two files: OK 
-== Test   mmaptest: fork_test == 
-  mmaptest: fork_test: OK 
-== Test usertests == 
+(3.8s)
+== Test   mmaptest: mmap f ==
+  mmaptest: mmap f: OK
+== Test   mmaptest: mmap private ==
+  mmaptest: mmap private: OK
+== Test   mmaptest: mmap read-only ==
+  mmaptest: mmap read-only: OK
+== Test   mmaptest: mmap read/write ==
+  mmaptest: mmap read/write: OK
+== Test   mmaptest: mmap dirty ==
+  mmaptest: mmap dirty: OK
+== Test   mmaptest: not-mapped unmap ==
+  mmaptest: not-mapped unmap: OK
+== Test   mmaptest: two files ==
+  mmaptest: two files: OK
+== Test   mmaptest: fork_test ==
+  mmaptest: fork_test: OK
+== Test usertests ==
 $ make qemu-gdb
-usertests: OK (85.9s) 
-== Test time == 
-time: OK 
+usertests: OK (85.9s)
+== Test time ==
+time: OK
 Score: 140/140
 ```
 
-（8）关键：搞清楚mmap的原理是什么。做试验时在定义`VMA`结构体时遇到困难，开始想的是直接定义大小为16的array，然后定义一个count，互斥的对count进行操作，从而达到对VMA互斥访问的效果，但是没有想到每个`proc`结构体也要维护一个`VMA`链表。另一个问题是`VAMSTART`的定义，开始一直不明白初始化VMA时`v->start`要怎么获取，原来是自己定义。
+（8）关键：搞清楚 mmap 的原理是什么。做试验时在定义`VMA`结构体时遇到困难，开始想的是直接定义大小为 16 的 array，然后定义一个 count，互斥的对 count 进行操作，从而达到对 VMA 互斥访问的效果，但是没有想到每个`proc`结构体也要维护一个`VMA`链表。另一个问题是`VAMSTART`的定义，开始一直不明白初始化 VMA 时`v->start`要怎么获取，原来是自己定义。
 
 ## networking
 
@@ -2443,7 +2443,7 @@ background:
 
 （3）`e1000_recv()` code must **scan the RX ring** and deliver each new packet's mbuf to the network stack (in `net.c`) by calling `net_rx()`.  Then allocate a new mbuf and place it into the descriptor, so that when the E1000 reaches that point in the RX ring again it finds a fresh buffer into which to DMA a new packet.
 
-（4）When the network stack in `net.c` needs to send a packet, it calls `e1000_transmit()` with an mbuf that holds the packet to be sent. Your transmit code must **place a pointer to the packet data** in a descriptor in the TX (transmit) ring. 
+（4）When the network stack in `net.c` needs to send a packet, it calls `e1000_transmit()` with an mbuf that holds the packet to be sent. Your transmit code must **place a pointer to the packet data** in a descriptor in the TX (transmit) ring.
 
 （5）Transmit Descriptor Tail register (**TDT**): This register holds a value which is an offset from the base, and indicates the location beyond the last descriptor hardware can process. This is the location where software writes the first new descriptor.
 
@@ -2464,7 +2464,7 @@ struct tx_desc
 
 hint:
 
-（1）implementing `e1000_transmit`. 跟着hint做就好，比较简单。
+（1）implementing `e1000_transmit`. 跟着 hint 做就好，比较简单。
 
 ```c
 int
@@ -2504,7 +2504,7 @@ e1000_transmit(struct mbuf *m)
 }
 ```
 
-（2）implementing `e1000_recv`. 和`e1000_transmit`不同的是，这里RDT指向的是当前有效的descriptor，所以要+1才是空闲的descriptor，然后要循环rx_ring。
+（2）implementing `e1000_recv`. 和`e1000_transmit`不同的是，这里 RDT 指向的是当前有效的 descriptor，所以要+1 才是空闲的 descriptor，然后要循环 rx_ring。
 
 ```c
 static void
@@ -2541,28 +2541,27 @@ e1000_recv(void)
 
 （3）结果
 
-```
-== Test running nettests == 
+```plain
+== Test running nettests ==
 $ make qemu-gdb
-(4.3s) 
-== Test   nettest: ping == 
-  nettest: ping: OK 
-== Test   nettest: single process == 
-  nettest: single process: OK 
-== Test   nettest: multi-process == 
-  nettest: multi-process: OK 
-== Test   nettest: DNS == 
-  nettest: DNS: OK 
-== Test time == 
-time: OK 
+(4.3s)
+== Test   nettest: ping ==
+  nettest: ping: OK
+== Test   nettest: single process ==
+  nettest: single process: OK
+== Test   nettest: multi-process ==
+  nettest: multi-process: OK
+== Test   nettest: DNS ==
+  nettest: DNS: OK
+== Test time ==
+time: OK
 Score: 100/100
 ```
 
-关键：这个实验比较简单，但是需要看的资料比较多，题目说的manual章节不需要所有细节都看，看个大概就行，最主要的的弄清楚存储数据用的是buf，而descriptor是用来描述buf的。所有涉及到这两部的章节要看，然后很多寄存器，如`E1000_RDT`，`E1000_TDT`等，要弄明白是干什么的。
+关键：这个实验比较简单，但是需要看的资料比较多，题目说的 manual 章节不需要所有细节都看，看个大概就行，最主要的的弄清楚存储数据用的是 buf，而 descriptor 是用来描述 buf 的。所有涉及到这两部的章节要看，然后很多寄存器，如`E1000_RDT`，`E1000_TDT`等，要弄明白是干什么的。
 
 ## 注
 
 （1）若代码跑不通，可以看我的[https://github.com/UtopianFuture/xv6-labs](https://github.com/UtopianFuture/xv6-labs)，上传了源码。
 
-（2）xv6调试没有好的办法，遇到bug用printf打印出关键变量。
-
+（2）xv6 调试没有好的办法，遇到 bug 用 printf 打印出关键变量。
