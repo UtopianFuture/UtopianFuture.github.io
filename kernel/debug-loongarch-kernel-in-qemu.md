@@ -41,6 +41,8 @@
    ./configure --target-list=loongarch64-softmmu --enable-debug --enable-profiler --disable-rdma --disable-pvrdma --disable-libiscsi --disable-libnfs --disable-libpmem --disable-glusterfs --disable-opengl --disable-xen --disable-werror --disable-capstone --disable-spice --disable-libusb --disable-usb-redir --audio-drv-list='' --disable-kvm
    ```
 
+   注意，KVM 只支持同架构的机器，所以想用 qemu-la 的 kvm 支持只能在 LA 的机器上编译。
+
 3. 编译
 
    ```plain
@@ -92,7 +94,7 @@
 
      解决：修改.config 文件中的`CONFIG_SYSTEM_TRUSTED_KEYS`
 
-     ```
+     ```plain
      CONFIG_SYSTEM_TRUSTED_KEYS=""
      ```
 
@@ -160,7 +162,7 @@
 
 1. 运行参数
 
-   ```
+   ```plain
    tcg:
    ./qemu-system-loongarch64 -m 8192M -nographic -cpu Loongson-3A5000 -serial mon:stdio -bios /home/guanshun/gitlab/qemu-la/pc-bios/loongarch_bios.bin -M loongson7a,kernel_irqchip=off -drive file=/home/guanshun/research/bmbt/Loongnix-20.mini.loongarch64.rc1.b2.qcow2,if=virtio -kernel /home/guanshun/research/bmbt/linux-4.19-loongson/vmlinux -append "console=ttyS0 root=/dev/vda1"
 
@@ -201,7 +203,7 @@
 
 3. 运行效果
 
-   ```
+   ```plain
    guanshun@Jack-ubuntu ~/r/b/linux-4.19-loongson (linux-4.19.167-next)> loongarch64-linux-gnu-gdb vmlinux
    GNU gdb (GDB) 8.1.50.20190122-git
    Copyright (C) 2018 Free Software Foundation, Inc.
@@ -232,6 +234,18 @@
    ```
 
    以上的源码都可以找我要。
+
+四、在 LA 上用 QEMU + KVM 调试 LA 内核
+
+1. 运行参数
+
+   ```plain
+   sudo ./qemu-system-loongarch64 -nographic -m 2G -cpu Loongson-3A5000 -serial mon:stdio -bios /home/niugen/lgs/qemu-la/pc-bios/loongarch_bios.bin -enable-kvm -M loongson7a_v1.0,accel=kvm -drive file=/home/niugen/lgs/Loongnix-20.mini.loongarch64.rc1.b2.qcow2,if=virtio -kernel /home/niugen/lgs/vmlinux -append "console=ttyS0 root=/dev/vda1" -s -S
+   ```
+
+2. 结果
+
+   ![img](https://user-images.githubusercontent.com/66514719/143871503-116ebc5e-b02f-4a22-916c-a6b3817fa38e.png)
 
 ### reference
 
