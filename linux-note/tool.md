@@ -100,7 +100,7 @@ Ctrl+q d					分离当前会话
 Ctrl+q s					列出所有会话
 ```
 
-tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tmux source ~/.tmux/tmux.conf`来更新配置。可以将 `.tmux.conf` 移到 `~/` 目录下，tmux 就会将其作为默认配置文件，下次开机使用 tmux 会默认读取这个配置文件。
+tmux 的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tmux source ~/.tmux/tmux.conf`来更新配置。可以将 `.tmux.conf` 移到 `~/` 目录下，tmux 就会将其作为默认配置文件，下次开机使用 tmux 会默认读取这个配置文件。
 
 按下 PREFIX+[快捷键进入复制模式，在复制模式下按下 q 字符退出复制模式。
 
@@ -198,7 +198,7 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
 
 25. du 查看文件大小
 
-    ```
+    ```plain
     - List the sizes of a directory and any subdirectories, in the given unit (B/KB/MB):
        du -{{b|k|m}} {{path/to/directory}}
 
@@ -417,7 +417,7 @@ tmux的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`tm
 
 37. 利用 'telescope' 快速搜索 file，buffer，function 等
 
-    ```
+    ```plain
     , o             		 在当前文件中搜索该符号
     , s             		 在整个工程中搜索该符号
     , f + 文件名       搜索文件
