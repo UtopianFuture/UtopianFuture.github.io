@@ -336,7 +336,7 @@ static void type_initialize(TypeImpl *ti)
 
 光看代码理解不深刻，我们来看看执行过程，还是以前面的 `x86_cpu_type_info` 类为例子，每个类有两个初始化函数，分别是非静态变量 `x86_cpu_initfn` 和静态变量 `x86_cpu_common_class_init`。静态成员是所有的对象公用的，其初始化显然要发生在所有的对象初始化之前。
 
-```
+```plain
 #0  x86_cpu_common_class_init (oc=0x555556767080, data=0x0) at ../target/i386/cpu.c:7396
 #1  0x0000555555de15ae in type_initialize (ti=0x555556730e70) at ../qom/object.c:364
 #2  0x0000555555de1319 in type_initialize (ti=0x555556735e50) at ../qom/object.c:312
@@ -452,7 +452,7 @@ static void x86_cpu_common_class_init(ObjectClass *oc, void *data)
 
 之后是初始化非静态变量，即某个类私有的变量。
 
-```
+```plain
 #0  x86_cpu_initfn (obj=0x55555699d430) at ../target/i386/cpu.c:7107
 #1  0x0000555555de1618 in object_init_with_type (obj=0x55555699d430, ti=0x555556730e70) at ../qom/object.c:375
 #2  0x0000555555de15fa in object_init_with_type (obj=0x55555699d430, ti=0x555556731080) at ../qom/object.c:371
@@ -763,7 +763,7 @@ ObjectClass *object_class_dynamic_cast(ObjectClass *class,
 
 对于属性，目前还没有完全搞懂，只知道每个类中都会设置属性，如在 `x86_cpu_common_class_init` 中添加属性，
 
-```
+```plain
 object_class_property_add(oc, "family", "int",
                               x86_cpuid_version_get_family,
                               x86_cpuid_version_set_family, NULL, NULL);

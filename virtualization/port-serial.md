@@ -1000,3 +1000,7 @@ DeviceState *qdev_create(BusState *bus, const char *name)
     return dev;
 }
 ```
+
+Reference
+
+[1] https://martins3.github.io/qemu/char.html#charbackend

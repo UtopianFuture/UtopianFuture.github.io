@@ -171,7 +171,7 @@ qemu-system-loongarch64 -nographic -m 2G -cpu Loongson-3A5000 -serial mon:stdio 
 ```
 
 ```plain
-qemu-system-loongarch64 -nographic -m 2G -cpu Loongson-3A5000 -serial mon:stdio -bios ~/research/bmbt/qemu-la/pc-bios/loongarch_bios.bin -M loongson7a,kernel_irqchip=off -kernel la_hello.elf -s -S // 该命令用于调试，配合LA的gdb
+qemu-system-loongarch64 -nographic -m 2G -cpu Loongson-3A5000 -serial mon:stdio -bios ~/research/bmbt/qemu-la/pc-bios/loongarch_bios.bin -M loongson7a,kernel_irqchip=off -kernel la_hello.elf -s -S // 该命令用于调试，配合 LA 的gdb
 ```
 
 ```plain
