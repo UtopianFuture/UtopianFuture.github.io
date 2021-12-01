@@ -1,0 +1,25 @@
+[Defines]
+  INF_VERSION                    = 0x00010006
+  BASE_NAME                      = Cmain // 程序名
+  FILE_GUID                      = a912f198-7f0e-4803-b908-b757b806ec93 // 每个程序都不一样
+  MODULE_TYPE                    = UEFI_APPLICATION // 程序类型，main 入口程序就用这
+  VERSION_STRING                 = 0.1
+  ENTRY_POINT                    = ShellCEntryLib // 程序入口
+
+#
+#  VALID_ARCHITECTURES           = IA32 X64
+#
+
+[Sources]
+  cmain.c // 包含的源文件
+
+[Packages]
+  MdePkg/MdePkg.dec
+  ShellPkg/ShellPkg.dec
+  StdLib/StdLib.dec
+
+[LibraryClasses]
+  UefiLib
+  ShellCEntryLib // 提供 ShellCEntryLib 函数
+  LibC // 提供 ShellAppMain 函数
+  LibStdio // 提供 printf 函数
