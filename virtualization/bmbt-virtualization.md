@@ -1469,3 +1469,4 @@ NUMA 内存体系中，每个节点都要初始化一个 bootmem 分配器。
 
 
 - 在未移植完 c 库之前不能直接在 QEMU 上跑
+- ram-below-4g 和 ram-above-4g 分别表示什么？
