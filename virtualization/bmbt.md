@@ -54,7 +54,7 @@ qemu_init
 \
 ```
 
-### 执行流程
+#### 执行流程
 
 ```plain
 #0  qemu_tcg_rr_cpu_thread_fn (arg=0x120425530 <__x86_cpu>) at src/qemu/cpus.c:234
@@ -133,7 +133,7 @@ void *qemu_tcg_rr_cpu_thread_fn(void *arg) {
 }
 ```
 
-这里主要就是 while(1) 循环。`tcg_cpu_exec` 进入 LATX 执行。
+这里主要就是 while(1) 循环。`tcg_cpu_exec` 进入 LATX 执行。目前只有一个 CPU 能够执行。
 
 ```c
 static int tcg_cpu_exec(CPUState *cpu) {
@@ -200,7 +200,88 @@ void x86_cpu_exec_exit(CPUState *cs) {
 }
 ```
 
+如果  LATX 需要访存，会调用 `misc_helper.c:helper_outb`  ，这就到了 memory virtualization 的地方。
 
+```plain
+#0  debugcon_ioport_write (opaque=0x1203cafb8 <__isa+8>, addr=0, val=83, width=1) at src/hw/char/debugcon.c:34
+#1  0x000000012009c948 in memory_region_write_accessor (mr=0x1203cafb8 <__isa+8>, addr=0, value=0xffffff5a38, size=1, shift=0, mask=255, attrs=...) at src/qemu/memory.c:353
+#2  0x000000012009cc18 in access_with_adjusted_size (addr=0, value=0xffffff5a38, size=1, access_size_min=1, access_size_max=4, access_fn=0x12009c8a4 <memory_region_write_accessor>,
+    mr=0x1203cafb8 <__isa+8>, attrs=...) at src/qemu/memory.c:394
+#3  0x000000012009d490 in memory_region_dispatch_write (mr=0x1203cafb8 <__isa+8>, addr=0, data=83, op=MO_8, attrs=...) at src/qemu/memory.c:507
+#4  0x0000000120016c44 in address_space_stb (as=0x120452348 <address_space_io>, addr=1026, val=83, attrs=..., result=0x0) at src/tcg/memory_ldst.c:304
+#5  0x00000001200b07fc in helper_outb (env=0x12042dcf0 <__x86_cpu+34752>, port=1026, data=83) at src/i386/misc_helper.c:21
+#6  0x000000007000596c in ?? ()
+```
+
+debugcon 是用来调试的，通过下面的指令将输出重定向到 seabios.log 中
+
+```c
+static void debugcon_isa_realizefn(ISADebugconState *isa) {
+  isa->state.log = get_logfile("seabios.log");
+
+  DebugconState *s = &isa->state;
+  memory_region_init_io(&s->io, &debugcon_ops, s, TYPE_ISA_DEBUGCON_DEVICE, 1);
+  io_add_memory_region(isa->iobase, &s->io);
+}
+```
+
+执行到 `debugcon_ioport_write` 说明已经能在 LA 上执行 X86 指令。执行完这个函数后，查看 seabios.log ，会发现 ‘S’ 已经写入了。 写入之后进行中断处理，至于为什么需要中断处理还没有搞清楚。下面是中断处理的流程：
+
+```plain
+#0  gsi_handler (opaque=0x120481570, n=0, level=1) at src/hw/i386/pc.c:428
+#1  0x0000000120050f2c in qemu_set_irq (irq=0x120481790, level=1) at src/hw/core/irq.c:16
+#2  0x000000012005ba60 in pit_irq_timer_update (s=0x1203cc148 <__pit+88>, current_time=17878218075) at src/hw/timer/i8254.c:253
+#3  0x000000012005bb48 in pit_irq_timer (opaque=0x1203cc148 <__pit+88>) at src/hw/timer/i8254.c:268
+#4  0x00000001200a7e4c in timerlist_run_timers (timer_list=0x120464720) at src/util/qemu-timer.c:322
+#5  0x00000001200a81b8 in qemu_clock_run_timers (type=QEMU_CLOCK_VIRTUAL) at src/util/qemu-timer.c:369
+#6  0x00000001200a8264 in qemu_clock_run_all_timers () at src/util/qemu-timer.c:378
+#7  0x00000001200a8660 in timer_interrupt_handler (sig=127, si=0xffffff42e8, uc=0xffffff4370) at src/util/qemu-timer.c:441
+#8  <signal handler called>
+#9  0x000000fff7c94d8c in sigprocmask () from /lib/loongarch64-linux-gnu/libc.so.6
+#10 0x00000001200a28c4 in unblock_interrupt () at src/util/signal-timer.c:91
+#11 0x000000012009677c in qemu_mutex_unlock_iothread () at src/qemu/cpus.c:63
+#12 0x0000000120016d48 in address_space_stb (as=0x120452348 <address_space_io>, addr=1026, val=83, attrs=..., result=0x0) at src/tcg/memory_ldst.c:316
+#13 0x00000001200b07fc in helper_outb (env=0x12042dcf0 <__x86_cpu+34752>, port=1026, data=83) at src/i386/misc_helper.c:21
+#14 0x000000007000596c in ?? ()
+```
+
+通过 `address_space_stb` 的实参可以确定就是在写入 ‘S’ 之后进行的。但是根据这个执行流程来看，`sigprocmask` 是 C 库函数，而之后处理的是中间中断，因此产生一个问题，BMBT 包括 QEMU 是如何处理信号的。
+
+```c
+void address_space_stb(AddressSpace *as, hwaddr addr, uint32_t val,
+                       MemTxAttrs attrs, MemTxResult *result) {
+  uint8_t *ptr;
+  MemoryRegion *mr;
+  hwaddr l = 1;
+  hwaddr addr1;
+  MemTxResult r;
+  bool release_lock = false;
+
+  rcu_read_lock();
+  mr = address_space_translate(as, addr, &addr1, &l, true, attrs);
+  if (!memory_access_is_direct(mr, true)) {
+    release_lock |= prepare_mmio_access(mr);
+    r = memory_region_dispatch_write(mr, addr1, val, MO_8, attrs);
+  } else {
+
+    ptr = qemu_map_ram_ptr(mr->ram_block, addr1);
+    stb_p(ptr, val);
+    invalidate_and_set_dirty(mr, addr1, 1);
+    r = MEMTX_OK;
+  }
+  if (result) {
+    *result = r;
+  }
+  if (release_lock) {
+    qemu_mutex_unlock_iothread();
+  }
+  rcu_read_unlock();
+}
+```
+
+这就是整个 BMBT 的执行流程，这样看比较简单清晰。这只是 debugcon 一种设备，而实际上 guestOS 需要多种设备，我们通过 Seabios 的初始化来逐步实现每一种必须的设备。关于 Seabios 的分析可以看我这篇文章，里面分析了 Seabios 的 boot 流程，而关于所有的设备 probe ，是在 `maininit` 这个函数中实现的。
+
+这就是 BMBT 的大致开发流程。
 
 ### Reference
 
