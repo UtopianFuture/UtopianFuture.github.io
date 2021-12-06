@@ -334,3 +334,7 @@ void sort_extable(struct exception_table_entry *start,
 	     cmp_ex_sort, swap_ex);
 }
 ```
+
+### 实模式与保护模式之间的切换
+
+Seabios 中有实现两者是怎样切换的，而 Seabios.md 中详细分析了其实现。

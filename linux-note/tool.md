@@ -477,7 +477,7 @@ tmux 的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`t
        sudo updatedb
     ```
 
-    ```plain
+    ```shell
     locate cpu.h|grep gitlab/bmbt
     /home/guanshun/gitlab/bmbt/.ccls-cache/@home@guanshun@gitlab@bmbt/include@hw@core@cpu.h
     /home/guanshun/gitlab/bmbt/.ccls-cache/@home@guanshun@gitlab@bmbt/include@hw@core@cpu.h.blob
@@ -489,7 +489,7 @@ tmux 的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`t
 
 41. alias 比 ln -s 更好用，例如：
 
-    ```plain
+    ```shell
     alias gc 'git commit'
     alias gs 'git status'
     alias lg lazygit
@@ -497,7 +497,7 @@ tmux 的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`t
 
     之后就可以直接使用 gc, gs, lg 等等。
 
-    ```plain
+    ```shell
      - List all aliases:
        alias
      - Create a generic alias:
@@ -509,3 +509,43 @@ tmux 的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`t
     ```
 
     不过 alias 的生存期只是当前终端，终端关了就失效。
+
+42. ps 指令可以查看当前进程 `ps -ejH | grep frp`
+
+    ```shell
+    Information about running processes.
+     - List all running processes:
+       ps aux
+     - List all running processes including the full command string:
+       ps auxww
+     - Search for a process that matches a string:
+       ps aux | grep {{string}}
+     - List all processes of the current user in extra full format:
+       ps --user $(id -u) -F
+     - List all processes of the current user as a tree:
+       ps --user $(id -u) f
+     - Get the parent pid of a process:
+       ps -o ppid= -p {{pid}}
+     - Sort processes by memory consumption:
+       ps --sort size
+    ```
+
+43. [Rsyncing directories through ssh tunnel](https://superuser.com/questions/964244/rsyncing-directories-through-ssh-tunnel)
+
+    通过 58 服务器穿透到公司内网的 la 机器，先开 frpc 代理，然后使用命令：
+
+    ```shell
+    ssh -f -N -L local_port_machineA:ip_machineC:remoteport_machineC user_machineB@ip_machineB
+    ```
+
+    具体到自己的机器就是
+
+    ```shell
+    ssh -L 16902:10.90.50.112:22 lx58
+    ```
+
+    然后就可以正常使用 rsync 同步文件
+
+    ```shell
+    rsync -avzP /home/guanshun/gitlab/bmbt ng5k:/home/niugen/lgs
+    ```

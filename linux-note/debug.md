@@ -81,7 +81,7 @@
 
 11. gcc 中的`-fno-builtin`命令
 
-        -fno-builtinplainplainplainplainplainplainplainplainplainplainplain
+        -fno-builtinplainplainplainplainplainplainplainplainplainplainplainplainplainplainplainplainplainplainplainplain
         -fno-builtin-function
         	Don't recognize built-in functions that do not begin with __builtin_ as prefix.
         	GCC normally generates special code to handle certain built-in functions more efficiently; for instance, calls to "alloca" may become single instructions which adjust the stack directly, and calls to "memcpy" may become inline copy loops.  The resulting code is often both smaller and faster, but since the function calls no longer appear as such, you cannot set a breakpoint on those calls, nor can you change the behavior of the functions by linking with a different library.  In addition, when a function is recognized as a built-in function, GCC may use information about that function to warn about problems with calls to that function, or to generate more efficient code, even if the resulting code still contains calls to that function.  For example, warnings are given with -Wformat for bad calls to "printf" when "printf" is built in and "strlen" is known not to modify global memory.
@@ -103,7 +103,7 @@
 
 13. gcc 中的`-nostdlib`
 
-        -nostdlibplainplainplainplainplainplainplainplainplainplainplainplain
+        -nostdlibplainplainplainplainplainplainplainplainplainplainplainplainplainplainplainplainplainplainplainplainplainplainplain
         	Do not use the standard system startup files or libraries when linking.  No startup files and only the libraries you specify are passed to the linker, and options specifying linkage of the system libraries, such as -static-libgcc or -shared-libgcc, are ignored.
         	The compiler may generate calls to "memcmp", "memset", "memcpy" and "memmove".  These entries are usually resolved by entries in libc.  These entry points should be supplied through some other mechanism when this option is specified.
         	One of the standard libraries bypassed by -nostdlib and -nodefaultlibs is libgcc.a, a library of internal subroutines which GCC uses to overcome shortcomings of particular machines, or special needs for some languages.
