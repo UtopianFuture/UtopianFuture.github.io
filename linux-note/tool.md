@@ -549,3 +549,11 @@ tmux 的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`t
     ```shell
     rsync -avzP /home/guanshun/gitlab/bmbt ng5k:/home/niugen/lgs
     ```
+
+44. 自动换行是每行超过 n 个字的时候 vim 自动加上换行符用
+
+    set textwidth=70 来设置 n
+
+    自动折行是把长的一行用多行显示 , 不在文件里加换行符用
+    :set wrap 设置自动折行
+    :set nowrap 设置不自动折行

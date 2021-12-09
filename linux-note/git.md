@@ -176,3 +176,17 @@ git push -f origin master
 强行推上去，覆盖远程仓库的 commit。
 
 21. git format-patch commit-id 可以生成对应的 patch， git apply xxx.patch 可以将 patch 集成到项目中。
+
+22. git submodule add xxx 可以在一个 git 仓库中引用另一个 git 仓库。
+
+    ```plain
+    git submodule add git@github.com:Martins3/bmbt.git BmbtPkg
+    ```
+
+    git clone 引用了其他 git 仓库的 git 仓库时，子仓库是空的，这时要用
+
+    ```plain
+    git submodule init
+    ```
+
+    初始化本地配置文件
