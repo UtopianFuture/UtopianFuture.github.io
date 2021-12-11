@@ -99,6 +99,10 @@
   #6  0x0000555555a17b74 in main (argc=5, argv=0x7fffffffdd98, envp=0x7fffffffddc8) at vl.c:4473
   ```
 
+  我们还可以看看 [Stefan Hajnoczi](http://blog.vmsplice.net/) 的解释：
+
+  > The main loop actually has a glib GMainContext and two AioContext event loops. QEMU components can use any of these event loop APIs and the main loop combines them all into a single event loop function [os_host_main_loop_wait()](http://blog.vmsplice.net/2020/08/qemu-internals-event-loops.html) that calls [qemu_poll_ns()](https://gitlab.com/qemu-project/qemu/-/blob/v5.1.0/util/qemu-timer.c#L331) to wait for event sources. This makes it possible to combine glib-based code with code using the native QEMU AioContext APIs.
+
 ### Event sources
 
 An event loop monitors *event sources* for activity and invokes a callback function when an event occurs. This makes it possible to process multiple event sources within a single CPU thread. The application can appear to do multiple things at once without multithreading because it switches between handling different event sources.
@@ -583,3 +587,5 @@ static bool aio_dispatch_handlers(AioContext *ctx)
 [3] QEMU/KVM 源码解析与应用
 
 [4] https://martins3.github.io/qemu/threads.html
+
+[5] http://events17.linuxfoundation.org/sites/events/files/slides/Improving%20the%20QEMU%20Event%20Loop%20-%203.pdf 这也是 QEMU 维护者做的报告。
