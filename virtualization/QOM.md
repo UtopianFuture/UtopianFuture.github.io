@@ -384,48 +384,8 @@ static void x86_cpu_common_class_init(ObjectClass *oc, void *data)
     cc->get_arch_id = x86_cpu_get_arch_id;
     cc->get_paging_enabled = x86_cpu_get_paging_enabled;
 
-#ifndef CONFIG_USER_ONLY
-    cc->asidx_from_attrs = x86_asidx_from_attrs;
-    cc->get_memory_mapping = x86_cpu_get_memory_mapping;
-    cc->get_phys_page_attrs_debug = x86_cpu_get_phys_page_attrs_debug;
-    cc->get_crash_info = x86_cpu_get_crash_info;
-    cc->write_elf64_note = x86_cpu_write_elf64_note;
-    cc->write_elf64_qemunote = x86_cpu_write_elf64_qemunote;
-    cc->write_elf32_note = x86_cpu_write_elf32_note;
-    cc->write_elf32_qemunote = x86_cpu_write_elf32_qemunote;
-    cc->vmsd = &vmstate_x86_cpu;
-#endif /* !CONFIG_USER_ONLY */
+    ...
 
-    cc->gdb_arch_name = x86_gdb_arch_name;
-#ifdef TARGET_X86_64
-    cc->gdb_core_xml_file = "i386-64bit.xml";
-    cc->gdb_num_core_regs = 66;
-#else
-    cc->gdb_core_xml_file = "i386-32bit.xml";
-    cc->gdb_num_core_regs = 50;
-#endif
-    cc->disas_set_info = x86_disas_set_info;
-
-    dc->user_creatable = true;
-
-    object_class_property_add(oc, "family", "int",
-                              x86_cpuid_version_get_family,
-                              x86_cpuid_version_set_family, NULL, NULL);
-    object_class_property_add(oc, "model", "int",
-                              x86_cpuid_version_get_model,
-                              x86_cpuid_version_set_model, NULL, NULL);
-    object_class_property_add(oc, "stepping", "int",
-                              x86_cpuid_version_get_stepping,
-                              x86_cpuid_version_set_stepping, NULL, NULL);
-    object_class_property_add_str(oc, "vendor",
-                                  x86_cpuid_get_vendor,
-                                  x86_cpuid_set_vendor);
-    object_class_property_add_str(oc, "model-id",
-                                  x86_cpuid_get_model_id,
-                                  x86_cpuid_set_model_id);
-    object_class_property_add(oc, "tsc-frequency", "int",
-                              x86_cpuid_get_tsc_freq,
-                              x86_cpuid_set_tsc_freq, NULL, NULL);
     /*
      * The "unavailable-features" property has the same semantics as
      * CpuDefinitionInfo.unavailable-features on the "query-cpu-definitions"
@@ -617,29 +577,7 @@ static void x86_cpu_initfn(Object *obj)
     object_property_add_alias(obj, "ffxsr", obj, "fxsr-opt");
     object_property_add_alias(obj, "i64", obj, "lm");
 
-    object_property_add_alias(obj, "ds_cpl", obj, "ds-cpl");
-    object_property_add_alias(obj, "tsc_adjust", obj, "tsc-adjust");
-    object_property_add_alias(obj, "fxsr_opt", obj, "fxsr-opt");
-    object_property_add_alias(obj, "lahf_lm", obj, "lahf-lm");
-    object_property_add_alias(obj, "cmp_legacy", obj, "cmp-legacy");
-    object_property_add_alias(obj, "nodeid_msr", obj, "nodeid-msr");
-    object_property_add_alias(obj, "perfctr_core", obj, "perfctr-core");
-    object_property_add_alias(obj, "perfctr_nb", obj, "perfctr-nb");
-    object_property_add_alias(obj, "kvm_nopiodelay", obj, "kvm-nopiodelay");
-    object_property_add_alias(obj, "kvm_mmu", obj, "kvm-mmu");
-    object_property_add_alias(obj, "kvm_asyncpf", obj, "kvm-asyncpf");
-    object_property_add_alias(obj, "kvm_asyncpf_int", obj, "kvm-asyncpf-int");
-    object_property_add_alias(obj, "kvm_steal_time", obj, "kvm-steal-time");
-    object_property_add_alias(obj, "kvm_pv_eoi", obj, "kvm-pv-eoi");
-    object_property_add_alias(obj, "kvm_pv_unhalt", obj, "kvm-pv-unhalt");
-    object_property_add_alias(obj, "kvm_poll_control", obj, "kvm-poll-control");
-    object_property_add_alias(obj, "svm_lock", obj, "svm-lock");
-    object_property_add_alias(obj, "nrip_save", obj, "nrip-save");
-    object_property_add_alias(obj, "tsc_scale", obj, "tsc-scale");
-    object_property_add_alias(obj, "vmcb_clean", obj, "vmcb-clean");
-    object_property_add_alias(obj, "pause_filter", obj, "pause-filter");
-    object_property_add_alias(obj, "sse4_1", obj, "sse4.1");
-    object_property_add_alias(obj, "sse4_2", obj, "sse4.2");
+    ...
 
     if (xcc->model) {
         x86_cpu_load_model(cpu, xcc->model);
@@ -800,7 +738,7 @@ object_class_property_add(oc, "family", "int",
 
 但具体怎么用的还不知道，在接下来的源码阅读中如果有遇到再进行分析。
 
-QOM 和 Qdev
+### QOM 和 Qdev
 
 Qdev 是 qemu 管理总线和设备的方式。如下所示，所有的设备都是挂载在 bus 上的。
 
