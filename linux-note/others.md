@@ -357,3 +357,9 @@ A **network socket** is a software structure within a [network node](https://en.
 
 - level-triggered: get a list of every file descriptor you’re interested in that is readable.
 - edge-triggered: get notifications every time a file descriptor becomes readable.
+
+### 字符设备和块设备
+
+系统中能够随机（不需要按顺序）访问固定大小数据片（chunks）的设备被称作块设备，这些数据片就称作块。最常见的块设备是硬盘，除此以外，还有软盘驱动器、CD-ROM 驱动器和闪存等等许多其他块设备。注意，它们都是以安装文件系统的方式使用的——这也是块设备的一般访问方式。
+
+另一种基本的设备类型是字符设备。字符设备按照字符流的方式被有序访问，像串口和键盘就都属于字符设备。如果一个硬件设备是以字符流的方式被访问的话，那就应该将它归于字符设备；反过来，如果一个设备是随机（无序的）访问的，那么它就属于块设备。
