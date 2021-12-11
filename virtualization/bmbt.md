@@ -283,6 +283,92 @@ void address_space_stb(AddressSpace *as, hwaddr addr, uint32_t val,
 
 这就是 BMBT 的大致开发流程。
 
+### 子模块分析
+
+#### 时钟中断
+
+QEMU 的整个执行流程是 vl.c:main 函数，大致可以分为各种设备的初始化和初始化之后的执行，而执行分为几个线程： vcpu 线程，main loop 线程，I/Othread 线程。vcpu 线程就是执行 guestos 代码的，而 main loop 线程则是基于 glib 的事件监听机制，能够监听各种设备的事件，包括时间中断。这个在我的[这篇文章](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/QEMU-event-loop.md)中详细介绍了。但是 BMBT 没有用多线程，所以不能用 main loop 的方式实现时钟中断，BMBT 采用信号的方式来处理。也就是说包括创建 timer ，设置 timeout 在内的函数都和 QEMU 一样，但是响应时间中断的方式不一样。下面看看 BMBT 是怎样响应的。
+
+```c
+// signal-timer.c
+typedef void(TimerHandler)(int sig, siginfo_t *si, void *uc);
+timer_t setup_timer(TimerHandler handler);
+```
+
+在 `main` 中就通过 `setup_timer` 设置时间中断的回调函数 `timer_interrupt_handler`，
+
+```c
+void setup_timer_interrupt() {
+  init_clocks();
+  setup_timer(timer_interrupt_handler);
+}
+```
+
+```c
+static timer_t interrpt_tid;
+timer_t setup_timer(TimerHandler handler) {
+  struct sigaction sa;
+  struct sigevent sev;
+
+  sa.sa_flags = SA_SIGINFO;
+  sa.sa_sigaction = handler;
+  sigemptyset(&sa.sa_mask);
+  if (sigaction(TIMER_SIG, &sa, NULL) == -1) {
+    error_report("set sigaction failed\n");
+  }
+  sev.sigev_value.sival_ptr = &interrpt_tid;
+  sev.sigev_notify = SIGEV_SIGNAL; /* Notify via signal */
+  sev.sigev_signo = TIMER_SIG;     /* Notify using this signal */
+
+  if (timer_create(CLOCK_REALTIME, &sev, &interrpt_tid) == -1) {
+    error_report("timer_create failed\n");
+  }
+  return interrpt_tid;
+}
+```
+
+和 `main_loop_wait` 一样，调用 `qemu_clock_run_all_timers` ，这个函数会调用对应设备的时间中断的回调函数。
+
+```c
+static void timer_interrupt_handler(int sig, siginfo_t *si, void *uc) {
+  duck_check(!is_interrupt_blocked());
+  qemu_log("timer interrupt comming");
+  enter_interrpt_context();
+  int64_t timeout_ns = -1;
+
+  qemu_clock_run_all_timers();
+
+  timeout_ns = qemu_soonest_timeout(timeout_ns,
+                                    timerlistgroup_deadline_ns(&main_loop_tlg));
+  if (timeout_ns == -1) {
+    warn_report("no timer to fire");
+  }
+  soonest_interrupt_ns(timeout_ns);
+  leave_interrpt_context();
+}
+```
+
+下面看看调用过程。
+
+```plain
+#0  rtc_update_timer (opaque=0x12040c730 <__mc146818_rtc>) at src/hw/rtc/mc146818rtc.c:262
+#1  0x00000001200c0568 in timerlist_run_timers (timer_list=0x1204a46e0) at src/util/qemu-timer.c:322
+#2  0x00000001200c097c in qemu_clock_run_timers (type=QEMU_CLOCK_REALTIME) at src/util/qemu-timer.c:369
+#3  0x00000001200c0a4c in qemu_clock_run_all_timers () at src/util/qemu-timer.c:378
+#4  0x00000001200c0f04 in timer_interrupt_handler (sig=127, si=0xffffff45e8, uc=0xffffff4670) at src/util/qemu-timer.c:441
+#5  <signal handler called>
+#6  0x000000fff7ca0d8c in sigprocmask () from /lib/loongarch64-linux-gnu/libc.so.6
+#7  0x00000001200ba1d0 in unblock_interrupt () at src/util/signal-timer.c:91
+#8  0x00000001200ac504 in qemu_mutex_unlock_iothread () at src/qemu/cpus.c:63
+#9  0x00000001200af64c in qemu_init () at src/qemu/vl.c:331
+#10 0x000000012000b104 in test_qemu_init () at src/main.c:158
+#11 0x000000012000b71c in wip () at src/main.c:173
+#12 0x000000012000d06c in greatest_run_suite (suite_cb=0x12000b670 <wip>, suite_name=0x1201ea640 "wip") at src/main.c:176
+#13 0x000000012000edc8 in main (argc=1, argv=0xffffff5f48) at src/main.c:185
+```
+
+至于 signal_timer.c 文件中的函数都是为了使用 signal 机制写的，这里暂时不分析，因为 edk2 的信号实现和 glibc 实现有些差异，下一步我们需要搞懂 edk2 中的 StdLib 是怎样实现的，然后修改对 API 的调用。
+
 ### Reference
 
 [1] https://martins3.github.io/ 强烈建议关注这个家伙，简直是个宝库。
