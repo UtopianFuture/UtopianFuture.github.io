@@ -369,6 +369,14 @@ static void timer_interrupt_handler(int sig, siginfo_t *si, void *uc) {
 
 至于 signal_timer.c 文件中的函数都是为了使用 signal 机制写的，这里暂时不分析，因为 edk2 的信号实现和 glibc 实现有些差异，下一步我们需要搞懂 edk2 中的 StdLib 是怎样实现的，然后修改对 API 的调用。
 
+还是有问题：
+
+按理说设置一个回调函数不就可以了，为什么还要 `timer_create` ，`interrpt_tid` 有什么用？
+
+同样是在 `timer_interrupt_handler` 中，会调用 `soonest_interrupt_ns` 设置 `timeout_ns` ，但为什么这样设置还需要看看。edk2 中没有 `timer_create` 等函数，要怎么办？
+
+发现一个问题，在 edk2 中编译无法找到的 `siginfo_t` 似乎根本不需要，我看了 `timer_interrupt_handler` ，`siginfo_t *si` 没有用到，所以我直接将它注释掉。
+
 ### Reference
 
 [1] https://martins3.github.io/ 强烈建议关注这个家伙，简直是个宝库。
