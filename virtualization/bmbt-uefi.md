@@ -38,3 +38,13 @@ fatal error: sys/mman.h: No such file or directory
 #### 3. error: ‘load32’ defined but not used [-Werror=unused-function]
 
 找到编译命令，将 -werro 注释掉即可，所有的编译命令都在 `BaseTools/Conf/tools_def.template` 中。
+
+#### 4. warning: xxx defined but not used [-Wunused-function]
+
+在编译 BMBT 时，会遇到这个问题，从而导致不能通过编译，
+
+```plain
+/home/guanshun/gitlab/edk2/BmbtPkg/src/hw/core/cpu.c:41:13: warning: ‘cpu_common_get_paging_enabled’ defined but not used [-Wunused-function]
+```
+
+所以我将 -Werror 关掉了。
