@@ -48,3 +48,40 @@ fatal error: sys/mman.h: No such file or directory
 ```
 
 所以我将 -Werror 关掉了。
+
+#### 5. error: too few arguments to function ‘open’
+
+```
+/home/guanshun/gitlab/edk2/BmbtPkg/src/hw/core/loader.c: In function ‘rom_add_file’:
+/home/guanshun/gitlab/edk2/BmbtPkg/src/hw/core/loader.c:206:8: error: too few arguments to function ‘open’
+  206 |   fd = open(rom->path, O_RDONLY);
+```
+
+添加了一个形参
+
+```c
+#ifdef UEFI
+  fd = open(rom->path, O_RDONLY);
+#else
+  fd = open(rom->path, O_RDONLY, S_IRUSR); // S_IRUSR,read for owner
+#endif
+```
+
+#### 6. error: missing binary operator before token "("
+
+```
+/home/guanshun/gitlab/edk2/BmbtPkg/src/../include/qemu/compiler.h:54:20: error: missing binary operator before token "("
+   54 | #if __has_attribute(flatten) || !defined(__clang__)
+```
+
+应该是编译器版本的问题，老版本的 gcc 没有 `__has_attribute` ，按照 QEMU 的源码添加一个兼容函数即可。
+
+```c
+#ifndef __has_attribute
+#define __has_attribute(x) 0 /* compatibility with older GCC */
+#endif
+```
+
+#### 7. Error: no such instruction: `la $r12,__bss_start'
+
+src/kernel 目录下的文件没用，开始不知道，将 head.S 加入到 bmbt.inf 中，而 head.S 中是 la 的汇编，所以会出现这个问题，将 src/kernel 所有的文件从 bmbt.inf 中删除即可。
