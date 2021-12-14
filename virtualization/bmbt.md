@@ -369,6 +369,175 @@ static void timer_interrupt_handler(int sig, siginfo_t *si, void *uc) {
 
 至于 signal_timer.c 文件中的函数都是为了使用 signal 机制写的，这里暂时不分析，因为 edk2 的信号实现和 glibc 实现有些差异，下一步我们需要搞懂 edk2 中的 StdLib 是怎样实现的，然后修改对 API 的调用。
 
+#### 内存模拟
+
+内存初始化看代码不难，但我似乎没有仔细想过为什么要这样初始化，以及每块内存区域的含义，正好在将 BMBT 移植到 edk2 的过程中遇到了 sys/mmap.h 头没有在 edk2 中没有实现的问题，晚上花了很久在向怎样解决这个问题，主要的思路是看看 edk2 中已经实现的代码中是怎样使用 mmap 的，但这条路似乎不太行，所以换个思路，理解为什么要这样实现，有没有替换的方法。下面分析一下 BMBT 的内存虚拟化。代码主要在 memory.c 中。
+
+先看看几个重要的数据结构，之后会理清这些数据结构之间的关系：
+
+```c
+typedef struct RAMList {
+  DirtyMemoryBlocks *dirty_memory[DIRTY_MEMORY_NUM];
+
+  /* RCU-enabled, writes protected by the ramlist lock. */
+  struct {
+    RAMBlock block;
+    MemoryRegion mr;
+  } blocks[RAM_BLOCK_NUM];
+  RAMBlock *mru_block;
+} RAMList;
+```
+
+```C
+typedef struct RAMBlock {
+  uint8_t *host;
+  ram_addr_t offset;     // offset in ram list
+  ram_addr_t max_length; // same with MemoryRegion::size
+  MemoryRegion *mr;
+} RAMBlock;
+```
+
+```c
+typedef struct MemoryRegion {
+  // BMBT: In QEMU ram_block != NULL doesn't mean ram == true
+  // see memory_region_init_rom_device_nomigrate, but BMBT is simplified
+  bool ram;
+  bool readonly;
+  struct RAMBlock *ram_block;
+
+  const struct MemoryRegionOps *ops;
+  // FIXME add more checks with opage ?
+  void *opaque;
+
+  hwaddr offset;
+  uint64_t size;
+  const char *name;
+} MemoryRegion;
+```
+
+```C
+typedef struct {
+  MemoryRegion *segments[MAX_SEGMENTS_IN_AS];
+  int segment_num;
+  char name[100];
+} AddressSpaceDispatch;
+```
+
+```C
+typedef struct AddressSpace {
+  AddressSpaceDispatch *dispatch;
+  bool smm;
+  MemoryRegion *(*mr_look_up)(struct AddressSpace *as, hwaddr offset,
+                              hwaddr *xlat, hwaddr *plen);
+} AddressSpace;
+```
+
+在 `qemu_init` 中会调用 `memory_map_init`
+
+```c
+void qemu_init() {
+  ...
+
+  ram_size = 128 * MiB;
+  ...
+
+  memory_map_init(ram_size);
+
+  init_real_host_page_size();
+  init_cache_info();
+
+  ...
+}
+```
+
+先设置 memory_dispatch, look_up 的回调函数，然后调用 `ram_init`
+
+```C
+void memory_map_init(ram_addr_t size) {
+  address_space_io.mr_look_up = io_mr_look_up;
+  address_space_io.dispatch = &__io_dispatch;
+
+  address_space_memory.mr_look_up = mem_mr_look_up;
+  address_space_memory.dispatch = &__memory_dispatch;
+
+  address_space_smm_memory.mr_look_up = mem_mr_look_up;
+  address_space_smm_memory.dispatch = &__memory_dispatch;
+  address_space_smm_memory.smm = true;
+
+  ram_init(size);
+  unassigned_io_setup();
+}
+```
+
+这个函数是关键。
+
+```C
+static void ram_init(ram_addr_t total_ram_size) {
+  ram_addr_t rom_size;
+  void *host = alloc_ram(total_ram_size);
+  for (int i = 0; i < RAM_BLOCK_NUM; ++i) {
+    RAMBlock *block = &ram_list.blocks[i].block;
+    MemoryRegion *mr = &ram_list.blocks[i].mr;
+
+    block->mr = mr;
+    mr->ram_block = block;
+    mr->ram = true;
+    mr->opaque = NULL;
+    mr->ops = NULL;
+  }
+
+  init_ram_block("pc.ram low", PC_LOW_RAM_INDEX, false, 0, SMRAM_C_BASE);
+  init_ram_block("smram", SMRAM_INDEX, false, SMRAM_C_BASE, SMRAM_C_SIZE);
+
+  // pam expan and pam exbios
+  duck_check(PAM_EXPAN_SIZE == PAM_EXBIOS_SIZE);
+  for (int i = 0; i < PAM_EXPAN_NUM + PAM_EXBIOS_NUM; ++i) {
+    const char *name = i < PAM_EXPAN_NUM ? "pam expan" : "pam exbios";
+    hwaddr offset = SMRAM_C_END + i * PAM_EXPAN_SIZE;
+    init_ram_block(name, PAM_INDEX + i, true, offset, PAM_EXPAN_SIZE);
+  }
+
+  init_ram_block("system bios", PAM_BIOS_INDEX, true, PAM_BIOS_BASE,
+                 PAM_BIOS_SIZE);
+
+  duck_check(SMRAM_C_BASE + SMRAM_C_SIZE +
+                 PAM_EXPAN_SIZE * (PAM_EXPAN_NUM + PAM_EXBIOS_NUM) ==
+             PAM_BIOS_BASE);
+  duck_check(ram_list.blocks[PAM_BIOS_INDEX].mr.offset +
+                 ram_list.blocks[PAM_BIOS_INDEX].mr.size ==
+             X86_BIOS_MEM_SIZE);
+
+  init_ram_block("pc.ram", PC_RAM_INDEX, false, X86_BIOS_MEM_SIZE,
+                 total_ram_size - X86_BIOS_MEM_SIZE);
+  init_ram_block("pc.bios", PC_BIOS_INDEX, true, 4 * GiB - PC_BIOS_IMG_SIZE,
+                 PC_BIOS_IMG_SIZE);
+
+  for (int i = 0; i < RAM_BLOCK_NUM; ++i) {
+    RAMBlock *block = &ram_list.blocks[i].block;
+    MemoryRegion *mr = &ram_list.blocks[i].mr;
+
+    block->offset = mr->offset;
+    block->max_length = mr->size;
+    block->host = host + block->offset;
+  }
+
+  // pc.bios's block::offset is not same with it's mr.offset
+  RAMBlock *block = &ram_list.blocks[PC_BIOS_INDEX].block;
+  block->offset = total_ram_size;
+
+  for (int i = 0; i < RAM_BLOCK_NUM; ++i) {
+    MemoryRegion *mr = &ram_list.blocks[i].mr;
+    mem_add_memory_region(mr);
+  }
+
+  // isa-bios / pc.bios's host point to file
+  rom_size = x86_bios_rom_init();
+  setup_dirty_memory(total_ram_size + rom_size);
+}
+```
+
+
+
 还是有问题：
 
 按理说设置一个回调函数不就可以了，为什么还要 `timer_create` ，`interrpt_tid` 有什么用？
