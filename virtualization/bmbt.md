@@ -36,6 +36,7 @@ qemu_init
 								// 这里需要把 pc.ram low, smram, pam, system bios,
 								// pc.ram, pc.bios 搞懂
 								// 这部分还是很有趣的，对理解系统启动过程帮助很大
+								// 内存模块进行分析
 | -- init_real_host_page_size(); // 通过 c 库函数 getpagesize 得到 host 的 pagesize
 | -- init_cache_info(); // 设置 icache, dcache 大小，看看 QEMU 怎么实现的
 | -- qemu_set_log(0); // 写入 log
@@ -475,16 +476,7 @@ void memory_map_init(ram_addr_t size) {
 static void ram_init(ram_addr_t total_ram_size) {
   ram_addr_t rom_size;
   void *host = alloc_ram(total_ram_size);
-  for (int i = 0; i < RAM_BLOCK_NUM; ++i) {
-    RAMBlock *block = &ram_list.blocks[i].block;
-    MemoryRegion *mr = &ram_list.blocks[i].mr;
-
-    block->mr = mr;
-    mr->ram_block = block;
-    mr->ram = true;
-    mr->opaque = NULL;
-    mr->ops = NULL;
-  }
+  ...
 
   init_ram_block("pc.ram low", PC_LOW_RAM_INDEX, false, 0, SMRAM_C_BASE);
   init_ram_block("smram", SMRAM_INDEX, false, SMRAM_C_BASE, SMRAM_C_SIZE);
@@ -512,14 +504,7 @@ static void ram_init(ram_addr_t total_ram_size) {
   init_ram_block("pc.bios", PC_BIOS_INDEX, true, 4 * GiB - PC_BIOS_IMG_SIZE,
                  PC_BIOS_IMG_SIZE);
 
-  for (int i = 0; i < RAM_BLOCK_NUM; ++i) {
-    RAMBlock *block = &ram_list.blocks[i].block;
-    MemoryRegion *mr = &ram_list.blocks[i].mr;
-
-    block->offset = mr->offset;
-    block->max_length = mr->size;
-    block->host = host + block->offset;
-  }
+  ...
 
   // pc.bios's block::offset is not same with it's mr.offset
   RAMBlock *block = &ram_list.blocks[PC_BIOS_INDEX].block;
@@ -536,9 +521,80 @@ static void ram_init(ram_addr_t total_ram_size) {
 }
 ```
 
+这是所有初始化的 block 分配情况：
 
+```plain
+name: pc.ram low, index: 0, offset: 0, size: 640
+name: smram, index: 1, offset: 640, size: 128
+name: pam expan, index: 2, offset: 768, size: 16
+name: pam expan, index: 3, offset: 784, size: 16
+name: pam expan, index: 4, offset: 800, size: 16
+name: pam expan, index: 5, offset: 816, size: 16
+name: pam expan, index: 6, offset: 832, size: 16
+name: pam expan, index: 7, offset: 848, size: 16
+name: pam expan, index: 8, offset: 864, size: 16
+name: pam expan, index: 9, offset: 880, size: 16
+name: pam exbios, index: 10, offset: 896, size: 16
+name: pam exbios, index: 11, offset: 912, size: 16
+name: pam exbios, index: 12, offset: 928, size: 16
+name: pam exbios, index: 13, offset: 944, size: 16
+name: system bios, index: 14, offset: 960, size: 64
+name: pc.ram, index: 15, offset: 1024, size: 130048
+name: pc.bios, index: 16, offset: 4194048, size: 256
+```
 
-还是有问题：
+需要搞清楚每个 block 的意义。
+
+前面的都很好理解，为什么到 pc.bios 的 offset 就对不上了呢？
+
+在所有的 block 都初始化了之后，会调用 `as_add_memory_regoin` ，将 memory_region 加到 `dispatch->segments` 中，但为什么这样加还没有搞清楚。这样添加之后因为 `AddressSpace` 的回调函数已经初始化为  `mem_mr_look_up` ，所以之后可以直接根据 `offset` 找到该 block。
+
+```c
+static void as_add_memory_regoin(AddressSpaceDispatch *dispatch,
+                                 MemoryRegion *mr) {
+#ifndef RELEASE_VERSION
+  duck_check(mr_initialized(mr));
+#endif
+  tcg_commit();
+
+  ...
+
+  for (int k = dispatch->segment_num; k > i; --k) {
+    dispatch->segments[k] = dispatch->segments[k - 1];
+  }
+  dispatch->segments[i] = mr;
+
+  dispatch->segment_num++;
+}
+```
+
+这部分初始化之后就是 `x86_bios_rom_init`。没懂，将 bios.bin 读出来放到 `ram_list.blocks[PC_BIOS_INDEX].block` 里？
+
+```c
+static ram_addr_t x86_bios_rom_init() {
+  int fd = open("./seabios/out/bios.bin", O_RDONLY);
+  duck_check(fd != -1);
+
+  lseek(fd, 0, SEEK_SET);
+  int rc = read(fd, __pc_bios, PC_BIOS_IMG_SIZE);
+  duck_check(rc == PC_BIOS_IMG_SIZE);
+  close(fd);
+
+  RAMBlock *block = &ram_list.blocks[PC_BIOS_INDEX].block;
+  block->host = (void *)(&__pc_bios[0]);
+
+  // isa-bios is handled in function isa_bios_access
+  return PC_BIOS_IMG_SIZE;
+}
+```
+
+然后是 `setup_dirty_memory` ，为什么要初始化 dirty memory，BMBT 需要这个干啥？
+
+所有的初始化内容就是这些，接下来看看还有哪些地方会用到 memory region。
+
+还是不懂，看看 QEMU 中的 memory virtualization 吧！之后进一步看 kernel 的内存管理。
+
+### 问题
 
 按理说设置一个回调函数不就可以了，为什么还要 `timer_create` ，`interrpt_tid` 有什么用？
 
