@@ -92,9 +92,9 @@ int munmap(void *addr, size_t length);
 
 `mmap()`  creates  a  new  mapping in the virtual address space of the calling process for a device, file and etc, so process can operate the device use va, rather than use read and write.  The starting address for the new mapping is specified in **addr**.  The **length** argument specifies the length of the mapping (which must be greater than 0).
 
-If addr is **NULL**, then the kernel chooses **the (page-aligned) address** at which to create the mapping.  If addr is not NULL, then the  kernel takes  it  as  a hint about where to place the mapping;
+If addr is **NULL**, then the kernel chooses **the (page-aligned) address** at which to create the mapping.  If addr is not NULL, then the kernel takes it as a hint about where to place the mapping;
 
-The  contents  of a file mapping are initialized using **length** bytes starting at offset **offset** in the file (or other object) referred to by the file descriptor **fd**.
+The  contents of a file mapping are initialized using **length** bytes starting at offset **offset** in the file (or other object) referred to by the file descriptor **fd**.
 
 The **prot** argument describes the desired memory protection of the mapping.
 

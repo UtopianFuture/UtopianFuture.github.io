@@ -81,11 +81,11 @@
 
 11. gcc 中的`-fno-builtin`命令
         -fno-builtin-function
-        	Don't recognize built-in functions that do not begin with __builtin_ as prefix.
+        	Don't recognize built-in functions that do not begin with ************************__builtin_ as prefix.
         	GCC normally generates special code to handle certain built-in functions more efficiently; for instance, calls to "alloca" may become single instructions which adjust the stack directly, and calls to "memcpy" may become inline copy loops.  The resulting code is often both smaller and faster, but since the function calls no longer appear as such, you cannot set a breakpoint on those calls, nor can you change the behavior of the functions by linking with a different library.  In addition, when a function is recognized as a built-in function, GCC may use information about that function to warn about problems with calls to that function, or to generate more efficient code, even if the resulting code still contains calls to that function.  For example, warnings are given with -Wformat for bad calls to "printf" when "printf" is built in and "strlen" is known not to modify global memory.
-        	With the -fno-builtin-function option only the built-in function function is disabled.  function must not begin with __builtin_.  If a function is named that is not built-in in this version of GCC, this option is ignored.  There is no corresponding -fbuiltin-function option; if you wish to enable built-in functions selectively when using -fno-builtin or -ffreestanding, you may define macros such as:
+        	With the -fno-builtin-function option only the built-in function function is disabled.  function must not begin with __************************builtin_.  If a function is named that is not built-in in this version of GCC, this option is ignored.  There is no corresponding -fbuiltin-function option; if you wish to enable built-in functions selectively when using -fno-builtin or -ffreestanding, you may define macros such as:
 
-                       #define abs(n)          __builtin_abs ((n))
+                       #define abs(n)          __builtin_abs ((n))plainplainplainplainplainplainplain
                        #define strcpy(d, s)    __builtin_strcpy ((d), (s))
 
     即不用内联函数，便于设置断点调试。而`-fno-builtin-function`则是指定某个函数不用，这个函数的命名可以和 bulit-in 函数重名。
