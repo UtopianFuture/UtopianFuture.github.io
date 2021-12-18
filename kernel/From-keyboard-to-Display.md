@@ -373,7 +373,7 @@ EXPORT_SYMBOL_GPL(serial8250_tx_chars);
 
 这是整个 serial port 的字符
 
-```shell
+```plain
 (gdb) p up->port->state->xmit
 $11 = {
   buf = 0xffff88810260c000 "Loading, please wait...\r\nStarting version 245.4-4ubuntu3.13\r\nBegin: Loading essential drivers ... done.\r\nBegin: Running /scripts/init-premount ... done.\r\n
@@ -386,13 +386,19 @@ ripts/local-block ... done.\r\ndone.\r\nGave up waiting for suspend/resume devic
 
 貌似分析到这里就分析不下去了，因为很多东西不懂。那么就先把涉及到的东西搞懂，再进一步。需要理解的地方：
 
-- 用户态的执行流程是怎样的？
-- 用户态到内核态的上下文切换在那里，怎么做的？
+- 用户态的执行流程是怎样的？（这个暂时不好分析，因为不知道用户态进程是哪个）
+- 用户态到内核态的上下文切换在哪里，怎么做的？（这个是切入点）
 - kernel thread, workqueue 的设计思想是什么？
 - tty_buffer 中的字符是怎样发送到 serial_port 中去的。
 - `preempt_enable` 执行完后就会执行一次中断，这个中断是由哪个发出来的，怎样判断中断来源？
 - 在调试的过程中，还执行过中断上下文切换的代码，汇编写的，搞清楚。
 - `serial8250_tx_chars` 也是中断处理过程的一部分，serial 发的中断么？
+
+### 用户态执行流程
+
+
+
+### 用户态到内核态的上下文切换
 
 `ret_from_fork` 是上下文切换的函数，这应该是内核态，用户态怎么处理的？
 
@@ -435,4 +441,78 @@ SYM_CODE_END(ret_from_fork)
 .popsection
 ```
 
-这里涉及到 kernel thread —— 即运行在内核态，执行周期性任务的线程，没有普通进程的上下文切换。详细的原理之后再分析。
+这里涉及到 kernel thread —— 即运行在内核态，执行周期性任务的线程，没有普通进程的上下文切换。
+
+`ret_from_fork` 的作用是终止 `fork()`, `vfork()` 和 `clone()` 系统调用。从[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/linux-note/others.md#ret_from_fork)我们可以知道 `ret_from_fork` 会完成进程切换的剩余工作，我们来分析一下它是怎么做的。
+
+这里涉及几个关键函数：
+
+`finish_task_switch`：
+
+`prepare_task_switch`：
+
+### kernel thread
+
+内核线程是在内核态执行周期性任务（如刷新磁盘高速缓存，交换出不用的页框，维护网络连接等等）的进程，其只运行在内核态，不需要进行上下文切换，但也只能使用大于 PAGE_OFFSET（传统的 x86_32 上是 3G）的地址空间。也可以称其为**内核守护进程**。
+
+#### task_struct
+
+```c
+struct task_struct {
+	...
+}
+```
+
+#### kthread_create
+
+```c
+/**
+ * kthread_create - create a kthread on the current node
+ * @threadfn: the function to run in the thread
+ * @data: data pointer for @threadfn()
+ * @namefmt: printf-style format string for the thread name
+ * @arg: arguments for @namefmt.
+ *
+ * This macro will create a kthread on the current node, leaving it in
+ * the stopped state.  This is just a helper for kthread_create_on_node();
+ * see the documentation there for more details.
+ */
+#define kthread_create(threadfn, data, namefmt, arg...) \
+	kthread_create_on_node(threadfn, data, NUMA_NO_NODE, namefmt, ##arg)
+```
+
+#### kthread_run
+
+```c
+/**
+ * kthread_run - create and wake a thread.
+ * @threadfn: the function to run until signal_pending(current).
+ * @data: data ptr for @threadfn.
+ * @namefmt: printf-style name for the thread.
+ *
+ * Description: Convenient wrapper for kthread_create() followed by
+ * wake_up_process().  Returns the kthread or ERR_PTR(-ENOMEM).
+ */
+#define kthread_run(threadfn, data, namefmt, ...)			   \
+({									   \
+	struct task_struct *__k						   \
+		= kthread_create(threadfn, data, namefmt, ## __VA_ARGS__); \
+	if (!IS_ERR(__k))						   \
+		wake_up_process(__k);					   \
+	__k;								   \
+})
+```
+
+### workqueue
+
+### Reference
+
+[1] [kernel thread and workqueue](https://blog.csdn.net/gatieme/article/details/51589205)
+
+[2] [ret_from_fork](https://www.oreilly.com/library/view/understanding-the-linux/0596002130/ch04s08.html)
+
+[3]
+
+### 说明
+
+这篇文章是探索内核的记录，不一定严谨，没有固定的流程（我尽量按照既定的问题走），可能调试的时候发现了不懂的问题就产生一个新的分支。
