@@ -1,6 +1,6 @@
 # 杂项
 
-## page coloring
+### page coloring
 
 系统在为进程分配内存空间时，是按照 virtual memory 分配的，然后 virtual memory 会映射到不同的 physical memory，这样会导致一个问题，相邻的 virtual memory 会映射到不相邻的 physical memory 中，然后在缓存到 cache 中时，相邻的 virtual memory 会映射到同一个 cache line，从而导致局部性降低，性能损失。
 
@@ -379,3 +379,31 @@ SMM is **a special-purpose operating mode** provided for handling system-wide fu
 Normally, a hypervisor loads a Virtual Machine with a fully functional operating system, like some flavor of Linux, Windows, or one of the BSDs. These operating systems were designed to be run on hardware, so they have all the complexity needed for a variety of hardware drivers from an assortment of vendors with different design concepts. These operating systems are also intended to be multi-user, multi-process, and multi-purpose. They are designed to be everything for everyone, so they are necessarily complex and large.
 
 A Unikernel, on the other hand, is (generally) single-purpose. It is not designed to run on hardware, and so lacks the bloat and complexity of drivers. It is not meant to be multi-user or multi-process, so it can **focus on creating a single thread of code which runs one application, and one application only**. Most are not multi-purpose, as the target is to create a single payload that a particular instance will execute (OSv is an exception). Thanks to this single-minded design, the Unikernel is small, lightweight, and quick.
+
+### kernel control path
+
+A *kernel control path* is the sequence of instructions executed by a kernel to handle a *system call*, an *interrupt* or an *exception*.
+
+The sequence of instructions executed in Kernel Mode to handle a kernel request is denoted as kernel control path : when a User Mode process issues a system call request, for instance, the first instructions of the corresponding kernel control path are those included in the initial part of the `system_call(` function, while the last instructions are those included in the `ret_from_sys_call()` function.
+
+总结来说，就是 kernel 中处理 system call， interrupt 和 exception 的程序，一般以 `system_call()` 开始，以 `ret_from_sys_call()`结束。
+
+### ASCII
+
+![ascii](/home/guanshun/gitlab/UFuture.github.io/image/ascii.gif)
+
+### [ret_from_fork](https://www.oreilly.com/library/view/understanding-the-linux/0596002130/ch04s08.html)
+
+当执行中断或异常的处理程序后需要返回到原来的进程，`ret_from_fork` 就是终止 `fork()`, `vfork()` 和 `clone()` 系统调用的。类似的函数还有
+
+`ret_from_exception`：终止除了 0x80 异常外的所有异常处理程序。
+
+`ret_from_intr`：终止中断处理程序
+
+`ret_from_sys_call`：终止所有的系统调用处理程序。
+
+下面是处理流程。
+
+![Returning from interrupts and exceptions](/home/guanshun/gitlab/UFuture.github.io/image/ret_from_fork.png)
+
+Initially, the `ebx` register stores **the address of the descriptor of the process being replaced by the child** (usually the parent’s process descriptor); this value is passed to the `schedule_tail()` function as a parameter. When that function returns, `ebx` is reloaded with the `current`’s process descriptor address. Then the `ret_from_fork()` function checks the value of the `ptrace` field of the `current` (at offset 24 of the process descriptor). If the field is not null, the `fork( )`, `vfork( )`, or `clone( )` system call is traced, so the `syscall_trace( )` function is invoked to notify the debugging process.
