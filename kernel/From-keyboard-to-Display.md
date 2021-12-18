@@ -6,115 +6,7 @@
 
 首先寻找到 kernel 中的 keyboard 是怎样处理字符的。
 
-暂时没有跟踪到是哪个函数处理 keyboard 的输入，但是跟踪到了怎样输出。使用 serial 输出。具体是 `serial8250_tx_chars` 中的 `serial_out` 函数。
-
-```plain
-serial8250_tx_chars (up=up@entry=0xffffffff836d1c60 <serial8250_ports>) at drivers/tty/serial/8250/8250_port.c:1819
-#1  0xffffffff8174ccf4 in serial8250_handle_irq (port=port@entry=0xffffffff836d1c60 <serial8250_ports>, iir=<optimized out>) at drivers/tty/serial/8250/8250_port.c:1932
-#2  0xffffffff8174ce11 in serial8250_handle_irq (iir=<optimized out>, port=0xffffffff836d1c60 <serial8250_ports>) at drivers/tty/serial/8250/8250_port.c:1905
-#3  serial8250_default_handle_irq (port=0xffffffff836d1c60 <serial8250_ports>) at drivers/tty/serial/8250/8250_port.c:1949
-#4  0xffffffff817490e8 in serial8250_interrupt (irq=4, dev_id=0xffff8881058fd1a0) at drivers/tty/serial/8250/8250_core.c:126
-#5  0xffffffff8111d892 in __handle_irq_event_percpu (desc=desc@entry=0xffff8881001cda00, flags=flags@entry=0xffffc90000003f54) at kernel/irq/handle.c:156
-#6  0xffffffff8111d9e3 in handle_irq_event_percpu (desc=desc@entry=0xffff8881001cda00) at kernel/irq/handle.c:196
-#7  0xffffffff8111da6b in handle_irq_event (desc=desc@entry=0xffff8881001cda00) at kernel/irq/handle.c:213
-#8  0xffffffff81121ef3 in handle_edge_irq (desc=0xffff8881001cda00) at kernel/irq/chip.c:822
-#9  0xffffffff810395a3 in generic_handle_irq_desc (desc=0xffff8881001cda00) at ./include/linux/irqdesc.h:158
-#10 handle_irq (regs=<optimized out>, desc=0xffff8881001cda00) at arch/x86/kernel/irq.c:231
-#11 __common_interrupt (regs=<optimized out>, vector=39) at arch/x86/kernel/irq.c:250
-#12 0xffffffff81c085d8 in common_interrupt (regs=0xffffc9000064fc08, error_code=<optimized out>) at arch/x86/kernel/irq.c:240
-#13 0xffffffff81e00cde in asm_common_interrupt () at ./arch/x86/include/asm/idtentry.h:629
-```
-
-```c
-static inline void serial_out(struct uart_8250_port *up, int offset, int value)
-{
-	up->port.serial_out(&up->port, offset, value);
-}
-```
-
-而 `serial_out` 的回调函数是 `io_serial_out`，
-
-```c
-static void io_serial_out(struct uart_port *p, int offset, int value)
-{
-	offset = offset << p->regshift;
-	outb(value, p->iobase + offset);
-}
-```
-
-outb 是封装 outb 指令的宏，其实最后还是通过 outb 指令输出。
-
-```c
-#define outb outb
-BUILDIO(b, b, char)
-#define BUILDIO(bwl, bw, type)						\
-static inline void out##bwl(unsigned type value, int port)		\
-{									\
-	asm volatile("out" #bwl " %" #bw "0, %w1"			\
-		     : : "a"(value), "Nd"(port));			\
-}
-```
-
-这就是整个后端的输出过程。
-
-分析一下 `serial8250_tx_chars` 的执行过程。
-
-```c
-void serial8250_tx_chars(struct uart_8250_port *up)
-{
-	struct uart_port *port = &up->port;
-	struct circ_buf *xmit = &port->state->xmit;
-	int count;
-
-	...
-
-	count = up->tx_loadsz; // 整个 port 缓冲的字符数
-	do {
-		serial_out(up, UART_TX, xmit->buf[xmit->tail]); // 每次输出一个字符
-		if (up->bugs & UART_BUG_TXRACE) {
-			serial_in(up, UART_SCR);
-		}
-		xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1); // 指向下一个字符
-		port->icount.tx++;
-		if (uart_circ_empty(xmit))
-			break;
-		if ((up->capabilities & UART_CAP_HFIFO) &&
-		    (serial_in(up, UART_LSR) & BOTH_EMPTY) != BOTH_EMPTY)
-			break;
-		/* The BCM2835 MINI UART THRE bit is really a not-full bit. */
-		if ((up->capabilities & UART_CAP_MINI) &&
-		    !(serial_in(up, UART_LSR) & UART_LSR_THRE))
-			break;
-	} while (--count > 0);
-
-	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
-		uart_write_wakeup(port);
-
-	/*
-	 * With RPM enabled, we have to wait until the FIFO is empty before the
-	 * HW can go idle. So we get here once again with empty FIFO and disable
-	 * the interrupt and RPM in __stop_tx()
-	 */
-	if (uart_circ_empty(xmit) && !(up->capabilities & UART_CAP_RPM))
-		__stop_tx(up);
-}
-EXPORT_SYMBOL_GPL(serial8250_tx_chars);
-```
-
-这是整个 serial port 的字符
-
-```shell
-(gdb) p up->port->state->xmit
-$11 = {
-  buf = 0xffff88810260c000 "Loading, please wait...\r\nStarting version 245.4-4ubuntu3.13\r\nBegin: Loading essential drivers ... done.\r\nBegin: Running /scripts/init-premount ... done.\r\n
-Begin: Mounting root file system ... Begin: Running /scripts/local-top ... done.\r\nBegin: Running /scripts/local-premount ... Begin: Waiting for suspend/resume device ... Begin: Running /sc
-ripts/local-block ... done.\r\ndone.\r\nGave up waiting for suspend/resume device\r\ndone.\r\nNo root device specified. Boot arguments must include a root= parameter.\r\n\r\n\r\nBusyBox v1.3
-0.1 (Ubuntu 1:1.30.1-4ubuntu6.4) built-in shell (ash)\r\nEnter 'help' for a list of built-in commands.\r\n\r\n(initramfs) \033[6ne", head = 639, tail = 638}
-```
-
-但是这不是我想要了解的，还需要分析整个中断的过程等等。
-
-终于找到在哪里储存键盘输入的字符了，`tty_buffer.c` 中的 `receive_buf`。接下来看看为什么会存入到 tty_buffer 中，怎么存的，存到 tty_buffer 的字符用什么方式传输到 serial_port。
+设了很多断点，发现 keyboard 输入的字符是存储在 `tty_buffer.c` 中的 `receive_buf` 中。接下来看看为什么会存入到 tty_buffer 中，怎么存的，以及存到 tty_buffer 的字符用什么方式传输到 serial_port。
 
 ```plain
 (gdb) p p
@@ -155,7 +47,7 @@ receive_buf(struct tty_port *port, struct tty_buffer *head, int count)
 n = port->client_ops->receive_buf(port, p, f, count);
 ```
 
-这条语句居然能直接跑到 `serial8250_tx_chars` ，有古怪，进一步跟踪。`tty_port_default_receive_buf` 是 `receive_buf` 的回调函数。
+这条语句居然能直接跑到 `serial8250_tx_chars` ，有古怪，进一步跟踪。`tty_port_default_receive_buf` 是 `receive_buf` 的回调函数。之后是一系列的调用，这里不了解 tty 的工作原理，所以暂时不分析细节，我的关注点是**整个执行流程，然后是涉及到的 kernel 框架，再是设备的处理细节**。
 
 ```c
 static int tty_port_default_receive_buf(struct tty_port *port,
@@ -203,7 +95,7 @@ static inline void put_tty_queue(unsigned char c, struct n_tty_data *ldata)
 }
 ```
 
-从这里就可以清晰的看到 tty 的数据是怎样传输到 serial 中的。
+从这里就可以清晰的看到 tty 的数据是怎样传输到 serial 中的（后来发现这里并不是传输到 serial_port 的过程，比这还要复杂，需要对 kernel 的执行框架有一定了解才行）。
 
 ```plain
 #0  serial8250_start_tx (port=0xffffffff836d1c60 <serial8250_ports>) at drivers/tty/serial/8250/8250_port.c:1654
@@ -225,7 +117,7 @@ static inline void put_tty_queue(unsigned char c, struct n_tty_data *ldata)
 #15 0x0000000000000000 in ?? ()
 ```
 
-`tty->ops->flush_chars(tty);` 这里的回调函数就是 `uart_flush_chars`
+`tty->ops->flush_chars(tty);` 这里的回调函数就是 `uart_flush_chars`，
 
 ```c
 static void __receive_buf(struct tty_struct *tty, const unsigned char *cp,
@@ -245,7 +137,7 @@ static void __receive_buf(struct tty_struct *tty, const unsigned char *cp,
 
 		flush_echoes(tty);
 		if (tty->ops->flush_chars)
-			tty->ops->flush_chars(tty);
+			tty->ops->flush_chars(tty); // 这里会跑到 serial 中去
 	}
 
 	if (ldata->icanon && !L_EXTPROC(tty))
@@ -261,7 +153,7 @@ static void __receive_buf(struct tty_struct *tty, const unsigned char *cp,
 }
 ```
 
-而这里 `start_tx` 的回调函数就是 `serial8250_start_tx`
+而这里 `start_tx` 的回调函数就是 `serial8250_start_tx`（这里只列出关键点），
 
 ```c
 static void __uart_start(struct tty_struct *tty)
@@ -384,9 +276,123 @@ do {						\
 })
 ```
 
-貌似分析到这里就分析不下去了，因为很多东西不懂。那么就先把涉及到的东西搞懂，再进一步。
+再看看是怎样输出到屏幕中的。使用 serial 输出，具体是 `serial8250_tx_chars` 中的 `serial_out` 函数。
 
+```plain
+serial8250_tx_chars (up=up@entry=0xffffffff836d1c60 <serial8250_ports>) at drivers/tty/serial/8250/8250_port.c:1819
+#1  0xffffffff8174ccf4 in serial8250_handle_irq (port=port@entry=0xffffffff836d1c60 <serial8250_ports>, iir=<optimized out>) at drivers/tty/serial/8250/8250_port.c:1932
+#2  0xffffffff8174ce11 in serial8250_handle_irq (iir=<optimized out>, port=0xffffffff836d1c60 <serial8250_ports>) at drivers/tty/serial/8250/8250_port.c:1905
+#3  serial8250_default_handle_irq (port=0xffffffff836d1c60 <serial8250_ports>) at drivers/tty/serial/8250/8250_port.c:1949
+#4  0xffffffff817490e8 in serial8250_interrupt (irq=4, dev_id=0xffff8881058fd1a0) at drivers/tty/serial/8250/8250_core.c:126
+#5  0xffffffff8111d892 in __handle_irq_event_percpu (desc=desc@entry=0xffff8881001cda00, flags=flags@entry=0xffffc90000003f54) at kernel/irq/handle.c:156
+#6  0xffffffff8111d9e3 in handle_irq_event_percpu (desc=desc@entry=0xffff8881001cda00) at kernel/irq/handle.c:196
+#7  0xffffffff8111da6b in handle_irq_event (desc=desc@entry=0xffff8881001cda00) at kernel/irq/handle.c:213
+#8  0xffffffff81121ef3 in handle_edge_irq (desc=0xffff8881001cda00) at kernel/irq/chip.c:822
+#9  0xffffffff810395a3 in generic_handle_irq_desc (desc=0xffff8881001cda00) at ./include/linux/irqdesc.h:158
+#10 handle_irq (regs=<optimized out>, desc=0xffff8881001cda00) at arch/x86/kernel/irq.c:231
+#11 __common_interrupt (regs=<optimized out>, vector=39) at arch/x86/kernel/irq.c:250
+#12 0xffffffff81c085d8 in common_interrupt (regs=0xffffc9000064fc08, error_code=<optimized out>) at arch/x86/kernel/irq.c:240
+#13 0xffffffff81e00cde in asm_common_interrupt () at ./arch/x86/include/asm/idtentry.h:629
+```
 
+```c
+static inline void serial_out(struct uart_8250_port *up, int offset, int value)
+{
+	up->port.serial_out(&up->port, offset, value);
+}
+```
+
+而 `serial_out` 的回调函数是 `io_serial_out`，
+
+```c
+static void io_serial_out(struct uart_port *p, int offset, int value)
+{
+	offset = offset << p->regshift;
+	outb(value, p->iobase + offset);
+}
+```
+
+outb 是封装 outb 指令的宏，其实最后还是通过 outb 指令输出。
+
+```c
+#define outb outb
+BUILDIO(b, b, char)
+#define BUILDIO(bwl, bw, type)						\
+static inline void out##bwl(unsigned type value, int port)		\
+{									\
+	asm volatile("out" #bwl " %" #bw "0, %w1"			\
+		     : : "a"(value), "Nd"(port));			\
+}
+```
+
+这就是整个后端的输出过程。
+
+分析一下 `serial8250_tx_chars` 的执行过程。
+
+```c
+void serial8250_tx_chars(struct uart_8250_port *up)
+{
+	struct uart_port *port = &up->port;
+	struct circ_buf *xmit = &port->state->xmit;
+	int count;
+
+	...
+
+	count = up->tx_loadsz; // 整个 port 缓冲的字符数
+	do {
+		serial_out(up, UART_TX, xmit->buf[xmit->tail]); // 每次输出一个字符
+		if (up->bugs & UART_BUG_TXRACE) {
+			serial_in(up, UART_SCR);
+		}
+		xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1); // 指向下一个字符
+		port->icount.tx++;
+		if (uart_circ_empty(xmit))
+			break;
+		if ((up->capabilities & UART_CAP_HFIFO) &&
+		    (serial_in(up, UART_LSR) & BOTH_EMPTY) != BOTH_EMPTY)
+			break;
+		/* The BCM2835 MINI UART THRE bit is really a not-full bit. */
+		if ((up->capabilities & UART_CAP_MINI) &&
+		    !(serial_in(up, UART_LSR) & UART_LSR_THRE))
+			break;
+	} while (--count > 0);
+
+	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
+		uart_write_wakeup(port);
+
+	/*
+	 * With RPM enabled, we have to wait until the FIFO is empty before the
+	 * HW can go idle. So we get here once again with empty FIFO and disable
+	 * the interrupt and RPM in __stop_tx()
+	 */
+	if (uart_circ_empty(xmit) && !(up->capabilities & UART_CAP_RPM))
+		__stop_tx(up);
+}
+EXPORT_SYMBOL_GPL(serial8250_tx_chars);
+```
+
+这是整个 serial port 的字符
+
+```shell
+(gdb) p up->port->state->xmit
+$11 = {
+  buf = 0xffff88810260c000 "Loading, please wait...\r\nStarting version 245.4-4ubuntu3.13\r\nBegin: Loading essential drivers ... done.\r\nBegin: Running /scripts/init-premount ... done.\r\n
+Begin: Mounting root file system ... Begin: Running /scripts/local-top ... done.\r\nBegin: Running /scripts/local-premount ... Begin: Waiting for suspend/resume device ... Begin: Running /sc
+ripts/local-block ... done.\r\ndone.\r\nGave up waiting for suspend/resume device\r\ndone.\r\nNo root device specified. Boot arguments must include a root= parameter.\r\n\r\n\r\nBusyBox v1.3
+0.1 (Ubuntu 1:1.30.1-4ubuntu6.4) built-in shell (ash)\r\nEnter 'help' for a list of built-in commands.\r\n\r\n(initramfs) \033[6ne", head = 639, tail = 638}
+```
+
+但是这不是我想要了解的，还需要分析整个中断的过程等等。
+
+貌似分析到这里就分析不下去了，因为很多东西不懂。那么就先把涉及到的东西搞懂，再进一步。需要理解的地方：
+
+- 用户态的执行流程是怎样的？
+- 用户态到内核态的上下文切换在那里，怎么做的？
+- kernel thread, workqueue 的设计思想是什么？
+- tty_buffer 中的字符是怎样发送到 serial_port 中去的。
+- `preempt_enable` 执行完后就会执行一次中断，这个中断是由哪个发出来的，怎样判断中断来源？
+- 在调试的过程中，还执行过中断上下文切换的代码，汇编写的，搞清楚。
+- `serial8250_tx_chars` 也是中断处理过程的一部分，serial 发的中断么？
 
 `ret_from_fork` 是上下文切换的函数，这应该是内核态，用户态怎么处理的？
 
