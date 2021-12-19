@@ -1,6 +1,6 @@
 ## From keyboard to display
 
-为什么要探究这个过程呢？在看 kernel 和 bmbt 代码的过程中，代码始终一块块孤零零的，脑子里没有镇个流程，不知道下一步该实现什么，总是跟着别人的脚步在走，感觉用 gdb 走一边这个流程能对整个系统认识更加深刻。
+为什么要探究这个过程呢？在看 kernel 和 bmbt 代码的过程中，代码始终一块块孤零零的，脑子里没有镇个流程，不知道下一步该实现什么，总是跟着别人的脚步在走，感觉用 gdb 走一遍这个流程能对整个系统认识更加深刻。
 
 ### 执行流程
 
@@ -261,7 +261,7 @@ static inline void __raw_spin_unlock_irqrestore(raw_spinlock_t *lock,
 ```c
 #define smp_store_release(p, v)			\
 do {						\
-	barrier();				\
+	barrier();				\ // 这个地方涉及到 memory barrier，需要搞懂
 	WRITE_ONCE(*p, v);			\
 } while (0)
 ```
@@ -443,7 +443,89 @@ SYM_CODE_END(ret_from_fork)
 
 这里涉及到 kernel thread —— 即运行在内核态，执行周期性任务的线程，没有普通进程的上下文切换。
 
-`ret_from_fork` 的作用是终止 `fork()`, `vfork()` 和 `clone()` 系统调用。从[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/linux-note/others.md#ret_from_fork)我们可以知道 `ret_from_fork` 会完成进程切换的剩余工作，我们来分析一下它是怎么做的。
+`ret_from_fork` 的作用是终止 `fork()`, `vfork()` 和 `clone()` 系统调用。从[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/linux-note/others.md#ret_from_fork)我们可以知道 `ret_from_fork` 会完成进程切换的剩余工作，也就是切换到 fork 出来的新进程，我们来分析一下它是怎么做的。
+
+当执行中断或异常的处理程序后需要返回到原来的进程，在返回前还需要处理以下几件事：
+
+1. 并发执行的内核控制路径数（kernel control path）
+
+   如果只有一个，CPU 必须切换回用户模式。
+
+2. 待处理进程切换请求
+
+   如果有任何请求，内核必须进行进程调度；否则，控制权返回到当前进程。
+
+3. 待处理信号
+
+   如果一个信号被发送到当前进程，它必须被处理。
+
+```c
+/*
+ * A newly forked process directly context switches into this address.
+ *
+ * rax: prev task we switched from
+ * rbx: kernel thread func (NULL for user thread)
+ * r12: kernel thread arg
+ */
+.pushsection .text, "ax"
+SYM_CODE_START(ret_from_fork)
+	UNWIND_HINT_EMPTY
+	movq	%rax, %rdi
+	call	schedule_tail			/* rdi: 'prev' task parameter */
+
+	testq	%rbx, %rbx			/* from kernel_thread? */
+	jnz	1f				/* kernel threads are uncommon */
+
+2:
+	UNWIND_HINT_REGS
+	movq	%rsp, %rdi
+	call	syscall_exit_to_user_mode	/* returns with IRQs disabled */
+	jmp	swapgs_restore_regs_and_return_to_usermode // 2. 返回 user mode
+
+1:
+	/* kernel thread */
+	UNWIND_HINT_EMPTY
+	movq	%r12, %rdi
+	CALL_NOSPEC rbx
+	/*
+	 * A kernel thread is allowed to return here after successfully
+	 * calling kernel_execve().  Exit to userspace to complete the execve()
+	 * syscall.
+	 */
+	movq	$0, RAX(%rsp)
+	jmp	2b
+SYM_CODE_END(ret_from_fork)
+.popsection
+```
+
+第一个重要的函数是 `schedule_tail`，
+
+```c
+/**
+ * schedule_tail - first thing a freshly forked thread must call.
+ * @prev: the thread we just switched away from.
+ */
+asmlinkage __visible void schedule_tail(struct task_struct *prev)
+	__releases(rq->lock)
+{
+	/*
+	 * New tasks start with FORK_PREEMPT_COUNT, see there and
+	 * finish_task_switch() for details.
+	 *
+	 * finish_task_switch() will drop rq->lock() and lower preempt_count
+	 * and the preempt_enable() will end up enabling preemption (on
+	 * PREEMPT_COUNT kernels).
+	 */
+
+	finish_task_switch(prev);
+	preempt_enable();
+
+	if (current->set_child_tid)
+		put_user(task_pid_vnr(current), current->set_child_tid);
+
+	calculate_sigpending(); // 3. 对比上面说的进程切换前需要处理的 3 件事，这个检查是否有待处理信号
+}
+```
 
 这里涉及几个关键函数：
 
@@ -451,7 +533,26 @@ SYM_CODE_END(ret_from_fork)
 
 `prepare_task_switch`：
 
+第二个重要命令是 `CALL_NOSPEC rbx`，这条命令会跳转到 `kernel_init` 中（第一次执行 ret_from_fork 时才会跳转到这里，是初始化的过程，之后的 fork 会怎么执行再分析）。我在[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/bmbt-virtualization.md)分析了内核的启动过程，那是启动的第一部分，初始化各种设备和内存，下面的内容涉及到内核初始化的第二阶段，来详细分析一下。
+
+### kernel_init
+
+
+
 ### kernel thread
+
+这条命令也会跳转到 kthreadd，即创建 kernel thread, 。这就是创建的过程：
+
+```plain
+#0  kernel_clone (args=args@entry=0xffffc9000001be40) at kernel/fork.c:2544
+#1  0xffffffff810a2705 in kernel_thread (fn=fn@entry=0xffffffff810cc200 <kthread>, arg=arg@entry=0xffff8881001df900, flags=flags@entry=1553) at kernel/fork.c:2636
+#2  0xffffffff810cc7cf in create_kthread (create=0xffff8881001df900) at kernel/kthread.c:342
+#3  kthreadd (unused=<optimized out>) at kernel/kthread.c:685
+#4  0xffffffff81004572 in ret_from_fork () at arch/x86/entry/entry_64.S:295
+#5  0x0000000000000000 in ?? ()
+```
+
+改变想法，这个初始化的过程现在搞懂也是挺好的，正好有不错的文章可以看。
 
 内核线程是在内核态执行周期性任务（如刷新磁盘高速缓存，交换出不用的页框，维护网络连接等等）的进程，其只运行在内核态，不需要进行上下文切换，但也只能使用大于 PAGE_OFFSET（传统的 x86_32 上是 3G）的地址空间。也可以称其为**内核守护进程**。
 
@@ -505,13 +606,17 @@ struct task_struct {
 
 ### workqueue
 
+
+
 ### Reference
 
 [1] [kernel thread and workqueue](https://blog.csdn.net/gatieme/article/details/51589205)
 
 [2] [ret_from_fork](https://www.oreilly.com/library/view/understanding-the-linux/0596002130/ch04s08.html)
 
-[3]
+[3] 基于龙芯的 Linux 内核探索解析
+
+[4]
 
 ### 说明
 
