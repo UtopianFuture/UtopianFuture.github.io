@@ -126,3 +126,7 @@
     handle SIG127 nostop noprint
     https://stackoverflow.com/questions/24999208/how-to-handle-all-signals-in-gdb
     ```
+
+16. show print elements 显示 gdb 能够打印的最大字符数量。
+
+    set print elements 500 设置 gdb 能够打印的最大字符数量。

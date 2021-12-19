@@ -394,7 +394,21 @@ The sequence of instructions executed in Kernel Mode to handle a kernel request 
 
 ### [ret_from_fork](https://www.oreilly.com/library/view/understanding-the-linux/0596002130/ch04s08.html)
 
-当执行中断或异常的处理程序后需要返回到原来的进程，`ret_from_fork` 就是终止 `fork()`, `vfork()` 和 `clone()` 系统调用的。类似的函数还有
+当执行中断或异常的处理程序后需要返回到原来的进程，在返回前还需要处理以下几件事：
+
+- 并发执行的内核控制路径数（kernel control path）
+
+  如果只有一个，CPU 必须切换回用户模式。
+
+- 待处理进程切换请求
+
+  如果有任何请求，内核必须进行进程调度；否则，控制权返回到当前进程。
+
+- 待处理信号
+
+  如果一个信号被发送到当前进程，它必须被处理。
+
+`ret_from_fork` 就是终止 `fork()`, `vfork()` 和 `clone()` 系统调用的。类似的函数还有
 
 `ret_from_exception`：终止除了 0x80 异常外的所有异常处理程序。
 
@@ -407,3 +421,15 @@ The sequence of instructions executed in Kernel Mode to handle a kernel request 
 ![Returning from interrupts and exceptions](/home/guanshun/gitlab/UFuture.github.io/image/ret_from_fork.png)
 
 Initially, the `ebx` register stores **the address of the descriptor of the process being replaced by the child** (usually the parent’s process descriptor); this value is passed to the `schedule_tail()` function as a parameter. When that function returns, `ebx` is reloaded with the `current`’s process descriptor address. Then the `ret_from_fork()` function checks the value of the `ptrace` field of the `current` (at offset 24 of the process descriptor). If the field is not null, the `fork( )`, `vfork( )`, or `clone( )` system call is traced, so the `syscall_trace( )` function is invoked to notify the debugging process.
+
+### CFS
+
+The **Completely Fair Scheduler** (**CFS**) is a default process scheduler of the tasks of the `SCHED_NORMAL` class (i.e., tasks that have no real-time execution constraints). It handles CPU resource allocation for executing processes, and aims to maximize overall CPU utilization while also maximizing interactive performance.
+
+### runqueue
+
+The run queue may contain priority values for each process, which will be used by the scheduler to determine **which process to run next**. To ensure each program has a fair share of resources, each one is run for some time period (quantum) before it is paused and placed back into the run queue. When a program is stopped to let another run, the program with the highest priority in the run queue is then allowed to execute.
+
+Processes are also removed from the run queue when they ask to *sleep*, are waiting on a resource to become available, or have been terminated.
+
+Each CPU in the system is given a run queue, which maintains both an active and expired array of processes. Each array contains 140 (one for each priority level) pointers to doubly linked lists, which in turn reference all processes with the given priority. The scheduler selects the next process from the active array with highest priority.
