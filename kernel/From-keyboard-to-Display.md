@@ -396,9 +396,13 @@ ripts/local-block ... done.\r\ndone.\r\nGave up waiting for suspend/resume devic
 
 ### 用户态执行流程
 
-
+待续。。。
 
 ### 用户态到内核态的上下文切换
+
+待续。。。
+
+### fork 新的 kernel thread
 
 `ret_from_fork` 是上下文切换的函数，这应该是内核态，用户态怎么处理的？
 
@@ -423,13 +427,13 @@ SYM_CODE_START(ret_from_fork)
 	UNWIND_HINT_REGS
 	movq	%rsp, %rdi
 	call	syscall_exit_to_user_mode	/* returns with IRQs disabled */
-	jmp	swapgs_restore_regs_and_return_to_usermode
+	jmp	swapgs_restore_regs_and_return_to_usermode // 2. 返回 user mode
 
 1:
 	/* kernel thread */
 	UNWIND_HINT_EMPTY
 	movq	%r12, %rdi
-	CALL_NOSPEC rbx
+	CALL_NOSPEC rbx // 返回 kernel thread
 	/*
 	 * A kernel thread is allowed to return here after successfully
 	 * calling kernel_execve().  Exit to userspace to complete the execve()
@@ -459,45 +463,6 @@ SYM_CODE_END(ret_from_fork)
 
    如果一个信号被发送到当前进程，它必须被处理。
 
-```c
-/*
- * A newly forked process directly context switches into this address.
- *
- * rax: prev task we switched from
- * rbx: kernel thread func (NULL for user thread)
- * r12: kernel thread arg
- */
-.pushsection .text, "ax"
-SYM_CODE_START(ret_from_fork)
-	UNWIND_HINT_EMPTY
-	movq	%rax, %rdi
-	call	schedule_tail			/* rdi: 'prev' task parameter */
-
-	testq	%rbx, %rbx			/* from kernel_thread? */
-	jnz	1f				/* kernel threads are uncommon */
-
-2:
-	UNWIND_HINT_REGS
-	movq	%rsp, %rdi
-	call	syscall_exit_to_user_mode	/* returns with IRQs disabled */
-	jmp	swapgs_restore_regs_and_return_to_usermode // 2. 返回 user mode
-
-1:
-	/* kernel thread */
-	UNWIND_HINT_EMPTY
-	movq	%r12, %rdi
-	CALL_NOSPEC rbx
-	/*
-	 * A kernel thread is allowed to return here after successfully
-	 * calling kernel_execve().  Exit to userspace to complete the execve()
-	 * syscall.
-	 */
-	movq	$0, RAX(%rsp)
-	jmp	2b
-SYM_CODE_END(ret_from_fork)
-.popsection
-```
-
 第一个重要的函数是 `schedule_tail`，
 
 ```c
@@ -523,7 +488,7 @@ asmlinkage __visible void schedule_tail(struct task_struct *prev)
 	if (current->set_child_tid)
 		put_user(task_pid_vnr(current), current->set_child_tid);
 
-	calculate_sigpending(); // 3. 对比上面说的进程切换前需要处理的 3 件事，这个检查是否有待处理信号
+	calculate_sigpending(); // 3. 对应上面说的进程切换前需要处理的 3 件事，这个检查是否有待处理信号
 }
 ```
 
@@ -533,80 +498,11 @@ asmlinkage __visible void schedule_tail(struct task_struct *prev)
 
 `prepare_task_switch`：
 
-第二个重要命令是 `CALL_NOSPEC rbx`，这条命令会跳转到 `kernel_init` 中（第一次执行 ret_from_fork 时才会跳转到这里，是初始化的过程，之后的 fork 会怎么执行再分析）。我在[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/bmbt-virtualization.md)分析了内核的启动过程，那是启动的第一部分，初始化各种设备和内存，下面的内容涉及到内核初始化的第二阶段，来详细分析一下。
+第二个重要命令是 `CALL_NOSPEC rbx`，这条命令会跳转到 `kernel_init` 中（第一次执行 ret_from_fork 时才会跳转到这里，是初始化的过程，之后的 fork 会怎么执行再分析）。我在[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/bmbt-virtualization.md)分析了内核的启动过程，那是启动的第一部分，初始化各种设备和内存，下面的内容涉及到内核初始化的第二阶段，我在[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/kernel_init.md)进行分析。
 
-### kernel_init
+总结起来就是内核用 fork 创建了一个新的 kernel thread 用来执行 tty 的相关工作，`ret_from_fork` 就是 fork 的最后部分，然后通过 `CALL_NOSPEC rbx` 开始新的 kernel thread 的执行。这就可以解释为什么在 `ret_from_fork` 设置断点会运行到不同的处理函数。
 
-
-
-### kernel thread
-
-这条命令也会跳转到 kthreadd，即创建 kernel thread, 。这就是创建的过程：
-
-```plain
-#0  kernel_clone (args=args@entry=0xffffc9000001be40) at kernel/fork.c:2544
-#1  0xffffffff810a2705 in kernel_thread (fn=fn@entry=0xffffffff810cc200 <kthread>, arg=arg@entry=0xffff8881001df900, flags=flags@entry=1553) at kernel/fork.c:2636
-#2  0xffffffff810cc7cf in create_kthread (create=0xffff8881001df900) at kernel/kthread.c:342
-#3  kthreadd (unused=<optimized out>) at kernel/kthread.c:685
-#4  0xffffffff81004572 in ret_from_fork () at arch/x86/entry/entry_64.S:295
-#5  0x0000000000000000 in ?? ()
-```
-
-改变想法，这个初始化的过程现在搞懂也是挺好的，正好有不错的文章可以看。
-
-内核线程是在内核态执行周期性任务（如刷新磁盘高速缓存，交换出不用的页框，维护网络连接等等）的进程，其只运行在内核态，不需要进行上下文切换，但也只能使用大于 PAGE_OFFSET（传统的 x86_32 上是 3G）的地址空间。也可以称其为**内核守护进程**。
-
-#### task_struct
-
-```c
-struct task_struct {
-	...
-}
-```
-
-#### kthread_create
-
-```c
-/**
- * kthread_create - create a kthread on the current node
- * @threadfn: the function to run in the thread
- * @data: data pointer for @threadfn()
- * @namefmt: printf-style format string for the thread name
- * @arg: arguments for @namefmt.
- *
- * This macro will create a kthread on the current node, leaving it in
- * the stopped state.  This is just a helper for kthread_create_on_node();
- * see the documentation there for more details.
- */
-#define kthread_create(threadfn, data, namefmt, arg...) \
-	kthread_create_on_node(threadfn, data, NUMA_NO_NODE, namefmt, ##arg)
-```
-
-#### kthread_run
-
-```c
-/**
- * kthread_run - create and wake a thread.
- * @threadfn: the function to run until signal_pending(current).
- * @data: data ptr for @threadfn.
- * @namefmt: printf-style name for the thread.
- *
- * Description: Convenient wrapper for kthread_create() followed by
- * wake_up_process().  Returns the kthread or ERR_PTR(-ENOMEM).
- */
-#define kthread_run(threadfn, data, namefmt, ...)			   \
-({									   \
-	struct task_struct *__k						   \
-		= kthread_create(threadfn, data, namefmt, ## __VA_ARGS__); \
-	if (!IS_ERR(__k))						   \
-		wake_up_process(__k);					   \
-	__k;								   \
-})
-```
-
-### workqueue
-
-
+[这篇文章](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/kernel_init.md)中我分析了 workqueue 的原理，现在我们结合执行流程来看看 kernel thread 是怎样处理 tty_buffer 字符这一任务。
 
 ### Reference
 
