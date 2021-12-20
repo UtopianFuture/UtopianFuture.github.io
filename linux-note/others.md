@@ -433,3 +433,9 @@ The run queue may contain priority values for each process, which will be used b
 Processes are also removed from the run queue when they ask to *sleep*, are waiting on a resource to become available, or have been terminated.
 
 Each CPU in the system is given a run queue, which maintains both an active and expired array of processes. Each array contains 140 (one for each priority level) pointers to doubly linked lists, which in turn reference all processes with the given priority. The scheduler selects the next process from the active array with highest priority.
+
+### watchdog
+
+The Linux kernel can reset the system if serious problems are detected. This can be implemented via special watchdog hardware, or via a slightly less reliable software-only watchdog inside the kernel. Either way, there **needs to be a daemon that tells the kernel the system is working fine**. If the daemon stops doing that, the system is **reset**.
+
+**watchdog** is such a daemon. It opens */dev/watchdog*, and keeps writing to it often enough to keep the kernel from resetting, at least once per minute. **Each write delays the reboot time another minute**. After a minute of inactivity the watchdog hardware will cause the reset. In the case of the software watchdog the ability to reboot will depend on the state of the machines and interrupts.
