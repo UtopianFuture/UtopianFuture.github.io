@@ -6,6 +6,21 @@
 
 `init_task` 在 `sched_init` 完成后化身为 idle 进程，但是它还会继续执行初始化工作，相当于这里只是给 `init_task` 挂个 idle 进程的名号，它其实还是 `init_task` 进程，只有在 `arch_call_rest_init` 中调用 `rest_init` ，`rest_init` 创建 1 号和 2 号进程，然后才化身为真正的 idle 进程，后续的系统启动由 1 号进程接管，1 号进程的执行就是 `kernel_init`。我们先来分析 `sched_init`。
 
+内核线程是在内核态执行周期性任务（如刷新磁盘高速缓存，交换出不用的页框，维护网络连接等等）的进程，其只运行在内核态，不需要进行上下文切换，但也只能使用大于 PAGE_OFFSET（传统的 x86_32 上是 3G）的地址空间。也可以称其为**内核守护进程**。
+
+我看可以使用 `ps -eo pid,ppid,command` 来看一下线程。
+
+```shell
+guanshun@guanshun-ubuntu ~> ps -eo pid,ppid,command
+    PID    PPID COMMAND
+      1       0 /sbin/init splash
+      2       0 [kthreadd]
+      3       2 [rcu_gp]
+      4       2 [rcu_par_gp]
+      6       2 [kworker/0:0H-kblockd]
+      9       2 [mm_percpu_wq]
+```
+
 ### sched_init
 
 在`start_kernel`中对调度器进行初始化的函数就是 `sched_init`，其主要工作为
@@ -178,9 +193,13 @@ noinline void __ref rest_init(void)
 
 `kernel_thread` 就是负责创建 kernel thread 的，这里暂时不分析它是怎么创建的。我们关注 1 号进程——`kernel_init` 和 2 号进程 `kthreadd` 是怎样工作的。
 
+了解了一些关于 `kernel_thread` 的历史信息：
+
+`kernel_thread` 是一个古老的接口，内核中的有些地方仍然在使用该方法，将一个函数直接传递给内核来创建内核线程，创建的进程运行在内核空间，并且与其他进程线程共享内核虚拟地址空间。但这种方法效率不高，于是 linux-3.x 下之后, 有了更好的实现, 那就是延后内核的创建工作, 将内核线程的创建工作交给一个内核线程来做, 即 `kthreadd` 2 号进程，但是在 `kthreadd` 还没创建之前, 我们只能通过 `kernel_thread` 这种方式去创建。
+
 ### kernel_init
 
-kernel_init 的生命周期分为内核态和用户态。在内核态的主要工作是执行 kernel_init_freeable，我们之后会分析。然后就是要图找到用户态下的那个 init 程序，原因是 kernel_init **要完成从内核态到用户态的转变就必须去运行一个用户态的应用程序**，而内核源代码中的程序都是属于内核态的，所以这个应用程序必须不属于内核源代码，这样才能保证自己是用户态，所以这个应用程序就的是由另外一份文件提供，即根文件系统。
+`kernel_init` 的生命周期分为内核态和用户态。在内核态的主要工作是执行 `kernel_init_freeable`，我们之后会分析。然后就是要图找到用户态下的那个 init 程序，原因是 `kernel_init` **要完成从内核态到用户态的转变就必须去运行一个用户态的应用程序**，而内核源代码中的程序都是属于内核态的，所以这个应用程序必须不属于内核源代码，这样才能保证自己是用户态，所以这个应用程序就的是由另外一份文件提供，即根文件系统。
 
 ```c
 static int __ref kernel_init(void *unused)
@@ -260,133 +279,180 @@ static int __ref kernel_init(void *unused)
 我们先来看看`kernel_init_freeable` 函数
 
 ```c
-static noinline void __init kernel_init_freeable(void)
-{
-	/* Now the scheduler is fully set up and can do blocking allocations */
-	gfp_allowed_mask = __GFP_BITS_MASK;
-
-	/*
-	 * init can allocate pages on any node
-	 */
-	set_mems_allowed(node_states[N_MEMORY]);
-
-	cad_pid = get_pid(task_pid(current));
-
-	smp_prepare_cpus(setup_max_cpus);
-
-	workqueue_init();
-
-	init_mm_internals();
-
-	rcu_init_tasks_generic();
-	do_pre_smp_initcalls();
-	lockup_detector_init();
-
-	smp_init();
-	sched_init_smp();
-
-	padata_init();
-	page_alloc_init_late();
-	/* Initialize page ext after all struct pages are initialized. */
-	page_ext_init();
-
-	do_basic_setup();
-
-	kunit_run_all_tests();
-
-	wait_for_initramfs();
-	console_on_rootfs();
-
-	/*
-	 * check if there is an early userspace init.  If yes, let it do all
-	 * the work
-	 */
-	if (init_eaccess(ramdisk_execute_command) != 0) {
-		ramdisk_execute_command = NULL;
-		prepare_namespace();
-	}
-
-	/*
-	 * Ok, we have completed the initial bootup, and
-	 * we're essentially up and running. Get rid of the
-	 * initmem segments and start the user-mode stuff..
-	 *
-	 * rootfs is available now, try loading the public keys
-	 * and default modules
-	 */
-
-	integrity_load_keys();
-}
+kernel_init_freeable
+| -- smp_prepare_cpus
+| 	| -- native_smp_prepare_cpus // 初始化 smp cpu，会打印出 cpu 信息，这里很多不懂
+|
+| -- workqueue_init // bring workqueue subsystem fully online
+| 					// 初始化 kworker 线程，下面有详细分析
+| -- init_mm_internals
+|
+| -- rcu_init_tasks_generic
+| -- do_pre_smp_initcalls
+|
+| -- smp_init // boot cpu activate the rest cpu
+|			  // 通过 idle_threads_init 给每个辅核创建 0 号进程
+| -- sched_init_smp
+|	| -- sched_init_numa // 根据 NUMA 结构建立节点间的拓扑信息
+|	| -- sched_init_domains // 节点内的拓扑信息，根调度域有关
+|							// 所有的辅核都已经启动，内核进入并行状态
+| -- padata_init // 下面这些函数之后有需要再分析
+| -- page_alloc_init_late
+| -- /* Initialize page ext after all struct pages are initialized. */
+| -- page_ext_init
+|
+| -- do_basic_setup
+|
+| -- kunit_run_all_tests
+|
+| -- wait_for_initramfs
+| -- console_on_rootfs
+| -- prepare_namespace
+|
+| -- integrity_load_keys
+\
 ```
 
-
-
-这条命令也会跳转到 kthreadd，即创建 kernel thread, 。这就是创建的过程：
+接下来通过一系列的调用将 `kernel_init` 转换成用户态进程。
 
 ```plain
-#0  kernel_clone (args=args@entry=0xffffc9000001be40) at kernel/fork.c:2544
-#1  0xffffffff810a2705 in kernel_thread (fn=fn@entry=0xffffffff810cc200 <kthread>, arg=arg@entry=0xffff8881001df900, flags=flags@entry=1553) at kernel/fork.c:2636
-#2  0xffffffff810cc7cf in create_kthread (create=0xffff8881001df900) at kernel/kthread.c:342
-#3  kthreadd (unused=<optimized out>) at kernel/kthread.c:685
-#4  0xffffffff81004572 in ret_from_fork () at arch/x86/entry/entry_64.S:295
-#5  0x0000000000000000 in ?? ()
+| -- run_init_process
+|	| -- kernel_execve
+|		| -- bprm_execve // 看不懂，之后再分析
 ```
 
-改变想法，这个初始化的过程现在搞懂也是挺好的，正好有不错的文章可以看。
-
-### kernel thread
-
-内核线程是在内核态执行周期性任务（如刷新磁盘高速缓存，交换出不用的页框，维护网络连接等等）的进程，其只运行在内核态，不需要进行上下文切换，但也只能使用大于 PAGE_OFFSET（传统的 x86_32 上是 3G）的地址空间。也可以称其为**内核守护进程**。
-
-#### task_struct
-
 ```c
-struct task_struct {
-	...
+/*
+ * sys_execve() executes a new program.
+ */
+static int bprm_execve(struct linux_binprm *bprm,
+		       int fd, struct filename *filename, int flags)
+{
+	struct file *file;
+	int retval;
+
+	retval = prepare_bprm_creds(bprm);
+	if (retval)
+		return retval;
+
+	check_unsafe_exec(bprm);
+	current->in_execve = 1;
+
+	file = do_open_execat(fd, filename, flags);
+	retval = PTR_ERR(file);
+	if (IS_ERR(file))
+		goto out_unmark;
+
+	sched_exec();
+
+	bprm->file = file;
+	/*
+	 * Record that a name derived from an O_CLOEXEC fd will be
+	 * inaccessible after exec.  This allows the code in exec to
+	 * choose to fail when the executable is not mmaped into the
+	 * interpreter and an open file descriptor is not passed to
+	 * the interpreter.  This makes for a better user experience
+	 * than having the interpreter start and then immediately fail
+	 * when it finds the executable is inaccessible.
+	 */
+	if (bprm->fdpath && get_close_on_exec(fd))
+		bprm->interp_flags |= BINPRM_FLAGS_PATH_INACCESSIBLE;
+
+	/* Set the unchanging part of bprm->cred */
+	retval = security_bprm_creds_for_exec(bprm);
+	if (retval)
+		goto out;
+
+	retval = exec_binprm(bprm);
+	if (retval < 0)
+		goto out;
+
+	/* execve succeeded */
+	current->fs->in_exec = 0;
+	current->in_execve = 0;
+	rseq_execve(current);
+	acct_update_integrals(current);
+	task_numa_free(current, false);
+	return retval;
+
+out:
+	/*
+	 * If past the point of no return ensure the code never
+	 * returns to the userspace process.  Use an existing fatal
+	 * signal if present otherwise terminate the process with
+	 * SIGSEGV.
+	 */
+	if (bprm->point_of_no_return && !fatal_signal_pending(current))
+		force_sigsegv(SIGSEGV);
+
+out_unmark:
+	current->fs->in_exec = 0;
+	current->in_execve = 0;
+
+	return retval;
 }
-```
-
-#### kthread_create
-
-```c
-/**
- * kthread_create - create a kthread on the current node
- * @threadfn: the function to run in the thread
- * @data: data pointer for @threadfn()
- * @namefmt: printf-style format string for the thread name
- * @arg: arguments for @namefmt.
- *
- * This macro will create a kthread on the current node, leaving it in
- * the stopped state.  This is just a helper for kthread_create_on_node();
- * see the documentation there for more details.
- */
-#define kthread_create(threadfn, data, namefmt, arg...) \
-	kthread_create_on_node(threadfn, data, NUMA_NO_NODE, namefmt, ##arg)
-```
-
-#### kthread_run
-
-```c
-/**
- * kthread_run - create and wake a thread.
- * @threadfn: the function to run until signal_pending(current).
- * @data: data ptr for @threadfn.
- * @namefmt: printf-style name for the thread.
- *
- * Description: Convenient wrapper for kthread_create() followed by
- * wake_up_process().  Returns the kthread or ERR_PTR(-ENOMEM).
- */
-#define kthread_run(threadfn, data, namefmt, ...)			   \
-({									   \
-	struct task_struct *__k						   \
-		= kthread_create(threadfn, data, namefmt, ## __VA_ARGS__); \
-	if (!IS_ERR(__k))						   \
-		wake_up_process(__k);					   \
-	__k;								   \
-})
 ```
 
 ### workqueue
+
+ workqueue 允许内核函数被激活，挂起，稍后由 worker thread 的特殊内核线程来执行。workqueue 中的函数运行在进程上下文中，
+
+这部份涉及到几个关键的数据结构：
+
+`workqueue_struct`，`worker_pool`，`pool_workqueue`，`work_struct`，`worker`，有必要把它们之间的关系搞懂。还有就是 runqueue 和 workqueue 有什么关系。runqueue 中放的是 process，用来作负载均衡的，而 workqueue 中放的是可以延迟执行的内核函数。
+
+从代码中推测 `workqueue_struct` 表示一个工作队列，`pool_workqueue` 表示每 CPU 中的 work，`work_struct` 表示挂起的函数，`worker` 是执行挂起函数的内核线程，`worker_pool` 表示所有用来执行 work 的 worker。我们看看是怎样初始化 workqueue 的。
+
+```c
+/**
+ * workqueue_init - bring workqueue subsystem fully online
+ *
+ * This is the latter half of two-staged workqueue subsystem initialization
+ * and invoked as soon as kthreads can be created and scheduled.
+ * Workqueues have been created and work items queued on them, but there
+ * are no kworkers executing the work items yet.  Populate the worker pools
+ * with the initial workers and enable future kworker creations.
+ */
+void __init workqueue_init(void)
+{
+	struct workqueue_struct *wq;
+	struct worker_pool *pool;
+	int cpu, bkt;
+
+	wq_numa_init();
+
+	mutex_lock(&wq_pool_mutex);
+
+	for_each_possible_cpu(cpu) {
+		for_each_cpu_worker_pool(pool, cpu) {
+			pool->node = cpu_to_node(cpu);
+		}
+	}
+
+	list_for_each_entry(wq, &workqueues, list) {
+		wq_update_unbound_numa(wq, smp_processor_id(), true);
+		WARN(init_rescuer(wq),
+		     "workqueue: failed to create early rescuer for %s",
+		     wq->name);
+	}
+
+	mutex_unlock(&wq_pool_mutex);
+
+	/* create the initial workers */
+	for_each_online_cpu(cpu) {
+		for_each_cpu_worker_pool(pool, cpu) {
+			pool->flags &= ~POOL_DISASSOCIATED;
+			BUG_ON(!create_worker(pool));
+		}
+	}
+
+	hash_for_each(unbound_pool_hash, bkt, pool, hash_node)
+		BUG_ON(!create_worker(pool));
+
+	wq_online = true;
+	wq_watchdog_init();
+}
+```
 
 
 
@@ -396,4 +462,4 @@ struct task_struct {
 
 [2] https://www.cnblogs.com/tolimit/p/4311404.html
 
-[][3] [3] https://www.cnblogs.com/Oude/p/12588325.html
+[3] https://www.cnblogs.com/Oude/p/12588325.html
