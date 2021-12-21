@@ -388,7 +388,7 @@ ripts/local-block ... done.\r\ndone.\r\nGave up waiting for suspend/resume devic
 
 - 用户态的执行流程是怎样的？（这个暂时不好分析，因为不知道用户态进程是哪个）
 - 用户态到内核态的上下文切换在哪里，怎么做的？（这个是切入点）
-- kernel thread, workqueue 的设计思想是什么？
+- kernel thread, workqueue 的设计思想是什么？ （搞定）
 - tty_buffer 中的字符是怎样发送到 serial_port 中去的。
 - `preempt_enable` 执行完后就会执行一次中断，这个中断是由哪个发出来的，怎样判断中断来源？
 - 在调试的过程中，还执行过中断上下文切换的代码，汇编写的，搞清楚。
@@ -503,6 +503,26 @@ asmlinkage __visible void schedule_tail(struct task_struct *prev)
 总结起来就是内核用 fork 创建了一个新的 kernel thread 用来执行 tty 的相关工作，`ret_from_fork` 就是 fork 的最后部分，然后通过 `CALL_NOSPEC rbx` 开始新的 kernel thread 的执行。这就可以解释为什么在 `ret_from_fork` 设置断点会运行到不同的处理函数。
 
 [这篇文章](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/kernel_init.md)中我分析了 workqueue 的原理，现在我们结合执行流程来看看 kernel thread 是怎样处理 tty_buffer 字符这一任务。
+
+### kernel thread 处理字符输入
+
+我在 `ret_from_fork`， `kthread`，`worker_thread` 都设置了断点，但是内核还是会运行 `receive_buf` 才停下来。那这是属于创建了一个 kernel thread 来处理字符输入还是将内核函数加入到 workqueue，用 worker 来处理呢？
+
+知道了，是做为一个 work 来处理的，每次输入一个字符都会跳转到 `process_one_work`。
+
+注意 `kthreadd` 才是 2 号内核线程，用来创建其他内核线程的，这里的 `kthread` 是内核线程，不要搞混了。我在[这篇文章](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/kthreadd.md)分析了整个创建 kernel thread 的过程，看完应该能很明白为什么 `ret_from_fork` 是跳转到 `kthread` 执行，而 `kthread` 为什么又会调用 `worker_thread` 执行接下来的任务。
+
+```plain
+#0  receive_buf (count=1, head=0xffff888106aa7400, port=0xffff888100a50000) at drivers/tty/tty_buffer.c:484
+#1  flush_to_ldisc (work=0xffff888100a50008) at drivers/tty/tty_buffer.c:543
+#2  0xffffffff810c4a49 in process_one_work (worker=worker@entry=0xffff888102745d80, work=0xffff888100a50008) at kernel/workqueue.c:2297
+#3  0xffffffff810c4c3d in worker_thread (__worker=0xffff888102745d80) at kernel/workqueue.c:2444
+#4  0xffffffff810cc32a in kthread (_create=0xffff888102735540) at kernel/kthread.c:319
+#5  0xffffffff81004572 in ret_from_fork () at arch/x86/entry/entry_64.S:295
+#6  0x0000000000000000 in ?? ()
+```
+
+貌似涉及到进程和进程调度的内容，没办法继续分析下去。那就快速浏览一遍书吧。
 
 ### Reference
 
