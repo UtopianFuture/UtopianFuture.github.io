@@ -439,3 +439,25 @@ Each CPU in the system is given a run queue, which maintains both an active and 
 The Linux kernel can reset the system if serious problems are detected. This can be implemented via special watchdog hardware, or via a slightly less reliable software-only watchdog inside the kernel. Either way, there **needs to be a daemon that tells the kernel the system is working fine**. If the daemon stops doing that, the system is **reset**.
 
 **watchdog** is such a daemon. It opens */dev/watchdog*, and keeps writing to it often enough to keep the kernel from resetting, at least once per minute. **Each write delays the reboot time another minute**. After a minute of inactivity the watchdog hardware will cause the reset. In the case of the software watchdog the ability to reboot will depend on the state of the machines and interrupts.
+
+### [LWP](https://cloud.tencent.com/developer/article/1339562)
+
+轻量级进程(LWP)是**建立在内核之上并由内核支持的用户线程**，它是内核线程的高度抽象，每一个轻量级进程都与一个特定的内核线程关联。内核线程只能由内核管理并像普通进程一样被调度。
+
+轻量级进程**由 clone()系统调用创建，参数是 CLONE_VM**，即与父进程是共享进程地址空间和系统资源。
+
+与普通进程区别：**LWP 只有一个最小的执行上下文和调度程序所需的统计信息**。
+
+- 处理器竞争：因与特定内核线程关联，因此可以在全系统范围内竞争处理器资源
+- 使用资源：与父进程共享进程地址空间
+- 调度：像普通进程一样调度
+
+### 用户线程
+
+用户线程是完全建立在用户空间的线程库，用户线程的创建、调度、同步和销毁全又库函数在用户空间完成，不需要内核的帮助。因此这种线程是极其低消耗和高效的。
+
+LWP 虽然本质上属于用户线程，但 LWP 线程库是建立在内核之上的，LWP 的许多操作都要进行系统调用，因此效率不高。而这里的用户线程指的是完全建立在用户空间的线程库，用户线程的建立，同步，销毁，调度完全在用户空间完成，不需要内核的帮助。因此这种线程的操作是极其快速的且低消耗的。
+
+### GFP
+
+Most of the memory allocation APIs use GFP flags to express how that memory should be allocated. The GFP acronym stands for **“get free pages”**, the underlying memory allocation function.
