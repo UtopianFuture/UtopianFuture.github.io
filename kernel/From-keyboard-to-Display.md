@@ -1,6 +1,6 @@
 ## From keyboard to display
 
-为什么要探究这个过程呢？在看 kernel 和 bmbt 代码的过程中，代码始终一块块孤零零的，脑子里没有镇个流程，不知道下一步该实现什么，总是跟着别人的脚步在走，感觉用 gdb 走一遍这个流程能对整个系统认识更加深刻。
+为什么要探究这个过程呢？在看 kernel 和 bmbt 代码的过程中，代码始终一块块孤零零的，脑子里没有整个流程，不知道下一步该实现什么，总是跟着别人的脚步在走，感觉用 gdb 走一遍这个流程能对整个系统认识更加深刻。
 
 ### 执行流程
 
@@ -523,6 +523,206 @@ asmlinkage __visible void schedule_tail(struct task_struct *prev)
 ```
 
 貌似涉及到进程和进程调度的内容，没办法继续分析下去。那就快速浏览一遍书吧。
+
+现在我们从 kthread 开始分析，看 kernel thread 是怎样处理字符输入的。这个 `kthread` 到底什么作用没懂。从调用关系来看，它是 `kthreadd` 线程用 `create_kthread` 创建的线程。我是不是对线程的理解有问题，一个内核线程对应一个 `task_struct`，但是我没有找到 `kernel_init`，`kthreadd`，`kthread` 对应的 `task_struct` 啊！
+
+```c
+static int kthread(void *_create)
+{
+	/* Copy data: it's on kthread's stack */
+	struct kthread_create_info *create = _create;
+	int (*threadfn)(void *data) = create->threadfn;
+	void *data = create->data;
+	struct completion *done;
+	struct kthread *self;
+	int ret;
+
+	set_kthread_struct(current); // 当前 task 没有子进程，kzalloc 分配一个 kthread，
+    							 // 并将 current->set_child_tid 设置为 kthread
+	self = to_kthread(current); // 设置 current->set_child_tid 为 kthread
+
+	...
+
+	self->threadfn = threadfn;
+	self->data = data;
+	init_completion(&self->exited);
+	init_completion(&self->parked);
+	current->vfork_done = &self->exited;
+
+	/* OK, tell user we're spawned, wait for stop or wakeup */
+	__set_current_state(TASK_UNINTERRUPTIBLE); // current 被挂起，等待资源释放
+	create->result = current;
+	/*
+	 * Thread is going to call schedule(), do not preempt it,
+	 * or the creator may spend more time in wait_task_inactive().
+	 */
+	preempt_disable();
+	complete(done);
+	schedule_preempt_disabled(); // 创建了新的线程之后 schedule
+	preempt_enable();
+
+	ret = -EINTR;
+	if (!test_bit(KTHREAD_SHOULD_STOP, &self->flags)) {
+		cgroup_kthread_ready();
+		__kthread_parkme(self);
+		ret = threadfn(data); // 为什么这里会跑到 worker_thread 中去
+	}
+	do_exit(ret); // do_exit 是撤销线程
+}
+```
+
+应该找到一个真实创建的线程，看看这个线程是干什么的。
+
+之后是 `worker_thread`，
+
+```c
+/**
+ * worker_thread - the worker thread function
+ * @__worker: self
+ *
+ * The worker thread function.  All workers belong to a worker_pool -
+ * either a per-cpu one or dynamic unbound one.  These workers process all
+ * work items regardless of their specific target workqueue.  The only
+ * exception is work items which belong to workqueues with a rescuer which
+ * will be explained in rescuer_thread().
+ *
+ * Return: 0
+ */
+static int worker_thread(void *__worker)
+{
+	struct worker *worker = __worker;
+	struct worker_pool *pool = worker->pool;
+
+	/* tell the scheduler that this is a workqueue worker */
+	set_pf_worker(true);
+woke_up:
+	raw_spin_lock_irq(&pool->lock);
+
+	/* am I supposed to die? */
+	if (unlikely(worker->flags & WORKER_DIE)) {
+		raw_spin_unlock_irq(&pool->lock);
+		WARN_ON_ONCE(!list_empty(&worker->entry));
+		set_pf_worker(false);
+
+		set_task_comm(worker->task, "kworker/dying");
+		ida_free(&pool->worker_ida, worker->id);
+		worker_detach_from_pool(worker);
+		kfree(worker);
+		return 0;
+	}
+
+	worker_leave_idle(worker);
+recheck:
+	/* no more worker necessary? */
+	if (!need_more_worker(pool))
+		goto sleep;
+
+	/* do we need to manage? */
+	if (unlikely(!may_start_working(pool)) && manage_workers(worker))
+		goto recheck;
+
+	/*
+	 * ->scheduled list can only be filled while a worker is
+	 * preparing to process a work or actually processing it.
+	 * Make sure nobody diddled with it while I was sleeping.
+	 */
+	WARN_ON_ONCE(!list_empty(&worker->scheduled));
+
+	/*
+	 * Finish PREP stage.  We're guaranteed to have at least one idle
+	 * worker or that someone else has already assumed the manager
+	 * role.  This is where @worker starts participating in concurrency
+	 * management if applicable and concurrency management is restored
+	 * after being rebound.  See rebind_workers() for details.
+	 */
+	worker_clr_flags(worker, WORKER_PREP | WORKER_REBOUND);
+
+	do {
+		struct work_struct *work =
+			list_first_entry(&pool->worklist, // 在 worklist 中选择一个 work 执行
+					 struct work_struct, entry);
+
+		pool->watchdog_ts = jiffies;
+
+		if (likely(!(*work_data_bits(work) & WORK_STRUCT_LINKED))) {
+			/* optimization path, not strictly necessary */
+			process_one_work(worker, work); // 这里让 woker 处理 work
+			if (unlikely(!list_empty(&worker->scheduled)))
+				process_scheduled_works(worker);
+		} else {
+			move_linked_works(work, &worker->scheduled, NULL);
+			process_scheduled_works(worker);
+		}
+	} while (keep_working(pool));
+
+	worker_set_flags(worker, WORKER_PREP);
+sleep:
+	/*
+	 * pool->lock is held and there's no work to process and no need to
+	 * manage, sleep.  Workers are woken up only while holding
+	 * pool->lock or from local cpu, so setting the current state
+	 * before releasing pool->lock is enough to prevent losing any
+	 * event.
+	 */
+	worker_enter_idle(worker);
+	__set_current_state(TASK_IDLE);
+	raw_spin_unlock_irq(&pool->lock);
+	schedule();
+	goto woke_up;
+}
+```
+
+发现这一系列的操作根源都在这个结构体，
+
+```c
+struct kthread_create_info
+{
+	/* Information passed to kthread() from kthreadd. */
+	int (*threadfn)(void *data);
+	void *data;
+	int node;
+
+	/* Result passed back to kthread_create() from kthreadd. */
+	struct task_struct *result;
+	struct completion *done;
+
+	struct list_head list;
+};
+```
+
+`kthread` 的实参 `_create` 就是 `kthread_create_info`，`ret = threadfn(data);` 中的 data 就是结构体中的。如果跳转到 `worker_thread` 中，data 就被转换成 `__worker`，之后 `process_one_work` 也是根据这个 `worker` 执行。
+
+这个结构体是在这里被定义的。
+
+```c
+int kthreadd(void *unused)
+{
+	...
+
+	for (;;) {
+
+        ...
+
+		while (!list_empty(&kthread_create_list)) {
+			struct kthread_create_info *create;
+
+			create = list_entry(kthread_create_list.next,
+					    struct kthread_create_info, list);
+			list_del_init(&create->list);
+			spin_unlock(&kthread_create_lock);
+
+			create_kthread(create);
+
+			spin_lock(&kthread_create_lock);
+		}
+		spin_unlock(&kthread_create_lock);
+	}
+
+	return 0;
+}
+```
+
+那么 `kthread_create_list` 又是由谁维护呢？
 
 ### Reference
 
