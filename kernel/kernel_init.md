@@ -454,6 +454,94 @@ void __init workqueue_init(void)
 }
 ```
 
+这里涉及到一个非常重要的数据结构的初始化，我也是在之后的调试中才发现的。
+
+### __kthread_create_on_node
+
+这是它的调用过程。
+
+```plain
+#0  __kthread_create_on_node (threadfn=threadfn@entry=0xffffffff810c4fe0 <rescuer_thread>, data=data@entry=0xffff8881001d8900, node=node@entry=-1,
+    namefmt=namefmt@entry=0xffffffff826495f9 "%s", args=args@entry=0xffffc90000013dd0) at kernel/kthread.c:361
+#1  0xffffffff810cbb19 in kthread_create_on_node (threadfn=threadfn@entry=0xffffffff810c4fe0 <rescuer_thread>, data=data@entry=0xffff8881001d8900, node=node@entry=-1,
+    namefmt=namefmt@entry=0xffffffff826495f9 "%s") at kernel/kthread.c:453
+#2  0xffffffff810c260e in init_rescuer (wq=wq@entry=0xffff888100066e00) at kernel/workqueue.c:4273
+#3  0xffffffff831e6fb9 in init_rescuer (wq=0xffff888100066e00) at kernel/workqueue.c:4265
+#4  workqueue_init () at kernel/workqueue.c:6081
+#5  0xffffffff831baad2 in kernel_init_freeable () at init/main.c:1598
+#6  0xffffffff81c0b31a in kernel_init (unused=<optimized out>) at init/main.c:1505
+#7  0xffffffff81004572 in ret_from_fork () at arch/x86/entry/entry_64.S:295
+#8  0x0000000000000000 in ?? ()
+```
+
+我们来看看 `kthread_create_list` 到底有什么用，为什么之后一系列的函数都要用到它。
+
+```c
+struct task_struct *__kthread_create_on_node(int (*threadfn)(void *data),
+						    void *data, int node,
+						    const char namefmt[],
+						    va_list args)
+{
+	DECLARE_COMPLETION_ONSTACK(done);
+	struct task_struct *task;
+	struct kthread_create_info *create = kmalloc(sizeof(*create),
+						     GFP_KERNEL);
+
+	if (!create)
+		return ERR_PTR(-ENOMEM);
+	create->threadfn = threadfn;
+	create->data = data;
+	create->node = node;
+	create->done = &done;
+
+	spin_lock(&kthread_create_lock);
+	list_add_tail(&create->list, &kthread_create_list);
+	spin_unlock(&kthread_create_lock);
+
+	wake_up_process(kthreadd_task);
+	/*
+	 * Wait for completion in killable state, for I might be chosen by
+	 * the OOM killer while kthreadd is trying to allocate memory for
+	 * new kernel thread.
+	 */
+	if (unlikely(wait_for_completion_killable(&done))) {
+		/*
+		 * If I was SIGKILLed before kthreadd (or new kernel thread)
+		 * calls complete(), leave the cleanup of this structure to
+		 * that thread.
+		 */
+		if (xchg(&create->done, NULL))
+			return ERR_PTR(-EINTR);
+		/*
+		 * kthreadd (or new kernel thread) will call complete()
+		 * shortly.
+		 */
+		wait_for_completion(&done);
+	}
+	task = create->result;
+	if (!IS_ERR(task)) {
+		static const struct sched_param param = { .sched_priority = 0 };
+		char name[TASK_COMM_LEN];
+
+		/*
+		 * task is already visible to other tasks, so updating
+		 * COMM must be protected.
+		 */
+		vsnprintf(name, sizeof(name), namefmt, args);
+		set_task_comm(task, name);
+		/*
+		 * root may have changed our (kthreadd's) priority or CPU mask.
+		 * The kernel thread should not inherit these properties.
+		 */
+		sched_setscheduler_nocheck(task, SCHED_NORMAL, &param);
+		set_cpus_allowed_ptr(task,
+				     housekeeping_cpumask(HK_FLAG_KTHREAD));
+	}
+	kfree(create);
+	return task;
+}
+```
+
 
 
 ### Reference
