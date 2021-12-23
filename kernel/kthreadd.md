@@ -276,3 +276,85 @@ static int kthread(void *_create)
 	do_exit(ret);
 }
 ```
+
+发现一个也是创建线程的宏 `kthread_create`，类似的命名，类似的功能，这个会返回创建线程的 `task_struct`，而 `create_kthread` 返回创建线程的 pid，要搞清楚它们之间的区别。
+
+### kthread_create 和 create_kthread
+
+`kthread_create` 是一个宏，最后会调用到这个函数，这看起来就是一个正常的创建线程的函数，有 kmalloc，首先其创建方法就和 `create_kthread` 不一样。
+
+```c
+struct task_struct *__kthread_create_on_node(int (*threadfn)(void *data),
+						    void *data, int node,
+						    const char namefmt[],
+						    va_list args)
+{
+	DECLARE_COMPLETION_ONSTACK(done);
+	struct task_struct *task;
+	struct kthread_create_info *create = kmalloc(sizeof(*create),
+						     GFP_KERNEL);
+
+	if (!create)
+		return ERR_PTR(-ENOMEM);
+	create->threadfn = threadfn;
+	create->data = data;
+	create->node = node;
+	create->done = &done;
+
+	spin_lock(&kthread_create_lock);
+	list_add_tail(&create->list, &kthread_create_list); // 每个创建的 task 都要将 create 添加到
+    													// kthread_create_list，之后 task 执行会用到
+	spin_unlock(&kthread_create_lock);
+
+	wake_up_process(kthreadd_task);
+
+    ...
+
+	task = create->result;
+	if (!IS_ERR(task)) {
+		static const struct sched_param param = { .sched_priority = 0 };
+		char name[TASK_COMM_LEN];
+
+		/*
+		 * task is already visible to other tasks, so updating
+		 * COMM must be protected.
+		 */
+		vsnprintf(name, sizeof(name), namefmt, args);
+		set_task_comm(task, name);
+		/*
+		 * root may have changed our (kthreadd's) priority or CPU mask.
+		 * The kernel thread should not inherit these properties.
+		 */
+		sched_setscheduler_nocheck(task, SCHED_NORMAL, &param);
+		set_cpus_allowed_ptr(task,
+				     housekeeping_cpumask(HK_FLAG_KTHREAD));
+	}
+	kfree(create);
+	return task;
+}
+```
+
+在两个函数（宏）设置断点，看看调用情况即可。
+
+3(rcu_gp)，4(rcu_par_gp)，5, 6, 7(kworker), 8(mm_percpu_wq), 9(rcu_tasks_rude_), 10(rcu_tasks_trace) 等等内核线程都是 `kthread_create` 创建的。
+
+```plain
+(gdb) p task->pid
+$24 = 17
+(gdb) bt
+#0  __kthread_create_on_node (threadfn=threadfn@entry=0xffffffff81c0ef75 <devtmpfsd>, data=data@entry=0xffffc90000013e48, node=node@entry=-1,
+    namefmt=namefmt@entry=0xffffffff8264a6bb "kdevtmpfs", args=args@entry=0xffffc90000013de8) at kernel/kthread.c:413
+#1  0xffffffff810cbb19 in kthread_create_on_node (threadfn=threadfn@entry=0xffffffff81c0ef75 <devtmpfsd>, data=data@entry=0xffffc90000013e48, node=node@entry=-1,
+    namefmt=namefmt@entry=0xffffffff8264a6bb "kdevtmpfs") at kernel/kthread.c:453
+#2  0xffffffff8321c117 in devtmpfs_init () at drivers/base/devtmpfs.c:463
+#3  0xffffffff8321be53 in driver_init () at drivers/base/init.c:23
+#4  0xffffffff831bab25 in do_basic_setup () at init/main.c:1408
+#5  kernel_init_freeable () at init/main.c:1614
+#6  0xffffffff81c0b31a in kernel_init (unused=<optimized out>) at init/main.c:1505
+#7  0xffffffff81004572 in ret_from_fork () at arch/x86/entry/entry_64.S:295
+#8  0x0000000000000000 in ?? ()
+```
+
+然后 `create_kthread` 只有开头执行了一次就没有执行过了。
+
+初始化先分析到这里，之后有时间再进一步分析。
