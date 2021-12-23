@@ -722,7 +722,7 @@ int kthreadd(void *unused)
 }
 ```
 
-那么 `kthread_create_list` 又是由谁维护呢？
+那么 `kthread_create_list` 又是由谁维护呢？ `__kthread_create_on_node` 在创建线程的时候将 `__create` 一个个添加到 `kthread_create_list` 中。
 
 ### Reference
 
