@@ -2,6 +2,18 @@
 
 这篇文章我们来分析一下内核启动的第二阶段，第一阶段的分析[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/bmbt-virtualization.md)。
 
+这里有个事情应该说明一下，第一阶段的分析是基于 loongarch 的，这里是基于 x86 内核的，初始化过程略有不同，下面是 x86 内核调用 `start_kernel` 的过程。
+
+```plain
+#0  start_kernel () at init/main.c:931
+#1  0xffffffff831b95a0 in x86_64_start_reservations (real_mode_data=real_mode_data@entry=0x2e3a920 <error: Cannot access memory at address 0x2e3a920>) at arch/x86/kernel/head64.c:525
+#2  0xffffffff831b962d in x86_64_start_kernel (real_mode_data=0x2e3a920 <error: Cannot access memory at address 0x2e3a920>) at arch/x86/kernel/head64.c:506
+#3  0xffffffff81000107 in secondary_startup_64 () at arch/x86/kernel/head_64.S:283
+#4  0x0000000000000000 in ?? ()
+```
+
+内核启动的入口函数不是 `kernel_entry`，而是 `secondary_startup_64`，我一直以为这个辅核的启动过程，这里做个记录。
+
 在 `start_kerenl` 函数中，进行了系统启动过程中几乎所有重要的初始化(有一部分在 boot 中初始化，有一部分在 `start_kernel` 之前的汇编代码进行初始化)，包括内存、页表、必要数据结构、信号、调度器、硬件设备等。而这些初始化是由谁来负责的？就是由`init_task` 进程。`init_task` 是**静态定义的一个进程**，也就是说当内核被放入内存时，它就已经存在，它没有自己的用户空间，一直处于内核空间中运行，并且也只处于内核空间运行（是不是可以理解为是一个 kernel thread）。当它执行到最后，将 `start_kernel`中所有的初始化执行完成后，会在调用 `rest_init` 创建 `kernel_init` 内核线程和一个 `kthreadd` 内核线程，`kernel_init` 内核线程执行到最后会通过 `execve` 系统调用执行转变为我们所熟悉的 **`init` 进程**，而 `kthreadd` 内核线程是内核用于**管理调度其他的内核线程的守护线程**。在最后 `init_task` 将变成一个 idle 进程，用于在 CPU 没有进程运行时运行它，它在此时仅仅用于空转。
 
 `init_task` 在 `sched_init` 完成后化身为 idle 进程，但是它还会继续执行初始化工作，相当于这里只是给 `init_task` 挂个 idle 进程的名号，它其实还是 `init_task` 进程，只有在 `arch_call_rest_init` 中调用 `rest_init` ，`rest_init` 创建 1 号和 2 号进程，然后才化身为真正的 idle 进程，后续的系统启动由 1 号进程接管，1 号进程的执行就是 `kernel_init`。我们先来分析 `sched_init`。
@@ -390,125 +402,6 @@ out_unmark:
 	current->in_execve = 0;
 
 	return retval;
-}
-```
-
-### workqueue
-
- workqueue 允许内核函数被激活，挂起，稍后由 worker thread 的特殊内核线程来执行。workqueue 中的函数运行在进程上下文中，
-
-这部份涉及到几个关键的数据结构：
-
-`workqueue_struct`，`worker_pool`，`pool_workqueue`，`work_struct`，`worker`，有必要把它们之间的关系搞懂。还有就是 runqueue 和 workqueue 有什么关系。runqueue 中放的是 process，用来作负载均衡的，而 workqueue 中放的是可以延迟执行的内核函数。
-
-从代码中推测 `workqueue_struct` 表示一个工作队列，`pool_workqueue` 表示每 CPU 中的 work，`work_struct` 表示挂起的函数，`worker` 是执行挂起函数的内核线程，`worker_pool` 表示所有用来执行 work 的 worker。我们看看是怎样初始化 workqueue 的。
-
-```c
-/**
- * workqueue_init - bring workqueue subsystem fully online
- *
- * This is the latter half of two-staged workqueue subsystem initialization
- * and invoked as soon as kthreads can be created and scheduled.
- * Workqueues have been created and work items queued on them, but there
- * are no kworkers executing the work items yet.  Populate the worker pools
- * with the initial workers and enable future kworker creations.
- */
-void __init workqueue_init(void)
-{
-	struct workqueue_struct *wq;
-	struct worker_pool *pool;
-	int cpu, bkt;
-
-	wq_numa_init();
-
-	mutex_lock(&wq_pool_mutex);
-
-	for_each_possible_cpu(cpu) {
-		for_each_cpu_worker_pool(pool, cpu) {
-			pool->node = cpu_to_node(cpu);
-		}
-	}
-
-	list_for_each_entry(wq, &workqueues, list) {
-		wq_update_unbound_numa(wq, smp_processor_id(), true);
-		WARN(init_rescuer(wq),
-		     "workqueue: failed to create early rescuer for %s",
-		     wq->name);
-	}
-
-	mutex_unlock(&wq_pool_mutex);
-
-	/* create the initial workers */
-	for_each_online_cpu(cpu) {
-		for_each_cpu_worker_pool(pool, cpu) {
-			pool->flags &= ~POOL_DISASSOCIATED;
-			BUG_ON(!create_worker(pool));
-		}
-	}
-
-	hash_for_each(unbound_pool_hash, bkt, pool, hash_node)
-		BUG_ON(!create_worker(pool));
-
-	wq_online = true;
-	wq_watchdog_init();
-}
-```
-
-这里涉及到一个非常重要的数据结构的初始化，我也是在之后的调试中才发现的。
-
-### __kthread_create_on_node
-
-这是它的调用过程。
-
-```plain
-#0  __kthread_create_on_node (threadfn=threadfn@entry=0xffffffff810c4fe0 <rescuer_thread>, data=data@entry=0xffff8881001d8900, node=node@entry=-1,
-    namefmt=namefmt@entry=0xffffffff826495f9 "%s", args=args@entry=0xffffc90000013dd0) at kernel/kthread.c:361
-#1  0xffffffff810cbb19 in kthread_create_on_node (threadfn=threadfn@entry=0xffffffff810c4fe0 <rescuer_thread>, data=data@entry=0xffff8881001d8900, node=node@entry=-1,
-    namefmt=namefmt@entry=0xffffffff826495f9 "%s") at kernel/kthread.c:453
-#2  0xffffffff810c260e in init_rescuer (wq=wq@entry=0xffff888100066e00) at kernel/workqueue.c:4273
-#3  0xffffffff831e6fb9 in init_rescuer (wq=0xffff888100066e00) at kernel/workqueue.c:4265
-#4  workqueue_init () at kernel/workqueue.c:6081
-#5  0xffffffff831baad2 in kernel_init_freeable () at init/main.c:1598
-#6  0xffffffff81c0b31a in kernel_init (unused=<optimized out>) at init/main.c:1505
-#7  0xffffffff81004572 in ret_from_fork () at arch/x86/entry/entry_64.S:295
-#8  0x0000000000000000 in ?? ()
-```
-
-我们来看看 `kthread_create_list` 到底有什么用，为什么之后一系列的函数都要用到它。
-
-```c
-struct task_struct *__kthread_create_on_node(int (*threadfn)(void *data),
-						    void *data, int node,
-						    const char namefmt[],
-						    va_list args)
-{
-	DECLARE_COMPLETION_ONSTACK(done);
-	struct task_struct *task;
-	struct kthread_create_info *create = kmalloc(sizeof(*create), // 最重要的就是分配了 create
-						     GFP_KERNEL);
-
-	if (!create)
-		return ERR_PTR(-ENOMEM);
-	create->threadfn = threadfn;
-	create->data = data;
-	create->node = node;
-	create->done = &done;
-
-	spin_lock(&kthread_create_lock);
-	list_add_tail(&create->list, &kthread_create_list); // 将 create 信息添加到 kthread_create_list 中
-    													// 之后进程调度就从 kthread_create_list 中获取 task
-	spin_unlock(&kthread_create_lock);
-
-	wake_up_process(kthreadd_task);
-
-    ...
-
-	task = create->result;
-
-	...
-
-	kfree(create);
-	return task;
 }
 ```
 
