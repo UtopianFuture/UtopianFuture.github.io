@@ -245,7 +245,7 @@ static inline void __raw_spin_unlock_irqrestore(raw_spinlock_t *lock,
 
 ```c
 #define preempt_enable()			barrier()
-#define barrier() __asm__ __volatile__("": : :"memory") // 这个 barrier 是干什么的，memory barrier？
+#define barrier() __asm__ __volatile__("": : :"memory") // 这个 barrier 是干什么的，memory barrier？ //
 ```
 
 这个中断处理完就就继续执行 tty_buffer 的工作。
@@ -388,11 +388,22 @@ ripts/local-block ... done.\r\ndone.\r\nGave up waiting for suspend/resume devic
 
 - 用户态的执行流程是怎样的？（这个暂时不好分析，因为不知道用户态进程是哪个）
 - 用户态到内核态的上下文切换在哪里，怎么做的？（这个是切入点）
+  - 用户态到内核态的上下文切换
+
 - kernel thread, workqueue 的设计思想是什么？ （搞定）
+  - kernel thread, workqueu 的设计及实现
+  - `schedule` 进程调度
+
 - tty_buffer 中的字符是怎样发送到 serial_port 中去的。
 - `preempt_enable` 执行完后就会执行一次中断，这个中断是由哪个发出来的，怎样判断中断来源？
+  - `preempt_enable` 之后就会执行中断，这些中断是怎样发起的。中断的发起机制。
+
 - 在调试的过程中，还执行过中断上下文切换的代码，汇编写的，搞清楚。
+  - 中断的上下文切换
+
 - `serial8250_tx_chars` 也是中断处理过程的一部分，serial 发的中断么？
+  - 中断的处理过程。
+
 
 ### 用户态执行流程
 
@@ -737,3 +748,7 @@ int kthreadd(void *unused)
 ### 说明
 
 这篇文章是探索内核的记录，不一定严谨，没有固定的流程（我尽量按照既定的问题走），可能调试的时候发现了不懂的问题就产生一个新的分支。
+
+### 经验
+
+向 《深入理解 LINUX 内核》靠拢，而不是模仿《QEMU/KVM 源码分析》。
