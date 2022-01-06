@@ -6,9 +6,11 @@
 - 内核怎样使用 workqueue？
 - workqueue 涉及到哪些设计思想？
 
-Workqueue 是内核里面很重要的一个机制，特别是内核驱动，一般的小型任务 (work) 都不会自己起一个线程来处理，而是扔到 Workqueue 中处理。Workqueue 的主要工作就是**用进程上下文来处理内核中大量的小任务**。
+### 数据结构
 
-所以 Workqueue 的主要设计思想：一个是并行，多个 work 不要相互阻塞；另外一个是节省资源，多个 work 尽量共享资源 ( 进程、调度、内存 )，不要造成系统过多的资源浪费。
+workqueue 是内核里面很重要的一个机制，特别是内核驱动，一般的小型任务 (work) 都不会自己起一个线程来处理，而是扔到 workqueue 中处理。workqueue 的主要工作就是**用进程上下文来处理内核中大量的小任务**。
+
+所以 workqueue 的主要设计思想：一个是并行，多个 work 不要相互阻塞；另外一个是节省资源，多个 work 尽量共享资源 ( 进程、调度、内存 )，不要造成系统过多的资源浪费。
 
 为了实现的设计思想，workqueue 的设计实现也更新了很多版本。最新的 workqueue 实现叫做 CMWQ(Concurrency Managed Workqueue)，也就是用更加智能的算法来实现“并行和节省”。
 
@@ -22,9 +24,49 @@ workqueue 允许内核函数被激活，挂起，稍后**由 worker thread 的�
 
 可以看一下它们之间的拓扑图。
 
+![workqueue1](/home/guanshun/gitlab/UFuture.github.io/image/workqueue1.png)
 
+### worker_pool
 
-### workqueue init
+CMWQ 对 worker_pool 分成两类：
+
+- normal worker_pool，给通用的 workqueue 使用；
+- unbound worker_pool，给 WQ_UNBOUND 类型的的 workqueue 使用；
+
+#### normal worker_pool
+
+默认 work 是在 normal worker_pool 中处理的。系统的规划是每个 CPU 创建两个 normal worker_pool：一个 normal 优先级 (nice=0)、一个高优先级 (nice=HIGHPRI_NICE_LEVEL)，对应创建出来的 worker 的进程 nice 不一样。
+
+每个 worker 对应一个 `worker_thread()` 内核线程，一个 worker_pool 包含一个或者多个 worker，worker_pool 中 worker 的数量是根据 worker_pool 中 work 的负载来动态增减的。
+
+我们可以通过 `ps -eo pid,ppid,command | grep kworker` 命令来查看所有 worker 对应的内核线程。
+
+```plain
+	  6       2 [kworker/0:0H-events_highpri]  // cpu0 的第 0 个高优先级 worker
+	  7       2 [kworker/0:1-events]		   // cpu0 的第 1 个 normal worker
+	  22       2 [kworker/1:0H-events_highpri] // cpu1 的第 0 个高优先级 worker
+	  28       2 [kworker/2:0H-events_highpri]
+	  33       2 [kworker/3:0-events]
+	  34       2 [kworker/3:0H-events_highpri]
+	  40       2 [kworker/4:0H-events_highpri]
+	  46       2 [kworker/5:0H-events_highpri]
+	  52       2 [kworker/6:0H-events_highpri]
+	  58       2 [kworker/7:0H-events_highpri]
+	  64       2 [kworker/8:0H-events_highpri]
+	  70       2 [kworker/9:0H-events_highpri]
+	  76       2 [kworker/10:0H-events_highpri]
+	  82       2 [kworker/11:0H-events_highpri]
+	  143       2 [kworker/1:1-events]
+	  146       2 [kworker/5:1-events]
+```
+
+![workqueue2](/home/guanshun/gitlab/UFuture.github.io/image/workqueue2.png)
+
+对应的拓扑图为：
+
+![workqueue3](/home/guanshun/gitlab/UFuture.github.io/image/workqueue3.png)
+
+现在通过代码看看 normal worker_pool 是怎样初始化的。
 
 ```c
 /**
@@ -39,23 +81,18 @@ workqueue 允许内核函数被激活，挂起，稍后**由 worker thread 的�
  */
 void __init workqueue_init_early(void)
 {
-	int std_nice[NR_STD_WORKER_POOLS] = { 0, HIGHPRI_NICE_LEVEL };
+	int std_nice[NR_STD_WORKER_POOLS] = { 0, HIGHPRI_NICE_LEVEL }; // 初始化两个 worker_pool
 	int hk_flags = HK_FLAG_DOMAIN | HK_FLAG_WQ;
 	int i, cpu;
 
-	BUILD_BUG_ON(__alignof__(struct pool_workqueue) < __alignof__(long long));
-
-	BUG_ON(!alloc_cpumask_var(&wq_unbound_cpumask, GFP_KERNEL));
-	cpumask_copy(wq_unbound_cpumask, housekeeping_cpumask(hk_flags));
-
-	pwq_cache = KMEM_CACHE(pool_workqueue, SLAB_PANIC);
+	...
 
 	/* initialize CPU pools */
 	for_each_possible_cpu(cpu) {
 		struct worker_pool *pool; // 每个 cpu 一个 worker pool
 
 		i = 0;
-		for_each_cpu_worker_pool(pool, cpu) { // cpu0 创建 2 个 worker pool
+		for_each_cpu_worker_pool(pool, cpu) { // cpu0 创建 2 个 worker pool，normal 和 high priority
 			BUG_ON(init_worker_pool(pool));   // smp 架构现在只有一个 boot cpu 能用
 			pool->cpu = cpu;
 			cpumask_copy(pool->attrs->cpumask, cpumask_of(cpu));
@@ -88,22 +125,8 @@ void __init workqueue_init_early(void)
 		ordered_wq_attrs[i] = attrs;
 	}
 
-	system_wq = alloc_workqueue("events", 0, 0); // 这些 work queue 分别负责什么
-	system_highpri_wq = alloc_workqueue("events_highpri", WQ_HIGHPRI, 0);
-	system_long_wq = alloc_workqueue("events_long", 0, 0);
-	system_unbound_wq = alloc_workqueue("events_unbound", WQ_UNBOUND,
-					    WQ_UNBOUND_MAX_ACTIVE);
-	system_freezable_wq = alloc_workqueue("events_freezable",
-					      WQ_FREEZABLE, 0);
-	system_power_efficient_wq = alloc_workqueue("events_power_efficient",
-					      WQ_POWER_EFFICIENT, 0);
-	system_freezable_power_efficient_wq = alloc_workqueue("events_freezable_power_efficient",
-					      WQ_FREEZABLE | WQ_POWER_EFFICIENT,
-					      0);
-	BUG_ON(!system_wq || !system_highpri_wq || !system_long_wq ||
-	       !system_unbound_wq || !system_freezable_wq ||
-	       !system_power_efficient_wq ||
-	       !system_freezable_power_efficient_wq);
+    ...
+
 }
 ```
 
