@@ -358,6 +358,11 @@ A **network socket** is a software structure within a [network node](https://en.
 - level-triggered: get a list of every file descriptor you’re interested in that is readable.
 - edge-triggered: get notifications every time a file descriptor becomes readable.
 
+### 边沿触发和电平触发
+
+边沿触发分上升沿触发和下降沿触发，简单说就是电平变化那一瞬间进行触发。
+电平触发也有高电平触发、低电平触发，一般都是低电平触发。如果是低电平触发，那么在低电平时间内中断一直有效。
+
 ### 字符设备和块设备
 
 系统中能够随机（不需要按顺序）访问固定大小数据片（chunks）的设备被称作块设备，这些数据片就称作块。最常见的块设备是硬盘，除此以外，还有软盘驱动器、CD-ROM 驱动器和闪存等等许多其他块设备。注意，它们都是以安装文件系统的方式使用的——这也是块设备的一般访问方式。
@@ -461,3 +466,51 @@ LWP 虽然本质上属于用户线程，但 LWP 线程库是建立在内核之�
 ### GFP
 
 Most of the memory allocation APIs use GFP flags to express how that memory should be allocated. The GFP acronym stands for **“get free pages”**, the underlying memory allocation function.
+
+### .macro
+
+The commands `.macro` and `.endm` allow you to define macros that generate assembly output. For example, this definition specifies a macro `sum` that puts a sequence of numbers into memory:
+
+```plain
+             .macro  sum from=0, to=5
+             .long   \from
+             .if     \to-\from
+             sum     "(\from+1)",\to
+             .endif
+             .endm
+```
+
+With that definition, `SUM 0,5' is equivalent to this assembly input:
+
+```plain
+             .long   0
+             .long   1
+             .long   2
+             .long   3
+             .long   4
+             .long   5
+```
+
+### declaration and definition
+
+**Declaration of a variable or function simply declares that the variable or function exists somewhere in the program, but the memory is not allocated for them**. The declaration of a variable or function serves an important role–it tells the program what its type is going to be. In case of *function* declarations, it also tells the program the arguments, their data types, the order of those arguments, and the return type of the function. So that’s all about the declaration.
+
+Coming to the **definition**, when we *define* a variable or function, in addition to everything that a declaration does, **it also allocates memory for that variable or function**. Therefore, we can think of definition as a superset of the declaration (or declaration as a subset of definition).
+
+A variable or function can be *declared* any number of times, but it can be *defined* only once.
+
+### extern
+
+the extern keyword extends the function’s visibility to the whole program, the function can be used (called) anywhere in any of the files of the whole program, provided those files contain a declaration of the function.
+
+### CFI
+
+On some architectures, exception handling must be managed with **Call Frame Information** directives. These directives are used in the assembly to **direct exception handling**. These directives are available on Linux on POWER, if, for any reason (portability of the code base, for example), the GCC generated exception handling information is not sufficient.
+
+### LPC
+
+The **Low Pin Count** (**LPC**) bus is a computer bus used on IBM-compatible personal computers to connect low-bandwidth devices to the CPU, such as the BIOS ROM, "legacy" I/O devices, and Trusted Platform Module (TPM). "Legacy" I/O devices usually include serial and parallel ports, PS/2 keyboard, PS/2 mouse, and floppy disk controller.
+
+### PCH
+
+The **Platform Controller Hub** (**PCH**) is a family of Intel's single-chip chipsets. The PCH controls certain data paths and support functions used in conjunction with Intel CPUs.
