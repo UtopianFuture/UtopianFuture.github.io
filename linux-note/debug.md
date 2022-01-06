@@ -29,7 +29,7 @@
 
 5. gdb 在 3a5000 不能用 layout：
 
-   ​	安装 ncurses-base 包，之后用./configure --enable-tui --disable-werror 配置 gdb，make 编译，make install 安装。
+   ​	安装 ncurses-base 包，之后用 ./configure --enable-tui --disable-werror 配置 gdb，make 编译，make install 安装。
 
 6. 这个命令用来配置 qemu，用 qemu 跑同样的程序，输出和 latx 对比，看有哪些不同。
 
@@ -80,7 +80,7 @@
    ```
 
 11. gcc 中的`-fno-builtin`命令
-   不用内联函数，便于设置断点调试。而`-fno-builtin-function`则是指定某个函数不用，这个函数的命名可以和 bulit-in 函数重名。
+      不用内联函数，便于设置断点调试。而`-fno-builtin-function`则是指定某个函数不用，这个函数的命名可以和 bulit-in 函数重名。
 
 12. gcc 中的`-ffreestanding`命令
 
