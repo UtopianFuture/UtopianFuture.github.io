@@ -735,6 +735,151 @@ int kthreadd(void *unused)
 
 那么 `kthread_create_list` 又是由谁维护呢？ `__kthread_create_on_node` 在创建线程的时候将 `__create` 一个个添加到 `kthread_create_list` 中。
 
+### serial 中断
+
+在阅读源码的过程中，发现最重要的数据结构是 `irq_desc`，每个中断号对应一个，之后所有的处理都跟这个 `irq_desc` 有关。然后在中断分发的过程中，任何一个中断控制器的 dispatch 都会通过 `irq_linear_revmap` 函数来将 hwirq 转换成 linux irq，再通过 `irq_to_desc` 找到对应的 `irq_desc`。因此最重要的就是 hwirq 到 linux irq 之间的映射是怎样做的。
+
+```c
+static inline unsigned int irq_linear_revmap(struct irq_domain *domain,
+					     irq_hw_number_t hwirq)
+{
+	return hwirq < domain->revmap_size ? domain->linear_revmap[hwirq] : 0;
+}
+```
+
+下面来看看是怎样映射的。
+
+先尝试找到 serial interrupt 在哪里注册的。通过这个 backtrace 知道 serial 的 irq 是 19，
+
+```plain
+#4  0x90000000009ece10 in serial8250_interrupt (irq=19, dev_id=0x900000027da36300) at drivers/tty/serial/8250/8250_core.c:125
+#5  0x9000000000283c70 in __handle_irq_event_percpu (desc=0x9000000001696850 <serial8250_ports>, flags=0x6) at kernel/irq/handle.c:149
+#6  0x9000000000283ed0 in handle_irq_event_percpu (desc=0x900000027d14da00) at kernel/irq/handle.c:189
+#7  0x9000000000283f7c in handle_irq_event (desc=0x900000027d14da00) at kernel/irq/handle.c:206
+#8  0x9000000000288348 in handle_level_irq (desc=0x900000027d14da00) at kernel/irq/chip.c:650
+#9  0x9000000000282aac in generic_handle_irq_desc (desc=<optimized out>) at include/linux/irqdesc.h:155
+#10 generic_handle_irq (irq=<optimized out>) at kernel/irq/irqdesc.c:639
+#11 0x90000000008f97ac in extioi_irq_dispatch (desc=<optimized out>) at drivers/irqchip/irq-loongson-extioi.c:305
+#12 0x9000000000282aac in generic_handle_irq_desc (desc=<optimized out>) at include/linux/irqdesc.h:155
+#13 generic_handle_irq (irq=<optimized out>) at kernel/irq/irqdesc.c:639
+#14 0x90000000010153f8 in do_IRQ (irq=<optimized out>) at arch/loongarch/kernel/irq.c:103
+#15 0x9000000000203674 in except_vec_vi_handler () at arch/loongarch/kernel/genex.S:92
+```
+
+那么就看 irq = 19 的注册过程。
+
+通过分析内核知道了中断注册的大致流程：`init_IRQ` -> `arch_init_irq` -> `setup_IRQ` -> `irqchip_init_default` -> `loongarch_cpu_irq_init` -> `__loongarch_cpu_irq_init` -> `irq_domain_associate_many` -> `irq_domain_associate`
+
+```c
+int irq_domain_associate(struct irq_domain *domain, unsigned int virq,
+			 irq_hw_number_t hwirq)
+{
+	struct irq_data *irq_data = irq_get_irq_data(virq);
+
+    ...
+
+	mutex_lock(&irq_domain_mutex);
+	irq_data->hwirq = hwirq;
+	irq_data->domain = domain;
+	if (domain->ops->map) {
+		ret = domain->ops->map(domain, virq, hwirq); // 跳转到回调函数 set_vi_handler
+
+        ...
+
+	}
+
+	domain->mapcount++;
+	irq_domain_set_mapping(domain, hwirq, irq_data); // 设置 irq_domain::linear_revmap 第 hwirq 项为 irq
+	mutex_unlock(&irq_domain_mutex);
+
+	irq_clear_status_flags(virq, IRQ_NOREQUEST);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(irq_domain_associate);
+```
+
+```c
+static void irq_domain_set_mapping(struct irq_domain *domain,
+				   irq_hw_number_t hwirq,
+				   struct irq_data *irq_data)
+{
+	if (hwirq < domain->revmap_size) {
+		domain->linear_revmap[hwirq] = irq_data->irq;
+	}
+
+    ...
+
+}
+```
+
+在中断分发的时候会首先执行 `do_vi` 函数，这个 irq 是硬中断号，之后需要转换成 linux irq ，上面说的 `irq_domain` 就是负责将硬中断号转换成 linux irq 的。
+
+```c
+void do_vi(int irq)
+{
+	vi_handler_t	action;
+
+	action = ip_handlers[irq];
+	if (action)
+		action(irq);
+	else
+		pr_err("vi handler[%d] is not installed\n", irq);
+}
+```
+
+这里的 `ip_handlers` 也需要注意一下。它是在 `set_vi_handler` 中初始化的，而 `set_vi_handler` 是 `domain->ops->map` 的回调函数。
+
+同时，这个执行下来设置的映射只有如下中断：
+
+```c
+#define EXCCODE_INT_START   64 // 这里的中断号和 virq 不一样，
+#define EXCCODE_SIP0        64 // 是因为这个中断号是用来设置vector_handler 的
+#define EXCCODE_SIP1        65 // 在 la 手册中有说明，
+#define EXCCODE_IP0         66 // 在计算中断入口地址时，中断对应的例外号是其自身的中断号加上 64
+#define EXCCODE_IP1         67
+#define EXCCODE_IP2         68
+#define EXCCODE_IP3         69
+#define EXCCODE_IP4         70
+#define EXCCODE_IP5         71
+#define EXCCODE_IP6         72
+#define EXCCODE_IP7         73
+#define EXCCODE_PC          74 /* Performance Counter */
+#define EXCCODE_TIMER       75
+#define EXCCODE_IPI         76
+#define EXCCODE_NMI         77
+#define EXCCODE_INT_END     78
+```
+
+还有其他类型的中断，
+
+```plain
+#0  alloc_desc (irq=16, node=-1, flags=0, affinity=0x0, owner=0x0) at include/linux/slab.h:720
+#1  0x9000000001008f04 in alloc_descs (owner=<optimized out>, affinity=<optimized out>, node=-1,
+    cnt=<optimized out>, start=<optimized out>) at kernel/irq/irqdesc.c:490
+#2  __irq_alloc_descs (irq=<optimized out>, from=<optimized out>, cnt=1, node=-1, owner=0x0, affinity=0x0)
+    at kernel/irq/irqdesc.c:756
+#3  0x900000000028deb4 in __irq_domain_alloc_irqs (domain=0x90000000fa0bfa00, irq_base=-1, nr_irqs=1,
+    node=<optimized out>, arg=<optimized out>, realloc=<optimized out>, affinity=<optimized out>)
+    at kernel/irq/irqdomain.c:1310
+#4  0x900000000028e4f8 in irq_domain_alloc_irqs (arg=<optimized out>, node=<optimized out>,
+    nr_irqs=<optimized out>, domain=<optimized out>) at include/linux/irqdomain.h:466
+#5  irq_create_fwspec_mapping (fwspec=0x90000000013dbd50) at kernel/irq/irqdomain.c:810
+#6  0x9000000000ffdbe4 in pch_lpc_domain_init () at arch/loongarch/la64/irq.c:203
+#7  irqchip_init_default () at arch/loongarch/la64/irq.c:287
+#8  0x9000000001539008 in setup_IRQ () at arch/loongarch/la64/irq.c:311
+#9  0x9000000001539034 in arch_init_irq () at arch/loongarch/la64/irq.c:360
+#10 0x900000000153ab90 in init_IRQ () at arch/loongarch/kernel/irq.c:59
+```
+
+来看看这些中断是哪些设备需要。
+
+> The **Low Pin Count** (**LPC**) bus is a computer bus used on IBM-compatible personal computers to connect low-bandwidth devices to the CPU, such as the BIOS ROM, "legacy" I/O devices, and Trusted Platform Module (TPM). "Legacy" I/O devices usually include serial and parallel ports, PS/2 keyboard, PS/2 mouse, and floppy disk controller.
+
+从这段解释中可以知道是一些低速设备会用到 lpc bus，这就能对上了，irq = 19 对应 serial，所以是在这里初始化的。
+
+ok，上面就是映射过程，但中断似乎没有这么简单。在 la 的机器上 hwirq 有 14 个，但是 linux irq 不止 14 个，这样情况要怎么处理？同时虽然知道 serial irq 是 19，设置断点 `b do_vi if irq=19` 能够停下来，但是 `action` 却不能执行到对应的回调函数，这是为什么？
+
 ### Reference
 
 [1] [kernel thread and workqueue](https://blog.csdn.net/gatieme/article/details/51589205)
