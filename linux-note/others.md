@@ -514,3 +514,7 @@ The **Low Pin Count** (**LPC**) bus is a computer bus used on IBM-compatible per
 ### PCH
 
 The **Platform Controller Hub** (**PCH**) is a family of Intel's single-chip chipsets. The PCH controls certain data paths and support functions used in conjunction with Intel CPUs.
+
+### GPIO
+
+A **general-purpose input/output** (**GPIO**) is an uncommitted digital signal pin on an integrated circuit or electronic circuit board which may be used as an input or output, or both, and is controllable by the user at runtime.
