@@ -521,7 +521,7 @@ asmlinkage __visible void schedule_tail(struct task_struct *prev)
 
 知道了，是做为一个 work 来处理的，每次输入一个字符都会跳转到 `process_one_work`。
 
-注意 `kthreadd` 才是 2 号内核线程，用来创建其他内核线程的，这里的 `kthread` 是内核线程，不要搞混了。我在[这篇文章](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/kthreadd.md)分析了整个创建 kernel thread 的过程，看完应该能很明白为什么 `ret_from_fork` 是跳转到 `kthread` 执行，而 `kthread` 为什么又会调用 `worker_thread` 执行接下来的任务。
+注意 `kthreadd` 才是 2 号内核线程，用来创建其他内核线程的，这里的 `kthread` 是内核线程，不要搞混了。我在[这篇文章](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/kthreadd.md)分析了整个创建 kernel thread 的过程，看完应该能很明白为什么 `ret_from_fork` 是跳转到 `kthread` 执行，而 `kthread` 为什么又会调用 `worker_threakd` 执行接下来的任务。
 
 ```plain
 #0  receive_buf (count=1, head=0xffff888106aa7400, port=0xffff888100a50000) at drivers/tty/tty_buffer.c:484
@@ -828,7 +828,7 @@ void do_vi(int irq)
 }
 ```
 
-这里的 `ip_handlers` 也需要注意一下。它是在 `set_vi_handler` 中初始化的，而 `set_vi_handler` 是 `domain->ops->map` 的回调函数。
+这里的 `ip_handlers` 也需要注意一下。它是在 `set_vi_handler` 中初始化的，而 `set_vi_handler` 是在 `domain->ops->map` 的回调函数 `loongarch_cpu_intc_map` 中调用的。`loongarch_cpu_intc_map` 同时也会设置这个 irq 对应的回调函数。irq 的回调函数设置分为几次，开始是全部设置为 `handle_percpu_irq` ，之后不同的中断控制器再设置相应的回调函数会将 `handle_percpu_irq` 覆盖掉。
 
 同时，这个执行下来设置的映射只有如下中断：
 
@@ -879,6 +879,150 @@ void do_vi(int irq)
 从这段解释中可以知道是一些低速设备会用到 lpc bus，这就能对上了，irq = 19 对应 serial，所以是在这里初始化的。
 
 ok，上面就是映射过程，但中断似乎没有这么简单。在 la 的机器上 hwirq 有 14 个，但是 linux irq 不止 14 个，这样情况要怎么处理？同时虽然知道 serial irq 是 19，设置断点 `b do_vi if irq=19` 能够停下来，但是 `action` 却不能执行到对应的回调函数，这是为什么？
+
+在分析过程中发现时间中断和串口中断的处理流程是不一样的，下面是时间中断的处理流程，
+
+```plain
+#0  constant_timer_interrupt (irq=61, data=0x0) at arch/loongarch/kernel/time.c:42
+#1  0x9000000000283c70 in __handle_irq_event_percpu (desc=0x3d, flags=0x0) at kernel/irq/handle.c:149
+#2  0x9000000000283ed0 in handle_irq_event_percpu (desc=0x90000000fa0bf000) at kernel/irq/handle.c:189
+#3  0x900000000028966c in handle_percpu_irq (desc=0x90000000fa0bf000) at kernel/irq/chip.c:873
+#4  0x9000000000282aac in generic_handle_irq_desc (desc=<optimized out>) at include/linux/irqdesc.h:155
+#5  generic_handle_irq (irq=<optimized out>) at kernel/irq/irqdesc.c:639
+#6  0x90000000010153f8 in do_IRQ (irq=<optimized out>) at arch/loongarch/kernel/irq.c:103
+```
+
+也就是在 `generic_handle_irq_desc` 执行的回调函数不同。
+
+```c
+static inline void generic_handle_irq_desc(struct irq_desc *desc)
+{
+	desc->handle_irq(desc);
+}
+```
+
+前面讲到不同的中断控制器会设置不同的回调函数会覆盖 `handle_percpu_irq` ，对于  extioi 中断控制器来说，它的回调函数是 `extioi_irq_dispatch`，设置过程如下，
+
+```plain
+#0  __irq_do_set_handler (desc=0x90000000fa0be000, handle=0x90000000008f96f0 <extioi_irq_dispatch>,
+    is_chained=1, name=0x0) at kernel/irq/chip.c:929
+#1  0x9000000000289410 in irq_set_chained_handler_and_data (irq=<optimized out>,
+    handle=0x90000000008f96f0 <extioi_irq_dispatch>, data=0x90000000fa011340) at kernel/irq/chip.c:1021
+#2  0x90000000008fa04c in extioi_vec_init (fwnode=0x90000000fa0112c0, cascade=53, vec_count=256, misc_func=0,
+    eio_en_off=0, node_map=1, node=0) at drivers/irqchip/irq-loongson-extioi.c:416
+#3  0x9000000000ffdaa0 in eiointc_domain_init () at arch/loongarch/la64/irq.c:251
+#4  irqchip_init_default () at arch/loongarch/la64/irq.c:283
+#5  0x9000000001539008 in setup_IRQ () at arch/loongarch/la64/irq.c:311
+#6  0x9000000001539034 in arch_init_irq () at arch/loongarch/la64/irq.c:360
+#7  0x900000000153ab90 in init_IRQ () at arch/loongarch/kernel/irq.c:59
+```
+
+通过下面这些宏定义就能明白为什么时钟中断和串口中断的执行过程不同，
+
+```c
+#define LOONGARCH_CPU_IRQ_TOTAL 	14
+#define LOONGARCH_CPU_IRQ_BASE 		50
+#define LOONGSON_LINTC_IRQ   		(LOONGARCH_CPU_IRQ_BASE + 2) /* IP2 for CPU legacy I/O interrupt controller */
+#define LOONGSON_BRIDGE_IRQ 		(LOONGARCH_CPU_IRQ_BASE + 3) /* IP3 for bridge */
+#define LOONGSON_TIMER_IRQ  		(LOONGARCH_CPU_IRQ_BASE + 11) /* IP11 CPU Timer */
+#define LOONGARCH_CPU_LAST_IRQ 		(LOONGARCH_CPU_IRQ_BASE + LOONGARCH_CPU_IRQ_TOTAL)
+```
+
+总个 14 个 hwirq，irq_base 为 50（这就能解释为什么时钟中断的 hwirq = 11, softirq = 61），`LOONGSON_BRIDGE_IRQ` 对应 extioi 控制器。
+
+发现一个问题，找不到 extioi 中断控制器在哪里初始化 `linear_revmap` 的，如果这个没有初始化，那  `irq_linear_revmap` 怎样找到对应的 softirq 呢？
+
+终于找到了，原来不在 `extioi_vec_init` 中设置，而是通过如下方式设置，
+
+```plain
+#0  irq_domain_set_info (domain=0x90000000fa024800, virq=16, hwirq=19,
+    chip=0x90000000014685c8 <extioi_irq_chip>, chip_data=0x90000000fa011340,
+    handler=0x9000000000285ba0 <handle_edge_irq>, handler_data=0x0, handler_name=0x0)
+    at kernel/irq/irqdomain.c:1189
+#1  0x90000000008d88e8 in extioi_domain_alloc (domain=0x90000000fa024800, virq=<optimized out>,
+    nr_irqs=<optimized out>, arg=<optimized out>) at drivers/irqchip/irq-loongson-extioi.c:357
+#2  0x90000000008d9784 in pch_pic_alloc (domain=0x90000000fa0bfa00, virq=16, nr_irqs=<optimized out>,
+    arg=<optimized out>) at drivers/irqchip/irq-loongson-pch-pic.c:287
+#3  0x900000000028b48c in irq_domain_alloc_irqs_hierarchy (arg=<optimized out>, nr_irqs=<optimized out>,
+    irq_base=<optimized out>, domain=<optimized out>) at kernel/irq/irqdomain.c:1270
+#4  __irq_domain_alloc_irqs (domain=0x90000000fa0bfa00, irq_base=16, nr_irqs=1, node=<optimized out>,
+    arg=<optimized out>, realloc=<optimized out>, affinity=<optimized out>) at kernel/irq/irqdomain.c:1326
+#5  0x900000000028ba30 in irq_domain_alloc_irqs (arg=<optimized out>, node=<optimized out>,
+    nr_irqs=<optimized out>, domain=<optimized out>) at ./include/linux/irqdomain.h:466
+#6  irq_create_fwspec_mapping (fwspec=0x9000000001397d50) at kernel/irq/irqdomain.c:810
+#7  0x9000000000fba2b4 in pch_lpc_domain_init () at arch/loongarch/la64/irq.c:203
+#8  irqchip_init_default () at arch/loongarch/la64/irq.c:287
+#9  0x90000000014f5014 in setup_IRQ () at arch/loongarch/la64/irq.c:311
+#10 0x90000000014f5040 in arch_init_irq () at arch/loongarch/la64/irq.c:360
+#11 0x90000000014f6bac in init_IRQ () at arch/loongarch/kernel/irq.c:59
+```
+
+这两个函数比较重要，`extioi_domain_translate`, `extioi_domain_alloc`。
+
+这个是串口中断对应的 `irq_domain`，
+
+```plain
+$2 = {irq_common_data = {state_use_accessors = 37749248, node = 4294967295, handler_data = 0x0, msi_desc = 0x0,affinity = {{bits = {1}}}, effective_affinity = {{bits = {1}}}}, irq_data = {mask = 0, irq = 19, hwirq = 2,common = 0x90000000fa7fdc00, chip = 0x9000000001468850 <pch_pic_irq_chip>, domain = 0x90000000fa0bfa00, parent_data = 0x90000000fa83e1c0, chip_data = 0x90000000fa0115c0}, kstat_irqs = 0x90000000015906a0 <swapper_pg_dir+1696>, handle_irq = 0x9000000000285a18 <handle_level_irq>, action = 0x90000000faa83180, ...
+```
+
+但是和注册的对不上啊！
+
+```plain
+#0  irq_domain_set_info (domain=0x90000000fa024800, virq=19, hwirq=2,
+    chip=0x90000000014685c8 <extioi_irq_chip>, chip_data=0x90000000fa011340,
+    handler=0x9000000000285ba0 <handle_edge_irq>, handler_data=0x0, handler_name=0x0)
+    at kernel/irq/irqdomain.c:1189
+#1  0x90000000008d88e8 in extioi_domain_alloc (domain=0x90000000fa024800, virq=<optimized out>,
+    nr_irqs=<optimized out>, arg=<optimized out>) at drivers/irqchip/irq-loongson-extioi.c:357
+#2  0x90000000008d9784 in pch_pic_alloc (domain=0x90000000fa0bfa00, virq=19, nr_irqs=<optimized out>,
+    arg=<optimized out>) at drivers/irqchip/irq-loongson-pch-pic.c:287
+#3  0x900000000028b48c in irq_domain_alloc_irqs_hierarchy (arg=<optimized out>, nr_irqs=<optimized out>,
+    irq_base=<optimized out>, domain=<optimized out>) at kernel/irq/irqdomain.c:1270
+#4  __irq_domain_alloc_irqs (domain=0x90000000fa0bfa00, irq_base=19, nr_irqs=1, node=<optimized out>,
+    arg=<optimized out>, realloc=<optimized out>, affinity=<optimized out>) at kernel/irq/irqdomain.c:1326
+#5  0x900000000028ba30 in irq_domain_alloc_irqs (arg=<optimized out>, node=<optimized out>,
+    nr_irqs=<optimized out>, domain=<optimized out>) at ./include/linux/irqdomain.h:466
+#6  irq_create_fwspec_mapping (fwspec=0x90000000fa403a20) at kernel/irq/irqdomain.c:810
+#7  0x900000000020c440 in acpi_register_gsi (dev=<optimized out>, gsi=19, trigger=<optimized out>,
+    polarity=<optimized out>) at arch/loongarch/kernel/acpi.c:89
+#8  0x90000000009546ac in acpi_dev_get_irqresource (res=0x90000000fa024800, gsi=19, triggering=<optimized out>,
+    polarity=<optimized out>, shareable=<optimized out>, legacy=<optimized out>) at drivers/acpi/resource.c:432
+#9  0x90000000009547e4 in acpi_dev_resource_interrupt (ares=<optimized out>, index=<optimized out>,
+    res=<optimized out>) at drivers/acpi/resource.c:488
+#10 0x90000000009974b8 in pnpacpi_allocated_resource (res=0x90000000fa7f5148, data=0x90000000fa7e5400)
+    at drivers/pnp/pnpacpi/rsparser.c:191
+#11 0x900000000097ef00 in acpi_walk_resource_buffer (buffer=<optimized out>, user_function=0x13, context=0x2)
+    at drivers/acpi/acpica/rsxface.c:547
+#12 0x900000000097f744 in acpi_walk_resources (context=<optimized out>, user_function=<optimized out>,
+    name=<optimized out>, device_handle=<optimized out>) at drivers/acpi/acpica/rsxface.c:623
+#13 acpi_walk_resources (device_handle=<optimized out>, name=<optimized out>,
+    user_function=0x9000000000997418 <pnpacpi_allocated_resource>, context=0x90000000fa7e5400)
+    at drivers/acpi/acpica/rsxface.c:594
+#14 0x90000000009977e0 in pnpacpi_parse_allocated_resource (dev=0x90000000fa024800)
+    at drivers/pnp/pnpacpi/rsparser.c:289
+#15 0x90000000015366ac in pnpacpi_add_device (device=<optimized out>) at drivers/pnp/pnpacpi/core.c:271
+#16 pnpacpi_add_device_handler (handle=<optimized out>, lvl=<optimized out>, context=<optimized out>,
+    rv=<optimized out>) at drivers/pnp/pnpacpi/core.c:308
+#17 0x9000000000979598 in acpi_ns_get_device_callback (return_value=<optimized out>, context=<optimized out>,
+    nesting_level=<optimized out>, obj_handle=<optimized out>) at drivers/acpi/acpica/nsxfeval.c:740
+#18 acpi_ns_get_device_callback (obj_handle=0x90000000fa0c8398, nesting_level=2, context=0x90000000fa403d58,
+    return_value=0x0) at drivers/acpi/acpica/nsxfeval.c:635
+#19 0x9000000000978de4 in acpi_ns_walk_namespace (type=<optimized out>, start_node=0x90000000fa0c8050,
+    max_depth=<optimized out>, flags=<optimized out>, descending_callback=<optimized out>,
+    ascending_callback=0x0, context=0x90000000fa403d58, return_value=0x0) at drivers/acpi/acpica/nswalk.c:229
+#20 0x9000000000978ef8 in acpi_get_devices (HID=<optimized out>, user_function=<optimized out>,
+    context=<optimized out>, return_value=0x0) at drivers/acpi/acpica/nsxfeval.c:805
+#21 0x90000000015364d0 in pnpacpi_init () at drivers/pnp/pnpacpi/core.c:321
+#22 0x9000000000200b8c in do_one_initcall (fn=0x9000000001536468 <pnpacpi_init>) at init/main.c:884
+#23 0x90000000014f0e8c in do_initcall_level (level=<optimized out>) at ./include/linux/init.h:131
+#24 do_initcalls () at init/main.c:960
+#25 do_basic_setup () at init/main.c:978
+#26 kernel_init_freeable () at init/main.c:1145
+#27 0x9000000000fc4fa0 in kernel_init (unused=<optimized out>) at init/main.c:1062
+#28 0x900000000020330c in ret_from_kernel_thread () at arch/loongarch/kernel/entry.S:85
+```
+
+
 
 ### Reference
 
