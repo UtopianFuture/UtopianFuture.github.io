@@ -1022,6 +1022,151 @@ $2 = {irq_common_data = {state_use_accessors = 37749248, node = 4294967295, hand
 #28 0x900000000020330c in ret_from_kernel_thread () at arch/loongarch/kernel/entry.S:85
 ```
 
+终于找到了，并且对上了。但这里似乎不是最开始注册的地方。
+
+```plain
+#0  irq_domain_set_info (domain=0x90000000fa0bfa00, virq=19, hwirq=2,
+    chip=0x9000000001468850 <pch_pic_irq_chip>, chip_data=0x90000000fa0115c0,
+    handler=0x9000000000285a18 <handle_level_irq>, handler_data=0x0, handler_name=0x0)
+    at kernel/irq/irqdomain.c:1189
+#1  0x90000000008d97b8 in pch_pic_alloc (domain=0x90000000fa0bfa00, virq=19, nr_irqs=<optimized out>,
+    arg=<optimized out>) at drivers/irqchip/irq-loongson-pch-pic.c:290
+#2  0x900000000028b48c in irq_domain_alloc_irqs_hierarchy (arg=<optimized out>, nr_irqs=<optimized out>
+    irq_base=<optimized out>, domain=<optimized out>) at kernel/irq/irqdomain.c:1270
+#3  __irq_domain_alloc_irqs (domain=0x90000000fa0bfa00, irq_base=19, nr_irqs=1, node=<optimized out>,
+    arg=<optimized out>, realloc=<optimized out>, affinity=<optimized out>)
+    at kernel/irq/irqdomain.c:1326
+#4  0x900000000028ba30 in irq_domain_alloc_irqs (arg=<optimized out>, node=<optimized out>,
+    nr_irqs=<optimized out>, domain=<optimized out>) at ./include/linux/irqdomain.h:466
+#5  irq_create_fwspec_mapping (fwspec=0x90000000fa403a20) at kernel/irq/irqdomain.c:810
+#6  0x900000000020c440 in acpi_register_gsi (dev=<optimized out>, gsi=19, trigger=<optimized out>,
+    polarity=<optimized out>) at arch/loongarch/kernel/acpi.c:89
+#7  0x90000000009546ac in acpi_dev_get_irqresource (res=0x90000000fa0bfa00, gsi=19,
+    triggering=<optimized out>, polarity=<optimized out>, shareable=<optimized out>,
+    legacy=<optimized out>) at drivers/acpi/resource.c:432
+#8  0x90000000009547e4 in acpi_dev_resource_interrupt (ares=<optimized out>, index=<optimized out>,
+    res=<optimized out>) at drivers/acpi/resource.c:488
+#9  0x90000000009974b8 in pnpacpi_allocated_resource (res=0x90000000fa7f5148, data=0x90000000fa7e5400)
+    at drivers/pnp/pnpacpi/rsparser.c:191
+#10 0x900000000097ef00 in acpi_walk_resource_buffer (buffer=<optimized out>, user_function=0x13,
+    context=0x2) at drivers/acpi/acpica/rsxface.c:547
+#11 0x900000000097f744 in acpi_walk_resources (context=<optimized out>, user_function=<optimized out>,
+    name=<optimized out>, device_handle=<optimized out>) at drivers/acpi/acpica/rsxface.c:623
+#12 acpi_walk_resources (device_handle=<optimized out>, name=<optimized out>,
+    user_function=0x9000000000997418 <pnpacpi_allocated_resource>, context=0x90000000fa7e5400)
+    at drivers/acpi/acpica/rsxface.c:594
+#13 0x90000000009977e0 in pnpacpi_parse_allocated_resource (dev=0x90000000fa0bfa00)
+    at drivers/pnp/pnpacpi/rsparser.c:289
+#14 0x90000000015366ac in pnpacpi_add_device (device=<optimized out>) at drivers/pnp/pnpacpi/core.c:271
+#15 pnpacpi_add_device_handler (handle=<optimized out>, lvl=<optimized out>, context=<optimized out>,
+    rv=<optimized out>) at drivers/pnp/pnpacpi/core.c:308
+#16 0x9000000000979598 in acpi_ns_get_device_callback (return_value=<optimized out>,
+    context=<optimized out>, nesting_level=<optimized out>, obj_handle=<optimized out>)
+    at drivers/acpi/acpica/nsxfeval.c:740
+#17 acpi_ns_get_device_callback (obj_handle=0x90000000fa0c8398, nesting_level=2,
+    context=0x90000000fa403d58, return_value=0x0) at drivers/acpi/acpica/nsxfeval.c:635
+#18 0x9000000000978de4 in acpi_ns_walk_namespace (type=<optimized out>, start_node=0x90000000fa0c8050,
+    max_depth=<optimized out>, flags=<optimized out>, descending_callback=<optimized out>,
+    ascending_callback=0x0, context=0x90000000fa403d58, return_value=0x0)
+    at drivers/acpi/acpica/nswalk.c:229
+#19 0x9000000000978ef8 in acpi_get_devices (HID=<optimized out>, user_function=<optimized out>,
+    context=<optimized out>, return_value=0x0) at drivers/acpi/acpica/nsxfeval.c:805
+#20 0x90000000015364d0 in pnpacpi_init () at drivers/pnp/pnpacpi/core.c:321
+#21 0x9000000000200b8c in do_one_initcall (fn=0x9000000001536468 <pnpacpi_init>) at init/main.c:884
+#22 0x90000000014f0e8c in do_initcall_level (level=<optimized out>) at ./include/linux/init.h:131
+#23 do_initcalls () at init/main.c:960
+#24 do_basic_setup () at init/main.c:978
+#25 kernel_init_freeable () at init/main.c:1145
+#26 0x9000000000fc4fa0 in kernel_init (unused=<optimized out>) at init/main.c:1062
+#27 0x900000000020330c in ret_from_kernel_thread () at arch/loongarch/kernel/entry.S:85
+```
+
+再从 backtrace 继续跟踪发现 `domain->linear_revmap` 是在 `__irq_domain_alloc_irqs` 初始化的，我们来看看是怎样初始化的。
+
+```c
+/**
+ * __irq_domain_alloc_irqs - Allocate IRQs from domain
+ * @domain:	domain to allocate from
+ * @irq_base:	allocate specified IRQ nubmer if irq_base >= 0
+ * @nr_irqs:	number of IRQs to allocate
+ * @node:	NUMA node id for memory allocation
+ * @arg:	domain specific argument
+ * @realloc:	IRQ descriptors have already been allocated if true
+ * @affinity:	Optional irq affinity mask for multiqueue devices
+ *
+ * The whole process to setup an IRQ has been split into two steps.
+ * The first step, __irq_domain_alloc_irqs(), is to allocate IRQ
+ * descriptor and required hardware resources. The second step,
+ * irq_domain_activate_irq(), is to program hardwares with preallocated
+ * resources. In this way, it's easier to rollback when failing to
+ * allocate resources.
+ */
+int __irq_domain_alloc_irqs(struct irq_domain *domain, int irq_base,
+			    unsigned int nr_irqs, int node, void *arg,
+			    bool realloc, const struct cpumask *affinity)
+{
+	int i, ret, virq;
+
+	...
+
+	mutex_lock(&irq_domain_mutex);
+	ret = irq_domain_alloc_irqs_hierarchy(domain, virq, nr_irqs, arg); // 从这里继续执行
+    																   // 设置其他的 irq_domain 信息
+	if (ret < 0) {
+		mutex_unlock(&irq_domain_mutex);
+		goto out_free_irq_data;
+	}
+	for (i = 0; i < nr_irqs; i++)
+		irq_domain_insert_irq(virq + i); // 调用 irq_domain_set_mapping 设置映射信息，
+    									 // 对于 serial，hwirq = 2, softirq = 19
+	mutex_unlock(&irq_domain_mutex);
+
+	return virq;
+
+	...
+}
+```
+
+也就是说 extioi 中断控制器所有的映射都是在这里完成的，之后需要实现其他的设备来这里找即可。
+
+softirq = 53 是 extioi 的中断号，而 extioi 到子一级的中断映射是这样做的，
+
+```c
+static void extioi_irq_dispatch(struct irq_desc *desc)
+{
+	int i;
+	u64 pending;
+	bool handled = false;
+	struct extioi *priv = irq_desc_get_handler_data(desc);
+	int reg_count;
+	chained_irq_enter(chip, desc);
+
+	reg_count = priv->vec_count >> 6;
+
+	for (i = 0; i < reg_count; i++) { // 处理所有的 irq
+#ifdef CONFIG_LOONGARCH   // #define LOONGARCH_IOCSR_EXTIOI_ISR_BASE 0x1800
+		pending = iocsr_readq(LOONGARCH_IOCSR_EXTIOI_ISR_BASE + (i << 3)); // extioi 对应的位是否置为 1
+#endif
+
+	...
+
+#ifdef CONFIG_LOONGARCH
+		iocsr_writeq(pending, LOONGARCH_IOCSR_EXTIOI_ISR_BASE + (i << 3));
+#endif
+		while (pending) {
+			int bit = __ffs(pending);
+			int virq = irq_linear_revmap(priv->extioi_domain, // 找到对应的 irq
+					bit + VEC_COUNT_PER_REG * i);
+			if (virq > 0) generic_handle_irq(virq);
+			pending &= ~BIT(bit);
+			handled = true;
+		}
+	}
+
+	...
+}
+```
+
 
 
 ### Reference
@@ -1032,7 +1177,7 @@ $2 = {irq_common_data = {state_use_accessors = 37749248, node = 4294967295, hand
 
 [3] 基于龙芯的 Linux 内核探索解析
 
-[4]
+[4] [irq_domain](https://www.cnblogs.com/LoyenWang/p/13052677.html) 图画的清晰易懂
 
 ### 说明
 
