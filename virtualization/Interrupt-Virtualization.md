@@ -6,11 +6,11 @@
 
 物理 CPU 在执行完一条指令后，都会检查中断引脚是否有效，一旦有效，CPU 将处理中断，然后执行下一条指令。
 
-对于软件虚拟的中断芯片而言，**“引脚”只是一个变量**。如果 KVM 发现虚拟中断芯片有中断请求，则向`VMCS`中的`VM-entry control`部分的`VM-entry interruption-information field`字段写入中断信息，在切入 guest 模式的一刻，**CPU**将检查这个字段，如同检查 CPU 引脚，如果有中断，则进入中断执行过程。
+对于软件虚拟的中断芯片而言，**“引脚”只是一个变量**。如果 KVM 发现虚拟中断芯片有中断请求，则向`VMCS`中的`VM-entry control`部分的`VM-entry interruption-information field`字段写入中断信息，在切入 guest 模式的一刻，**CPU** 将检查这个字段，如同检查 CPU 引脚，如果有中断，则进入中断执行过程。
 
 guest 模式的 CPU 不能检测虚拟中断芯片的引脚，只能在 VM entry 时由 KVM 模块代为检查，然后写入`VMCS`，一旦有中断注入，那么处于 guest 模式的 CPU 一定需要通过 VM exit 退出到 host 模式，这个上下文切换很麻烦。
 
-在硬件层面增加对虚拟化的支持。在 guest 模式下实现`virtual-APIC page`页面和虚拟中断逻辑。遇到中断时，将中断信息写入`posted-interrupt descriptor`，然后通过特殊的核间中断`posted-interrupt notification`通知 CPU，guest 模式下的 CPU 就可以借助虚拟中断逻辑处理中断。
+在硬件层面增加对虚拟化的支持。在 guest 模式下实现 `virtual-APIC page` 页面和虚拟中断逻辑。遇到中断时，将中断信息写入`posted-interrupt descriptor`，然后通过特殊的核间中断 `posted-interrupt notification` 通知 CPU，guest 模式下的 CPU 就可以借助虚拟中断逻辑处理中断。
 
 #### 1.2. PIC 虚拟化
 
@@ -141,7 +141,7 @@ APIC 包含两个部分：`LAPIC`和`I/O APIC`， LAPIC 位于处理器一端，
 
 中断注入的大致流程如下：
 
-在进入 VMX non-root 之前，KVM 会调用`vcpu_enter_guest` -> `inject_pending_event`检查并处理其中的 pending request。这里不单单处理设备中断，还有 smi 和 nmi 中断的注入，在注入之前还要检查之前是否有异常需要注入。
+在进入 VMX non-root 之前，KVM 会调用 `vcpu_enter_guest` -> `inject_pending_event` 检查并处理其中的 pending request。这里不单单处理设备中断，还有 smi 和 nmi 中断的注入，在注入之前还要检查之前是否有异常需要注入。
 
 这里有一个问题，pending 和 injected 分别代表什么？
 
@@ -287,19 +287,14 @@ static int inject_pending_event(struct kvm_vcpu *vcpu, bool *req_immediate_exit)
 	WARN_ON(vcpu->arch.exception.pending);
 	return 0;
 
-out:
-	if (r == -EBUSY) {
-		*req_immediate_exit = true;
-		r = 0;
-	}
-	return r;
+    ...
 }
 
 ```
 
 问题：如果有多个异常或中断需要注入怎么办？
 
-将中断向量写入`arch.interrupt.nr`
+将中断向量写入 `arch.interrupt.nr`
 
 ```c
 static inline void kvm_queue_interrupt(struct kvm_vcpu *vcpu, u8 vector,
@@ -406,13 +401,7 @@ long kvm_arch_vm_ioctl(struct file *filp,
 	case KVM_CREATE_IRQCHIP: {
 		mutex_lock(&kvm->lock);
 
-		r = -EEXIST;
-		if (irqchip_in_kernel(kvm))
-			goto create_irqchip_unlock;
-
-		r = -EINVAL;
-		if (kvm->created_vcpus)
-			goto create_irqchip_unlock;
+		...
 
 		r = kvm_pic_init(kvm);
 		if (r)

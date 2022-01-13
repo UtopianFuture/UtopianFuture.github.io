@@ -51,7 +51,7 @@ fatal error: sys/mman.h: No such file or directory
 
 #### 5. error: too few arguments to function ‘open’
 
-```
+```plain
 /home/guanshun/gitlab/edk2/BmbtPkg/src/hw/core/loader.c: In function ‘rom_add_file’:
 /home/guanshun/gitlab/edk2/BmbtPkg/src/hw/core/loader.c:206:8: error: too few arguments to function ‘open’
   206 |   fd = open(rom->path, O_RDONLY);
@@ -69,7 +69,7 @@ fatal error: sys/mman.h: No such file or directory
 
 #### 6. error: missing binary operator before token "("
 
-```
+```plain
 /home/guanshun/gitlab/edk2/BmbtPkg/src/../include/qemu/compiler.h:54:20: error: missing binary operator before token "("
    54 | #if __has_attribute(flatten) || !defined(__clang__)
 ```
