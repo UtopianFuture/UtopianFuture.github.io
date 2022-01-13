@@ -4,7 +4,36 @@
 
 ### 执行流程
 
-首先寻找到 kernel 中的 keyboard 是怎样处理字符的。
+#### keyboard 中断
+
+首先我们要确定 keyboard 中断是怎样处理的。现在的猜想是 keyboard 按下一个键就会触发一次中断，这个中断貌似和 serial 中断处理流程类似。先看看相关文档。
+
+基本流程应该是这样的：
+
+> 1. The keyboard sends a scan code of the key to the keyboard controller (Scan code for key pressed and key released is different)
+>
+> 2) The keyboard controller interprets the scan code and stores it in a buffer
+>
+> 3) The keyboard controller sends a hardware interrupt to the processor. This is done by putting signal on “interrupt request line”: IRQ 1
+>
+> 4) The interrupt controller maps IRQ 1 into INT 9
+>
+> 5) An interrupt is a signal which tells the processor to stop what it was doing currently and do some special task
+>
+> 6) The processor invokes the “Interrupt handler” CPU fetches the address of “Interrupt Service Routine” (ISR) from “Interrupt Vector Table” maintained by the OS (Processor use the IRQ number for this)
+>
+> 7) The ISR reads the scan code from port 60h and decides whether to process it or pass the control to program for taking action.
+
+但具体的处理还是需要看代码。
+
+需要明确以下几件事情：
+
+1. keyboard controller 在 la 中有么，是哪一个？
+2. 中断号是哪个。
+
+#### tty 处理字符
+
+再寻找到 kernel 中的 keyboard 是怎样处理字符的。
 
 设了很多断点，发现 keyboard 输入的字符是存储在 `tty_buffer.c` 中的 `receive_buf` 中。接下来看看为什么会存入到 tty_buffer 中，怎么存的，以及存到 tty_buffer 的字符用什么方式传输到 serial_port。
 
@@ -275,6 +304,8 @@ do {						\
 	__u.__val;					\
 })
 ```
+
+#### serial 输出
 
 再看看是怎样输出到屏幕中的。使用 serial 输出，具体是 `serial8250_tx_chars` 中的 `serial_out` 函数。
 
@@ -928,101 +959,11 @@ static inline void generic_handle_irq_desc(struct irq_desc *desc)
 #define LOONGARCH_CPU_LAST_IRQ 		(LOONGARCH_CPU_IRQ_BASE + LOONGARCH_CPU_IRQ_TOTAL)
 ```
 
-总个 14 个 hwirq，irq_base 为 50（这就能解释为什么时钟中断的 hwirq = 11, softirq = 61），`LOONGSON_BRIDGE_IRQ` 对应 extioi 控制器。
+总共 14 个 hwirq，irq_base 为 50（这就能解释为什么时钟中断的 hwirq = 11, softirq = 61），`LOONGSON_BRIDGE_IRQ` 对应 extioi 控制器。
 
 发现一个问题，找不到 extioi 中断控制器在哪里初始化 `linear_revmap` 的，如果这个没有初始化，那  `irq_linear_revmap` 怎样找到对应的 softirq 呢？
 
-终于找到了，原来不在 `extioi_vec_init` 中设置，而是通过如下方式设置，
-
-```plain
-#0  irq_domain_set_info (domain=0x90000000fa024800, virq=16, hwirq=19,
-    chip=0x90000000014685c8 <extioi_irq_chip>, chip_data=0x90000000fa011340,
-    handler=0x9000000000285ba0 <handle_edge_irq>, handler_data=0x0, handler_name=0x0)
-    at kernel/irq/irqdomain.c:1189
-#1  0x90000000008d88e8 in extioi_domain_alloc (domain=0x90000000fa024800, virq=<optimized out>,
-    nr_irqs=<optimized out>, arg=<optimized out>) at drivers/irqchip/irq-loongson-extioi.c:357
-#2  0x90000000008d9784 in pch_pic_alloc (domain=0x90000000fa0bfa00, virq=16, nr_irqs=<optimized out>,
-    arg=<optimized out>) at drivers/irqchip/irq-loongson-pch-pic.c:287
-#3  0x900000000028b48c in irq_domain_alloc_irqs_hierarchy (arg=<optimized out>, nr_irqs=<optimized out>,
-    irq_base=<optimized out>, domain=<optimized out>) at kernel/irq/irqdomain.c:1270
-#4  __irq_domain_alloc_irqs (domain=0x90000000fa0bfa00, irq_base=16, nr_irqs=1, node=<optimized out>,
-    arg=<optimized out>, realloc=<optimized out>, affinity=<optimized out>) at kernel/irq/irqdomain.c:1326
-#5  0x900000000028ba30 in irq_domain_alloc_irqs (arg=<optimized out>, node=<optimized out>,
-    nr_irqs=<optimized out>, domain=<optimized out>) at ./include/linux/irqdomain.h:466
-#6  irq_create_fwspec_mapping (fwspec=0x9000000001397d50) at kernel/irq/irqdomain.c:810
-#7  0x9000000000fba2b4 in pch_lpc_domain_init () at arch/loongarch/la64/irq.c:203
-#8  irqchip_init_default () at arch/loongarch/la64/irq.c:287
-#9  0x90000000014f5014 in setup_IRQ () at arch/loongarch/la64/irq.c:311
-#10 0x90000000014f5040 in arch_init_irq () at arch/loongarch/la64/irq.c:360
-#11 0x90000000014f6bac in init_IRQ () at arch/loongarch/kernel/irq.c:59
-```
-
-这两个函数比较重要，`extioi_domain_translate`, `extioi_domain_alloc`。
-
-这个是串口中断对应的 `irq_domain`，
-
-```plain
-$2 = {irq_common_data = {state_use_accessors = 37749248, node = 4294967295, handler_data = 0x0, msi_desc = 0x0,affinity = {{bits = {1}}}, effective_affinity = {{bits = {1}}}}, irq_data = {mask = 0, irq = 19, hwirq = 2,common = 0x90000000fa7fdc00, chip = 0x9000000001468850 <pch_pic_irq_chip>, domain = 0x90000000fa0bfa00, parent_data = 0x90000000fa83e1c0, chip_data = 0x90000000fa0115c0}, kstat_irqs = 0x90000000015906a0 <swapper_pg_dir+1696>, handle_irq = 0x9000000000285a18 <handle_level_irq>, action = 0x90000000faa83180, ...
-```
-
-但是和注册的对不上啊！
-
-```plain
-#0  irq_domain_set_info (domain=0x90000000fa024800, virq=19, hwirq=2,
-    chip=0x90000000014685c8 <extioi_irq_chip>, chip_data=0x90000000fa011340,
-    handler=0x9000000000285ba0 <handle_edge_irq>, handler_data=0x0, handler_name=0x0)
-    at kernel/irq/irqdomain.c:1189
-#1  0x90000000008d88e8 in extioi_domain_alloc (domain=0x90000000fa024800, virq=<optimized out>,
-    nr_irqs=<optimized out>, arg=<optimized out>) at drivers/irqchip/irq-loongson-extioi.c:357
-#2  0x90000000008d9784 in pch_pic_alloc (domain=0x90000000fa0bfa00, virq=19, nr_irqs=<optimized out>,
-    arg=<optimized out>) at drivers/irqchip/irq-loongson-pch-pic.c:287
-#3  0x900000000028b48c in irq_domain_alloc_irqs_hierarchy (arg=<optimized out>, nr_irqs=<optimized out>,
-    irq_base=<optimized out>, domain=<optimized out>) at kernel/irq/irqdomain.c:1270
-#4  __irq_domain_alloc_irqs (domain=0x90000000fa0bfa00, irq_base=19, nr_irqs=1, node=<optimized out>,
-    arg=<optimized out>, realloc=<optimized out>, affinity=<optimized out>) at kernel/irq/irqdomain.c:1326
-#5  0x900000000028ba30 in irq_domain_alloc_irqs (arg=<optimized out>, node=<optimized out>,
-    nr_irqs=<optimized out>, domain=<optimized out>) at ./include/linux/irqdomain.h:466
-#6  irq_create_fwspec_mapping (fwspec=0x90000000fa403a20) at kernel/irq/irqdomain.c:810
-#7  0x900000000020c440 in acpi_register_gsi (dev=<optimized out>, gsi=19, trigger=<optimized out>,
-    polarity=<optimized out>) at arch/loongarch/kernel/acpi.c:89
-#8  0x90000000009546ac in acpi_dev_get_irqresource (res=0x90000000fa024800, gsi=19, triggering=<optimized out>,
-    polarity=<optimized out>, shareable=<optimized out>, legacy=<optimized out>) at drivers/acpi/resource.c:432
-#9  0x90000000009547e4 in acpi_dev_resource_interrupt (ares=<optimized out>, index=<optimized out>,
-    res=<optimized out>) at drivers/acpi/resource.c:488
-#10 0x90000000009974b8 in pnpacpi_allocated_resource (res=0x90000000fa7f5148, data=0x90000000fa7e5400)
-    at drivers/pnp/pnpacpi/rsparser.c:191
-#11 0x900000000097ef00 in acpi_walk_resource_buffer (buffer=<optimized out>, user_function=0x13, context=0x2)
-    at drivers/acpi/acpica/rsxface.c:547
-#12 0x900000000097f744 in acpi_walk_resources (context=<optimized out>, user_function=<optimized out>,
-    name=<optimized out>, device_handle=<optimized out>) at drivers/acpi/acpica/rsxface.c:623
-#13 acpi_walk_resources (device_handle=<optimized out>, name=<optimized out>,
-    user_function=0x9000000000997418 <pnpacpi_allocated_resource>, context=0x90000000fa7e5400)
-    at drivers/acpi/acpica/rsxface.c:594
-#14 0x90000000009977e0 in pnpacpi_parse_allocated_resource (dev=0x90000000fa024800)
-    at drivers/pnp/pnpacpi/rsparser.c:289
-#15 0x90000000015366ac in pnpacpi_add_device (device=<optimized out>) at drivers/pnp/pnpacpi/core.c:271
-#16 pnpacpi_add_device_handler (handle=<optimized out>, lvl=<optimized out>, context=<optimized out>,
-    rv=<optimized out>) at drivers/pnp/pnpacpi/core.c:308
-#17 0x9000000000979598 in acpi_ns_get_device_callback (return_value=<optimized out>, context=<optimized out>,
-    nesting_level=<optimized out>, obj_handle=<optimized out>) at drivers/acpi/acpica/nsxfeval.c:740
-#18 acpi_ns_get_device_callback (obj_handle=0x90000000fa0c8398, nesting_level=2, context=0x90000000fa403d58,
-    return_value=0x0) at drivers/acpi/acpica/nsxfeval.c:635
-#19 0x9000000000978de4 in acpi_ns_walk_namespace (type=<optimized out>, start_node=0x90000000fa0c8050,
-    max_depth=<optimized out>, flags=<optimized out>, descending_callback=<optimized out>,
-    ascending_callback=0x0, context=0x90000000fa403d58, return_value=0x0) at drivers/acpi/acpica/nswalk.c:229
-#20 0x9000000000978ef8 in acpi_get_devices (HID=<optimized out>, user_function=<optimized out>,
-    context=<optimized out>, return_value=0x0) at drivers/acpi/acpica/nsxfeval.c:805
-#21 0x90000000015364d0 in pnpacpi_init () at drivers/pnp/pnpacpi/core.c:321
-#22 0x9000000000200b8c in do_one_initcall (fn=0x9000000001536468 <pnpacpi_init>) at init/main.c:884
-#23 0x90000000014f0e8c in do_initcall_level (level=<optimized out>) at ./include/linux/init.h:131
-#24 do_initcalls () at init/main.c:960
-#25 do_basic_setup () at init/main.c:978
-#26 kernel_init_freeable () at init/main.c:1145
-#27 0x9000000000fc4fa0 in kernel_init (unused=<optimized out>) at init/main.c:1062
-#28 0x900000000020330c in ret_from_kernel_thread () at arch/loongarch/kernel/entry.S:85
-```
-
-终于找到了，并且对上了。但这里似乎不是最开始注册的地方。
+终于找到了，原来不在 `extioi_vec_init` 中设置，而是通过如下方式设置，但这里似乎不是最开始注册的地方。
 
 ```plain
 #0  irq_domain_set_info (domain=0x90000000fa0bfa00, virq=19, hwirq=2,
@@ -1080,6 +1021,16 @@ $2 = {irq_common_data = {state_use_accessors = 37749248, node = 4294967295, hand
 #26 0x9000000000fc4fa0 in kernel_init (unused=<optimized out>) at init/main.c:1062
 #27 0x900000000020330c in ret_from_kernel_thread () at arch/loongarch/kernel/entry.S:85
 ```
+
+这两个函数比较重要，`extioi_domain_translate`, `extioi_domain_alloc`。
+
+这个是串口中断对应的 `irq_domain`，
+
+```plain
+$2 = {irq_common_data = {state_use_accessors = 37749248, node = 4294967295, handler_data = 0x0, msi_desc = 0x0,affinity = {{bits = {1}}}, effective_affinity = {{bits = {1}}}}, irq_data = {mask = 0, irq = 19, hwirq = 2,common = 0x90000000fa7fdc00, chip = 0x9000000001468850 <pch_pic_irq_chip>, domain = 0x90000000fa0bfa00, parent_data = 0x90000000fa83e1c0, chip_data = 0x90000000fa0115c0}, kstat_irqs = 0x90000000015906a0 <swapper_pg_dir+1696>, handle_irq = 0x9000000000285a18 <handle_level_irq>, action = 0x90000000faa83180, ...
+```
+
+注册和使用的 `irq_domain` 能够对上。
 
 再从 backtrace 继续跟踪发现 `domain->linear_revmap` 是在 `__irq_domain_alloc_irqs` 初始化的，我们来看看是怎样初始化的。
 
@@ -1167,7 +1118,24 @@ static void extioi_irq_dispatch(struct irq_desc *desc)
 }
 ```
 
+好，那么下一步是找到串口如何发起中断。
 
+这个比较容易找到，
+
+```c
+	/*
+	 * Must disable interrupts or else we risk racing with the interrupt
+	 * based handler.
+	 */
+	if (up->port.irq) {
+		ier = serial_in(up, UART_IER);
+		serial_out(up, UART_IER, 0);
+	}
+```
+
+就是用 `serial_out` 写 `UART_IER` 寄存器。估计 serial 发起中断也是这样的方式。所以现在的关键是实现 `serial_out`。
+
+现在唯一的问题就是 serial 怎样发起中断。这一步解决这篇文章探究的问题就闭环了。
 
 ### Reference
 
