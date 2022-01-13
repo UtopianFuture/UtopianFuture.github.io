@@ -31,6 +31,8 @@
 1. keyboard controller 在 la 中有么，是哪一个？
 2. 中断号是哪个。
 
+经过测试，la 上 keyboard 是挂载在 usb 总线上的，接下来看看怎样通过 cdev 访问设备。
+
 #### tty 处理字符
 
 再寻找到 kernel 中的 keyboard 是怎样处理字符的。
