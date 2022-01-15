@@ -307,6 +307,96 @@ do {						\
 })
 ```
 
+#### serial 读取
+
+那么键盘输入的字符怎样读取到 tty_buffer 中呢？
+
+```plain
+#0  serial8250_read_char (up=up@entry=0xffffffff836d1c60 <serial8250_ports>, lsr=lsr@entry=97 'a')
+    at drivers/tty/serial/8250/8250_port.c:1729
+#1  0xffffffff8174a460 in serial8250_rx_chars (up=up@entry=0xffffffff836d1c60 <serial8250_ports>,
+    lsr=lsr@entry=97 'a') at drivers/tty/serial/8250/8250_port.c:1784
+#2  0xffffffff8174cd6f in serial8250_handle_irq (
+    port=port@entry=0xffffffff836d1c60 <serial8250_ports>, iir=<optimized out>)
+    at drivers/tty/serial/8250/8250_port.c:1927
+#3  0xffffffff8174ce11 in serial8250_handle_irq (iir=<optimized out>,
+    port=0xffffffff836d1c60 <serial8250_ports>) at drivers/tty/serial/8250/8250_port.c:1905
+#4  serial8250_default_handle_irq (port=0xffffffff836d1c60 <serial8250_ports>)
+    at drivers/tty/serial/8250/8250_port.c:1949
+#5  0xffffffff817490e8 in serial8250_interrupt (irq=4, dev_id=0xffff8881045601c0)
+    at drivers/tty/serial/8250/8250_core.c:126
+#6  0xffffffff8111d892 in __handle_irq_event_percpu (desc=desc@entry=0xffff8881001cda00,
+    flags=flags@entry=0xffffc90000003f54) at kernel/irq/handle.c:156
+#7  0xffffffff8111d9e3 in handle_irq_event_percpu (desc=desc@entry=0xffff8881001cda00)
+    at kernel/irq/handle.c:196
+    at drivers/tty/serial/8250/8250_core.c:126
+#6  0xffffffff8111d892 in __handle_irq_event_percpu (desc=desc@entry=0xffff8881001cda00,
+    flags=flags@entry=0xffffc90000003f54) at kernel/irq/handle.c:156
+#7  0xffffffff8111d9e3 in handle_irq_event_percpu (desc=desc@entry=0xffff8881001cda00)
+    at kernel/irq/handle.c:196
+#8  0xffffffff8111da6b in handle_irq_event (desc=desc@entry=0xffff8881001cda00)
+    at kernel/irq/handle.c:213
+#9  0xffffffff81121ef3 in handle_edge_irq (desc=0xffff8881001cda00) at kernel/irq/chip.c:822
+#10 0xffffffff810395a3 in generic_handle_irq_desc (desc=0xffff8881001cda00)
+    at ./include/linux/irqdesc.h:158
+#11 handle_irq (regs=<optimized out>, desc=0xffff8881001cda00) at arch/x86/kernel/irq.c:231
+#12 __common_interrupt (regs=<optimized out>, vector=39) at arch/x86/kernel/irq.c:250
+#13 0xffffffff81c085d8 in common_interrupt (regs=0xffffffff82e03d68, error_code=<optimized out>)
+    at arch/x86/kernel/irq.c:240
+#14 0xffffffff81e00cde in asm_common_interrupt () at ./arch/x86/include/asm/idtentry.h:629
+```
+
+也是处理 serial_interrupt 来获取输入，为什么会这样？键盘和 serial 到底有什么关系。
+
+我们来看看 `serial8250_read_char` 或许会有收获。
+
+```c
+void serial8250_read_char(struct uart_8250_port *up, unsigned char lsr)
+{
+	struct uart_port *port = &up->port;
+	unsigned char ch;
+	char flag = TTY_NORMAL;
+
+	if (likely(lsr & UART_LSR_DR))
+		ch = serial_in(up, UART_RX); // ch 就是输入的字符
+	...
+
+	port->icount.rx++;
+
+	lsr |= up->lsr_saved_flags;
+	up->lsr_saved_flags = 0;
+
+	...
+
+		/*
+		 * Mask off conditions which should be ignored.
+		 */
+		lsr &= port->read_status_mask;
+
+		if (lsr & UART_LSR_BI) {
+			dev_dbg(port->dev, "handling break\n");
+			flag = TTY_BREAK;
+		} else if (lsr & UART_LSR_PE)
+			flag = TTY_PARITY;
+		else if (lsr & UART_LSR_FE)
+			flag = TTY_FRAME;
+	}
+	if (uart_prepare_sysrq_char(port, ch))
+		return;
+
+	uart_insert_char(port, lsr, UART_LSR_OE, ch, flag);
+}
+EXPORT_SYMBOL_GPL(serial8250_read_char);
+```
+
+现在可以确定，键盘输入后字符直接放到 serial 的 rx 寄存器，然后触发中断，通过上面的执行流程读取，再调用 `uart_insert_char` 函数写入到 tty_buffer 中。
+
+ok，现在整个流程闭环了，唯一的问题是 serial 中断怎样触发，其实应该开中断就可以了，需要测试。
+
+或许 tty_buffer 将字符写入到 serial 这个过程能有帮助。
+
+尝试了很多方法，还是不知道 serial 是怎样触发中断的，现在看看 qemu 是怎么模拟中断的，希望会有帮助。详细分析见下面的 qemu 模拟子部分。
+
 #### serial 输出
 
 再看看是怎样输出到屏幕中的。使用 serial 输出，具体是 `serial8250_tx_chars` 中的 `serial_out` 函数。
@@ -436,6 +526,72 @@ ripts/local-block ... done.\r\ndone.\r\nGave up waiting for suspend/resume devic
 
 - `serial8250_tx_chars` 也是中断处理过程的一部分，serial 发的中断么？
   - 中断的处理过程。
+
+#### QEMU 模拟
+
+在 qemu 中是这样模拟字符输入的，
+
+```plain
+#0  kvm_vm_ioctl (s=0x55555681c140, type=-1073172889) at ../accel/kvm/kvm-all.c:3008
+#1  0x0000555555d090af in kvm_set_irq (s=0x55555681c140, irq=4, level=0) at ../accel/kvm/kvm-all.c:1691
+#2  0x0000555555b6fcbd in kvm_pic_set_irq (opaque=0x0, irq=4, level=0) at ../hw/i386/kvm/i8259.c:119
+#3  0x0000555555d4018c in qemu_set_irq (irq=0x555556fe6690, level=0) at ../hw/core/irq.c:45
+#4  0x0000555555b39e8a in gsi_handler (opaque=0x555556ba45d0, n=4, level=0) at ../hw/i386/x86.c:599
+#5  0x0000555555d4018c in qemu_set_irq (irq=0x555556ba7800, level=0) at ../hw/core/irq.c:45
+#6  0x000055555593b0ed in qemu_irq_lower (irq=0x555556ba7800)
+    at /home/guanshun/gitlab/qemu-newest/include/hw/irq.h:17
+#7  0x000055555593b65f in serial_update_irq (s=0x555556f69180) at ../hw/char/serial.c:144
+#8  0x000055555593cb3e in serial_receive1 (opaque=0x555556f69180,
+    buf=0x7fffffffca00 "amffffc90000003e80,40#51c3Z1,ffffffff831b9faa,1#a3$Z1,ffffffff831b9faa,1#a3-event
+s+;exec-events+;vContSupported+;QThreadEvents+;no-resumed+;xmlRegisters=i386#6a", size=1)
+    at ../hw/char/serial.c:621
+#9  0x0000555555e42c7a in mux_chr_read (opaque=0x5555569b8640,
+    buf=0x7fffffffca00 "amffffc90000003e80,40#51c3Z1,ffffffff831b9faa,1#a3$Z1,ffffffff831b9faa,1#a3-event
+s+;exec-events+;vContSupported+;QThreadEvents+;no-resumed+;xmlRegisters=i386#6a", size=1)
+    at ../chardev/char-mux.c:235
+#10 0x0000555555e49fd6 in qemu_chr_be_write_impl (s=0x555556929f40,
+    buf=0x7fffffffca00 "amffffc90000003e80,40#51c3Z1,ffffffff831b9faa,1#a3$Z1,ffffffff831b9faa,1#a3-event
+s+;exec-events+;vContSupported+;QThreadEvents+;no-resumed+;xmlRegisters=i386#6a", len=1)
+    at ../chardev/char.c:201
+#11 0x0000555555e4a03e in qemu_chr_be_write (s=0x555556929f40,
+    buf=0x7fffffffca00 "amffffc90000003e80,40#51c3Z1,ffffffff831b9faa,1#a3$Z1,ffffffff831b9faa,1#a3-event
+s+;exec-events+;vContSupported+;QThreadEvents+;no-resumed+;xmlRegisters=i386#6a", len=1)
+    at ../chardev/char.c:213
+#12 0x0000555555e4cb34 in fd_chr_read (chan=0x555556a45b10, cond=G_IO_IN, opaque=0x555556929f40)
+    at ../chardev/char-fd.c:73
+#13 0x0000555555d4fb13 in qio_channel_fd_source_dispatch (source=0x555556a39760,
+    callback=0x555555e4c9fd <fd_chr_read>, user_data=0x555556929f40) at ../io/channel-watch.c:84
+#14 0x00007ffff773a04e in g_main_context_dispatch () from /lib/x86_64-linux-gnu/libglib-2.0.so.0
+#15 0x0000555555f1dd0d in glib_pollfds_poll () at ../util/main-loop.c:232
+#16 0x0000555555f1dd8b in os_host_main_loop_wait (timeout=1000000000) at ../util/main-loop.c:255
+#17 0x0000555555f1de9c in main_loop_wait (nonblocking=0) at ../util/main-loop.c:531
+#18 0x0000555555bf1c30 in qemu_main_loop () at ../softmmu/runstate.c:726
+#19 0x000055555583b6fa in main (argc=15, argv=0x7fffffffdca8, envp=0x7fffffffdd28)
+    at ../softmmu/main.c:50
+```
+
+在 `kvm_vm_ioctl` 中使用 `ioctl` 系统调用，这里就跟不下去了，再想办法。
+
+```c
+int kvm_vm_ioctl(KVMState *s, int type, ...)
+{
+    int ret;
+    void *arg;
+    va_list ap;
+
+    va_start(ap, type);
+    arg = va_arg(ap, void *);
+    va_end(ap);
+
+    trace_kvm_vm_ioctl(type, arg);
+    ret = ioctl(s->vmfd, type, arg);
+    if (ret == -1) {
+        ret = -errno;
+    }
+    return ret;
+}
+```
+
 
 
 ### 用户态执行流程
