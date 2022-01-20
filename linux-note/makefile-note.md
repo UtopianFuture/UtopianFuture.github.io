@@ -94,3 +94,11 @@ prerequisites中如果有一个以上的文件比target文件要新的话，comm
    echo 正在编译XXX模块......
    正在编译XXX模块......
    ```
+
+4. ```plain
+   $(patsubst PATTERN,REPLACEMENT,TEXT)
+   ```
+
+   Finds whitespace-separated words in TEXT that match PATTERN and replaces them with REPLACEMENT. Here PATTERN may contain a `%` which acts as a wildcard, matching any number of any characters within a word.
+
+5. `$^` The names of all the prerequisites, with spaces between them.

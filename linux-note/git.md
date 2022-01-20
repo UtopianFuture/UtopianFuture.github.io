@@ -190,3 +190,9 @@ git push -f origin master
     ```
 
     初始化本地配置文件
+
+23. git clone 不单单可以 clone 一个仓库，也可以加上绝对地址 clone 某台机器上的文件，如：
+
+    ```plain
+    git clone lgs@172.17.103.58:/home/zhangfuxin/linux-4.19-loongson
+    ```
