@@ -24,6 +24,8 @@
 >
 > 7) The ISR reads the scan code from port 60h and decides whether to process it or pass the control to program for taking action.
 
+> Basically, when a key is pressed, the keyboard controller tells a device called the PIC, to cause an interrupt. Because of the wiring of keyboard and PIC, IRQ #1 is the keyboard interrupt, so when a key is pressed, IRQ 1 is sent to the PIC. The role of the PIC will be to decide whether the CPU should be immediately notified of that IRQ or not and to translate the IRQ number into an *interrupt vector* (i.e. a number between 0 and 255) for the CPU's table.
+
 但具体的处理还是需要看代码。
 
 需要明确以下几件事情：
@@ -279,7 +281,7 @@ static inline void __raw_spin_unlock_irqrestore(raw_spinlock_t *lock,
 #define barrier() __asm__ __volatile__("": : :"memory") // 这个 barrier 是干什么的，memory barrier？ //
 ```
 
-这个中断处理完就就继续执行 tty_buffer 的工作。
+这个中断处理完就继续执行 tty_buffer 的工作。
 
 上面我们知道 `__receive_buf` 函数是处理输入的字符的，从注释中我们猜测应该是在这里将 buf 中的字符发送给 serial，因为 `ldata` 就是存储字符的数据结构，我们来看看是不是。
 
@@ -395,7 +397,7 @@ ok，现在整个流程闭环了，唯一的问题是 serial 中断怎样触发�
 
 或许 tty_buffer 将字符写入到 serial 这个过程能有帮助。
 
-尝试了很多方法，还是不知道 serial 是怎样触发中断的，现在看看 qemu 是怎么模拟中断的，希望会有帮助。详细分析见下面的 qemu 模拟子部分。
+尝试了很多方法，还是不知道 serial 是怎样触发中断的，现在看看 qemu 是怎么模拟中断的，希望会有帮助。详细分析见下面的 [qemu 模拟](# QEMU 模拟)子部分。
 
 #### serial 输出
 
@@ -1294,6 +1296,10 @@ static void extioi_irq_dispatch(struct irq_desc *desc)
 就是用 `serial_out` 写 `UART_IER` 寄存器。估计 serial 发起中断也是这样的方式。所以现在的关键是实现 `serial_out`。
 
 现在唯一的问题就是 serial 怎样发起中断。这一步解决这篇文章探究的问题就闭环了。
+
+现在遇到的问题是无法接收到 serial 中断和 keyboard 中断。  在看书的过程中发现 la 有 8 个硬中断，这些硬中断的中断源来自处理器核外部，其直接来源是核外的中断控制器。也就是说 serial 发起的中断并不是直接将 cpu 的硬中断之一拉高，而是发送到中断控制器，如 8259 就是 pin1 作为 keyboard 中断，pin3, pin4 都是 serial 中断。那么是不是我没有设置中断控制器的映射从而导致无法接收到 serial 中断。定时器中断能够响应是因为 cpu 中有一个线中断： TI 作为定时器中断。
+
+![img](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/from-keyboard-to-display.1.png)
 
 ### Reference
 
