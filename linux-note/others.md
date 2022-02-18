@@ -518,3 +518,17 @@ The **Platform Controller Hub** (**PCH**) is a family of Intel's single-chip chi
 ### GPIO
 
 A **general-purpose input/output** (**GPIO**) is an uncommitted digital signal pin on an integrated circuit or electronic circuit board which may be used as an input or output, or both, and is controllable by the user at runtime.
+
+### [IOMMU](https://en.wikipedia.org/wiki/Input%E2%80%93output_memory_management_unit)
+
+IOMMU(**input–output memory management unit**) 是 I/O 设备通过 DMA 与主存链接的管理单元，能够让 CPU 通过虚拟地址直接访问 I/O 设备。
+
+它和 MMIO 的区别是啥？还需要进一步探究。
+
+[iommu 技术综述](https://www.jianshu.com/p/dd8ab6b68c6a)
+
+[amd iommu](https://www.jianshu.com/p/dd8ab6b68c6a)
+
+### System.map
+
+system.map 是保存内核的符号和该符号在内存中的地址映射关系的表。
