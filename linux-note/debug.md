@@ -122,3 +122,12 @@
 16. show print elements 显示 gdb 能够打印的最大字符数量。
 
     set print elements 500 设置 gdb 能够打印的最大字符数量。
+
+17. malloc 分配二维数组
+
+    ```c
+    int **dp = malloc((size1 + 1) * sizeof(int *));
+      for (int i = 0; i < size1 + 1; i++) {
+        dp[i] = malloc((size2 + 1) * sizeof(int));
+      }
+    ```
