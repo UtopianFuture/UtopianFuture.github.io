@@ -18,7 +18,7 @@
 
    （3）kvm 其的作用是什么？
 
-   首先，CPU 虚拟化就是需要用 kvm 来实现的，KVM 会创建 VMCS 数据结构，分配内存条等等。
+    首先，CPU 虚拟化就是需要用 kvm 来实现的，KVM 会创建 VMCS 数据结构，分配内存条等等。
 
    （4）虚拟中断的核心是什么？
 
@@ -73,7 +73,7 @@ struct kvm_cpuid_entry {
 
 ​	（2）hlt
 
-​	guest 执行 hlt 只是暂停逻辑核。VCPU 调用内核的 schedule()将自己挂起。
+​	guest 执行 hlt 只是暂停逻辑核。VCPU 调用内核的 `schedule()` 将自己挂起。
 
 #### 对称多处理器虚拟化
 
@@ -135,9 +135,13 @@ struct kvm_userspace_memory_region {
 
 3. EPT
 
-   EPT(extented page table pointer)是硬件机制，完成从 GPA 到 HPA 的映射。EPT 的缺页处理的原理与 MMU 基本相同。增加 EPT 后不需要频繁的 VM exit，同时，对于 host 而言，一个虚拟机就是一个进程，因此一个虚拟机只需要维护一个 EPT 表即可。
+   EPT(extented page table pointer)是硬件机制，完成从 GPA 到 HPA 的映射。EPT 的缺页处理的原理与 MMU 基本相同。MMU 完成 GVA  到 GPA 的映射，EPT 完成 GPA  到 HPA  的映射，MMU 和  EPT 在硬件层面直接配合，不需要软件干涉，经过 MMU 翻译的 GPA 将在硬件层面给到 EPT 。增加 EPT 后不需要频繁的 VM exit，同时，对于 host 而言，一个虚拟机就是一个进程，因此一个虚拟机只需要维护一个 EPT 表即可。
 
-   VMX 在`VMCS`中定义了一个字段`extended-page-table-pointer`，KVM 将 EPT 页表的位置写入这个字段，这样当 CPU 进入 guest 模式时，就可以从这个字段读出 EPT 页表的位置。而 guest 模式下的`cr3`寄存器指向 guest 内部的页表。当 guest 发生缺页异常，需要退出 guest 时，会将引发异常的 GPA 保存到`VMCS`的`guest physical address`字段，然后 KVM 就可以根据这个 GPA 调用异常处理函数，处理 EPT 缺页异常。
+   VMX 在`VMCS`中定义了一个字段`extended-page-table-pointer`，KVM 将 EPT 页表的位置写入这个字段，这样当 CPU 进入 guest 模式时，就可以从这个字段读出 EPT 页表的位置。而 guest 模式下的`cr3`寄存器指向 guest 内部的页表。
+
+   当 guest 发生缺页异常时，CPU 不再切换到 host 模式，而是由 guest 自身的缺页异常处理函数处理。当地址从 GVA 翻译到 GPA 后，GPA 在硬件内部从 MMU 流转到 EPT。如果 EPT 页表中存在 GPA 到 HPA 的映射，则 EPA 最终获取了对应的 HPA，将 HPA 送上地址总线。如果不存在映射，那么抛出 EPT 异常， CPU 将从 guest 模式切换到 host 模式，进行正常的异常处理。建立好映射之后返回 guest 模式。
+
+   需要退出 guest 时，会将引发异常的 GPA 保存到`VMCS`的`guest physical address`字段，然后 KVM 就可以根据这个 GPA 调用异常处理函数，处理 EPT 缺页异常。
 
    简单举例：如果 guest 采用 2 级页表，那么在通过一级页表目录读取二级页表地址时，需要通过 EPT，然后通过二级页表读取页帧地址时，需要通过 EPT，最后通过 offset 在页帧中读取字节需要通过 EPT。
 
@@ -147,7 +151,7 @@ struct kvm_userspace_memory_region {
 
    物理 CPU 在执行完一条指令后，都会检查中断引脚是否有效，一旦有效，CPU 将处理中断，然后执行下一条指令。
 
-   对于软件虚拟的中断芯片而言，**“引脚”只是一个变量**。如果 KVM 发现虚拟中断芯片有中断请求，则向`VMCS`中的`VM-entry control`部分的`VM-entry interruption-information field`字段写入中断信息，在切入 guest 模式的一刻，**CPU**将检查这个字段，如同检查 CPU 引脚，如果有中断，则进入中断执行过程。
+   对于软件虚拟的中断芯片而言，**“引脚”只是一个变量**。如果 KVM 发现虚拟中断芯片有中断请求，则向`VMCS`中的`VM-entry control`部分的`VM-entry interruption-information field`字段写入中断信息，在切入 guest 模式的一刻，**CPU** 将检查这个字段，如同检查 CPU 引脚，如果有中断，则进入中断执行过程。
 
    guest 模式的 CPU 不能检测虚拟中断芯片的引脚，只能在 VM entry 时由 KVM 模块代为检查，然后写入`VMCS`，一旦有中断注入，那么处于 guest 模式的 CPU 一定需要通过 VM exit 退出到 host 模式，这个上下文切换很麻烦。
 
@@ -159,9 +163,9 @@ struct kvm_userspace_memory_region {
 
    （1）虚拟设备向 PIC 发送中断请求
 
-   guest 需要读取外设数据时，通过写 I/O 端口触发 CPU 从 guest 到 host，KVM 中的块设备开始 I/O 操作。操作完后调用虚拟 8259A 提供的 API 发出中断请求。（2）记录中断到 IRR
+   guest 需要读取外设数据时，通过写 I/O 端口触发 CPU 从 guest 到 host，KVM 中的块设备开始 I/O 操作。操作完后调用虚拟 8259A 提供的 API 发出中断请求。
 
-   （2）IRR(Interrupt Request Register)。
+   （2）记录中断到 IRR (Interrupt Request Register)。
 
    （3）设置待处理中断标识
 
@@ -215,7 +219,7 @@ struct kvm_userspace_memory_region {
 
 2. 设备透传
 
-   SR-IOV(Single Root I/O Virtualization and Sharing)，**在硬件层面将一个物理设备虚拟出多个设备，每个设备可以透传给一台虚拟机**。 SR-IOV 引入了两个新的 function 类型，一个是(Physical Function)，一个是 VF(Virtual Function)。一个 SR-IOV 可以支持多个 VF，每个 VF 可以分别透传给 guest，guest 就不用通过 VMM 的模拟设备访问物理设备。每个 VF 都有自己独立的用于数据传输的存储空间、队列、中断以及命令处理单元，即虚拟的物理设备，VMM 通过 PF 管理这些 VF。同时，host 上的软件仍然可以通过 PF 访问物理设备。
+   SR-IOV(Single Root I/O Virtualization and Sharing)，**在硬件层面将一个物理设备虚拟出多个设备，每个设备可以透传给一台虚拟机**。 SR-IOV 引入了两个新的 function 类型，一个是 PF(Physical Function)，一个是 VF(Virtual Function)。一个 SR-IOV 可以支持多个 VF，每个 VF 可以分别透传给 guest，guest 就不用通过 VMM 的模拟设备访问物理设备。每个 VF 都有自己独立的用于数据传输的存储空间、队列、中断以及命令处理单元，即虚拟的物理设备，VMM 通过 PF 管理这些 VF。同时，host 上的软件仍然可以通过 PF 访问物理设备。
 
    （1）虚拟配置空间
 
@@ -231,4 +235,4 @@ struct kvm_userspace_memory_region {
 
    （3）中断重映射
 
-   为避免外设编程发送一些恶意的中断引入了中断虚拟化机制，即在外设和 CPU 之间加了一个硬件中断重映射单元。当接受到中断时，该单元会对中断请求的来源进行有效性验证，然后以中断号为索引查询中断重映射表，之后代发中断。中断映射表由 VMM 进行设置。
+   为避免外设编程发送一些恶意的中断引入了中断虚拟化机制，即在外设和 CPU 之间加了一个硬件中断重映射单元(IOMMU)。当接受到中断时，该单元会对中断请求的来源进行有效性验证，然后以中断号为索引查询中断重映射表，之后代发中断。中断映射表由 VMM 进行设置。
