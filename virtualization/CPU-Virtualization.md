@@ -2,6 +2,8 @@
 
 ### 1. QEMU 侧虚拟机的建立
 
+QEMU 侧创建虚拟机比较简单，主要是在 `kvm_init` 中调用 `ioctl(KVM_CREATE_VM)` ，保存一个返回句柄 fd 在 `KVM_State` 中，这样再其他地方也能使用这个句柄。QEMU 中使用 `KVM_State` 表示 KVM 相关的数据结构。
+
 ### 2. KVM 侧虚拟机的建立
 
 `kvm_dev_ioctl` 向用户层 QEMU 提供 `ioctl` ，根据不同类型的请求提供不同的服务，如果是 `KVM_CREATE_VM` 就调用 `kvm_dev_ioctl_create_vm` 创建一个虚拟机，然后返回一个文件描述符到用户态，QEMU 用该描述符操作虚拟机。
@@ -556,7 +558,209 @@ static int kvm_vm_ioctl_create_vcpu(struct kvm *kvm, u32 id)
 }
 ```
 
-这里代码很清楚，`kvm_vcpu_init` 和 `kvm_arch_vcpu_create` 初始化 VCPU ，然后将其保存到 kvm 中的 vcpus 结构中。
+这里代码很清楚，`kvm_vcpu_init` 和 `kvm_arch_vcpu_create` 初始化 VCPU ，
+
+ `kvm_vcpu_init` 就是初始化一些变量，最重要的应该是 `vcpu->kvm = kvm;` 和 `vcpu->vcpu_id = id;`，`kvm_arch_vcpu_create` 进行进一步的初始化，这其中涉及到很多关于 CPU 的性质的初始化，不懂，有需要再进一步了解。
+
+```c
+int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu)
+{
+	struct page *page;
+	int r;
+
+	...
+
+	if (!irqchip_in_kernel(vcpu->kvm) || kvm_vcpu_is_reset_bsp(vcpu))
+		vcpu->arch.mp_state = KVM_MP_STATE_RUNNABLE;
+	else
+		vcpu->arch.mp_state = KVM_MP_STATE_UNINITIALIZED;
+
+    // 初始化 mmu，如 pte_list 之类的
+	r = kvm_mmu_create(vcpu);
+	if (r < 0)
+		return r;
+
+    // lapic
+	if (irqchip_in_kernel(vcpu->kvm)) {
+		r = kvm_create_lapic(vcpu, lapic_timer_advance_ns);
+		if (r < 0)
+			goto fail_mmu_destroy;
+		if (kvm_apicv_activated(vcpu->kvm))
+			vcpu->arch.apicv_active = true;
+	} else
+		static_branch_inc(&kvm_has_noapic_vcpu);
+
+	r = -ENOMEM;
+
+	page = alloc_page(GFP_KERNEL_ACCOUNT | __GFP_ZERO);
+	if (!page)
+		goto fail_free_lapic;
+	vcpu->arch.pio_data = page_address(page);
+
+	vcpu->arch.mce_banks = kzalloc(KVM_MAX_MCE_BANKS * sizeof(u64) * 4,
+				       GFP_KERNEL_ACCOUNT);
+	if (!vcpu->arch.mce_banks)
+		goto fail_free_pio_data;
+	vcpu->arch.mcg_cap = KVM_MAX_MCE_BANKS;
+
+	if (!zalloc_cpumask_var(&vcpu->arch.wbinvd_dirty_mask,
+				GFP_KERNEL_ACCOUNT))
+		goto fail_free_mce_banks;
+
+	if (!alloc_emulate_ctxt(vcpu))
+		goto free_wbinvd_dirty_mask;
+
+	vcpu->arch.user_fpu = kmem_cache_zalloc(x86_fpu_cache,
+						GFP_KERNEL_ACCOUNT);
+	if (!vcpu->arch.user_fpu) {
+		pr_err("kvm: failed to allocate userspace's fpu\n");
+		goto free_emulate_ctxt;
+	}
+
+	vcpu->arch.guest_fpu = kmem_cache_zalloc(x86_fpu_cache,
+						 GFP_KERNEL_ACCOUNT);
+	if (!vcpu->arch.guest_fpu) {
+		pr_err("kvm: failed to allocate vcpu's fpu\n");
+		goto free_user_fpu;
+	}
+	fx_init(vcpu);
+
+	vcpu->arch.maxphyaddr = cpuid_query_maxphyaddr(vcpu);
+	vcpu->arch.reserved_gpa_bits = kvm_vcpu_reserved_gpa_bits_raw(vcpu);
+
+	vcpu->arch.pat = MSR_IA32_CR_PAT_DEFAULT;
+
+	kvm_async_pf_hash_reset(vcpu);
+	kvm_pmu_init(vcpu);
+
+	vcpu->arch.pending_external_vector = -1;
+	vcpu->arch.preempted_in_kernel = false;
+
+#if IS_ENABLED(CONFIG_HYPERV)
+	vcpu->arch.hv_root_tdp = INVALID_PAGE;
+#endif
+
+    // 这里会调用到回调函数 vmx_create_vcpu，这个函数很关键
+	r = static_call(kvm_x86_vcpu_create)(vcpu);
+	if (r)
+		goto free_guest_fpu;
+
+	vcpu->arch.arch_capabilities = kvm_get_arch_capabilities();
+	vcpu->arch.msr_platform_info = MSR_PLATFORM_INFO_CPUID_FAULT;
+	kvm_vcpu_mtrr_init(vcpu);
+	vcpu_load(vcpu);
+	kvm_set_tsc_khz(vcpu, max_tsc_khz);
+	kvm_vcpu_reset(vcpu, false);
+	kvm_init_mmu(vcpu);
+	vcpu_put(vcpu);
+	return 0;
+
+	...
+	return r;
+}
+```
+
+除了做进一步初始化的工作，`kvm_arch_vcpu_create` 在 X86 下会调用 `vmx_create_vcpu`，架构相关的数据都是在这里进行初始化。
+
+```c
+static int vmx_create_vcpu(struct kvm_vcpu *vcpu)
+{
+	struct vmx_uret_msr *tsx_ctrl;
+	struct vcpu_vmx *vmx; // vmx 的 VCPU 用该结构体表示
+	int i, cpu, err;
+
+	BUILD_BUG_ON(offsetof(struct vcpu_vmx, vcpu) != 0);
+	vmx = to_vmx(vcpu); // kvm_vcpu 表示的是通用层面的 vcpu
+
+	err = -ENOMEM;
+
+    // 每个 vcpu 与 vpid 相关
+	vmx->vpid = allocate_vpid();
+
+	/*
+	 * If PML is turned on, failure on enabling PML just results in failure
+	 * of creating the vcpu, therefore we can simplify PML logic (by
+	 * avoiding dealing with cases, such as enabling PML partially on vcpus
+	 * for the guest), etc.
+	 */
+	if (enable_pml) {
+		vmx->pml_pg = alloc_page(GFP_KERNEL_ACCOUNT | __GFP_ZERO);
+		if (!vmx->pml_pg)
+			goto free_vpid;
+	}
+
+	for (i = 0; i < kvm_nr_uret_msrs; ++i) {
+		vmx->guest_uret_msrs[i].data = 0;
+		vmx->guest_uret_msrs[i].mask = -1ull;
+	}
+	if (boot_cpu_has(X86_FEATURE_RTM)) {
+		/*
+		 * TSX_CTRL_CPUID_CLEAR is handled in the CPUID interception.
+		 * Keep the host value unchanged to avoid changing CPUID bits
+		 * under the host kernel's feet.
+		 */
+		tsx_ctrl = vmx_find_uret_msr(vmx, MSR_IA32_TSX_CTRL);
+		if (tsx_ctrl)
+			tsx_ctrl->mask = ~(u64)TSX_CTRL_CPUID_CLEAR;
+	}
+
+	err = alloc_loaded_vmcs(&vmx->vmcs01);
+	if (err < 0)
+		goto free_pml;
+
+	/* The MSR bitmap starts with all ones */
+	bitmap_fill(vmx->shadow_msr_intercept.read, MAX_POSSIBLE_PASSTHROUGH_MSRS);
+	bitmap_fill(vmx->shadow_msr_intercept.write, MAX_POSSIBLE_PASSTHROUGH_MSRS);
+
+	vmx_disable_intercept_for_msr(vcpu, MSR_IA32_TSC, MSR_TYPE_R);
+#ifdef CONFIG_X86_64
+	vmx_disable_intercept_for_msr(vcpu, MSR_FS_BASE, MSR_TYPE_RW);
+	vmx_disable_intercept_for_msr(vcpu, MSR_GS_BASE, MSR_TYPE_RW);
+	vmx_disable_intercept_for_msr(vcpu, MSR_KERNEL_GS_BASE, MSR_TYPE_RW);
+#endif
+	vmx_disable_intercept_for_msr(vcpu, MSR_IA32_SYSENTER_CS, MSR_TYPE_RW);
+	vmx_disable_intercept_for_msr(vcpu, MSR_IA32_SYSENTER_ESP, MSR_TYPE_RW);
+	vmx_disable_intercept_for_msr(vcpu, MSR_IA32_SYSENTER_EIP, MSR_TYPE_RW);
+	if (kvm_cstate_in_guest(vcpu->kvm)) {
+		vmx_disable_intercept_for_msr(vcpu, MSR_CORE_C1_RES, MSR_TYPE_R);
+		vmx_disable_intercept_for_msr(vcpu, MSR_CORE_C3_RESIDENCY, MSR_TYPE_R);
+		vmx_disable_intercept_for_msr(vcpu, MSR_CORE_C6_RESIDENCY, MSR_TYPE_R);
+		vmx_disable_intercept_for_msr(vcpu, MSR_CORE_C7_RESIDENCY, MSR_TYPE_R);
+	}
+
+    //  loaded_vmcs 指向当前 VCPU 对应的 VMCS 区域， vmcs01 表示普通虚拟化，
+    // 如果是嵌套虚拟化，对应的是其他值。
+	vmx->loaded_vmcs = &vmx->vmcs01;
+    // 获取当前 cpu
+	cpu = get_cpu();
+    // 将 vcpu 与当前 cpu 绑定
+	vmx_vcpu_load(vcpu, cpu);
+	vcpu->cpu = cpu;
+	init_vmcs(vmx);
+	vmx_vcpu_put(vcpu);
+	put_cpu();
+	if (cpu_need_virtualize_apic_accesses(vcpu)) {
+		err = alloc_apic_access_page(vcpu->kvm);
+		if (err)
+			goto free_vmcs;
+	}
+
+	if (enable_ept && !enable_unrestricted_guest) {
+		err = init_rmode_identity_map(vcpu->kvm);
+		if (err)
+			goto free_vmcs;
+	}
+
+	...
+
+	return 0;
+
+	...
+	return err;
+}
+```
+
+完成初始化后将其保存到 kvm 中的 vcpus 结构中。
 
 ```c
 kvm->vcpus[vcpu->vcpu_idx] = vcpu;
@@ -564,9 +768,88 @@ kvm->vcpus[vcpu->vcpu_idx] = vcpu;
 
 ### 5. QEMU 与 KVM 之间的共享数据
 
+QEMU 和 KVM 之间经常需要共享数据，如 KVM 将 VM Exit 的信息放到共享内存中， QEMU 可以通过共享内存去获取这些数据。在 QEMU 通知 KVM 创建 VCPU 的起点函数 `kvm_vcpu_thread_fn` 中，会调用 `kvm_init_vcpu`，其会查询 QEMU 的 VCPU 列表，看是否有符合条件的 VCPU，如果没有则使用 ioctl 通知 KVM 创建一个。然后调用 `ioctl(KVM_GET_VCPU_MMAP_SIZE)` ，该接口返回 KVM 和 QEMU 共享内存的大小，代码如下：
+
+```c
+int kvm_init_vcpu(CPUState *cpu, Error **errp)
+{
+    KVMState *s = kvm_state;
+    long mmap_size;
+    int ret;
+
+    trace_kvm_init_vcpu(cpu->cpu_index, kvm_arch_vcpu_id(cpu));
+
+    ret = kvm_get_vcpu(s, kvm_arch_vcpu_id(cpu));
+
+    ...
+
+    cpu->kvm_fd = ret;
+    cpu->kvm_state = s;
+    cpu->vcpu_dirty = true;
+    cpu->dirty_pages = 0;
+
+    // 共享内存大小
+    mmap_size = kvm_ioctl(s, KVM_GET_VCPU_MMAP_SIZE, 0);
+
+   	...
+
+    cpu->kvm_run = mmap(NULL, mmap_size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                        cpu->kvm_fd, 0);
+    ...
+
+    if (s->coalesced_mmio && !s->coalesced_mmio_ring) {
+        s->coalesced_mmio_ring =
+            (void *)cpu->kvm_run + s->coalesced_mmio * PAGE_SIZE;
+    }
+
+    if (s->kvm_dirty_ring_size) {
+        /* Use MAP_SHARED to share pages with the kernel */
+        cpu->kvm_dirty_gfns = mmap(NULL, s->kvm_dirty_ring_bytes,
+                                   PROT_READ | PROT_WRITE, MAP_SHARED,
+                                   cpu->kvm_fd,
+                                   PAGE_SIZE * KVM_DIRTY_LOG_PAGE_OFFSET);
+        if (cpu->kvm_dirty_gfns == MAP_FAILED) {
+            ret = -errno;
+            DPRINTF("mmap'ing vcpu dirty gfns failed: %d\n", ret);
+            goto err;
+        }
+    }
+
+    // 构造 VCPU 信息
+    ret = kvm_arch_init_vcpu(cpu);
+    if (ret < 0) {
+        error_setg_errno(errp, -ret,
+                         "kvm_init_vcpu: kvm_arch_init_vcpu failed (%lu)",
+                         kvm_arch_vcpu_id(cpu));
+    }
+err:
+    return ret;
+}
+```
+
+`ioctl(KVM_GET_VCPU_MMAP_SIZE)` 返回的页存储的内容如下：
+
+```c
+	case KVM_GET_VCPU_MMAP_SIZE:
+		if (arg)
+			goto out;
+		r = PAGE_SIZE;     /* struct kvm_run */
+#ifdef CONFIG_X86
+		r += PAGE_SIZE;    /* pio data page */
+#endif
+#ifdef CONFIG_KVM_MMIO
+		r += PAGE_SIZE;    /* coalesced mmio ring page */
+#endif
+		break;
+```
+
+获取到内存大小后，QEMU 调用 mmap 映射将 KVM 的中的虚拟机句柄 fd 映射到 `cpu->kvm_run` 和 `cpu->kvm_dirty_gfns`。也就是说如果在 QEMU 访问 `cpu->kvm_run` 实际上访问的是 KVM 中的 `kvm_run` 信息。
+
 ### 6. VCPU CPUID 构造
 
-这两节等之后有需要了再详细分析。
+`kvm_init_vcpu` 最后调用`kvm_arch_init_vcpu` 完成 VCPU 架构相关的初始化，大部分工作是构造虚拟机 VCPU 的 CPUID。通过 CPUID 虚拟机可以获得 CPU 的型号，具体性能参数等信息。
+
+QEMU 命令行中指定 CPU 类型及其增加的或去掉的 CPU 特性，QEMU 通过这些特性构造出一个 cpuid_data，然后调用 VCPU 的`ioctl(KVM_SET_CPUID2)` 将构造的 CPUID 数据传到 KVM 中的 VCPU 相关的数据结构中，之后虚拟机内部执行 CPUID 指令会导致 VM Exit，然后陷入 KVM，KVM 会把数据返回给虚拟机。
 
 ### 7. VCPU 的运行
 
@@ -783,10 +1066,9 @@ static long kvm_vcpu_ioctl (struct file *filp,
 	default:
 		r = kvm_arch_vcpu_ioctl(filp, ioctl, arg);
 	}
-out:
-	mutex_unlock(&vcpu->mutex);
-	kfree(fpu);
-	kfree(kvm_sregs);
+
+	...
+
 	return r;
 }
 ```
@@ -811,12 +1093,7 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 	else
 		r = vcpu_run(vcpu);
 
-out:
-	kvm_put_guest_fpu(vcpu);
-	if (kvm_run->kvm_valid_regs)
-		store_regs(vcpu);
-	post_kvm_run_save(vcpu);
-	kvm_sigset_deactivate(vcpu);
+	...j
 
 	vcpu_put(vcpu);
 	return r;
@@ -884,7 +1161,7 @@ static inline bool kvm_vcpu_running(struct kvm_vcpu *vcpu)
 }
 ```
 
-`kvm_vcpu_running` 还要通过读取 vcpu 中的 `hflags` 和 `HF_GUEST_MASK` 判断当前 CPU 是否处于 guest mode
+`kvm_vcpu_running` 还要通过读取 vcpu 中的 `hflags` 和 `HF_GUEST_MASK` 判断当前 CPU 是否处于 guest mode，
 
 ```c
 static inline bool is_guest_mode(struct kvm_vcpu *vcpu)
@@ -906,36 +1183,11 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 
 	bool req_immediate_exit = false;
 
-	/* Forbid vmenter if vcpu dirty ring is soft-full */
-	if (unlikely(vcpu->kvm->dirty_ring_size &&
-		     kvm_dirty_ring_soft_full(&vcpu->dirty_ring))) {
-		vcpu->run->exit_reason = KVM_EXIT_DIRTY_RING_FULL;
-		trace_kvm_dirty_ring_exit(vcpu);
-		r = 0;
-		goto out;
-	}
-
-	if (kvm_request_pending(vcpu)) {
-		if (kvm_check_request(KVM_REQ_VM_BUGGED, vcpu)) {
-			r = -EIO;
-			goto out;
-		}
-		if (kvm_check_request(KVM_REQ_GET_NESTED_STATE_PAGES, vcpu)) {
-			if (unlikely(!kvm_x86_ops.nested_ops->get_nested_state_pages(vcpu))) {
-				r = 0;
-				goto out;
-			}
-		}
-		...
-        r = inject_pending_event(vcpu, &req_immediate_exit);
-	}
-    r = kvm_mmu_reload(vcpu);
-		if (unlikely(r)) {
-		goto cancel_injection;
-	}
+	...
 
 	preempt_disable();
 
+    // 将 host 的状态保存到 vmcs 中
 	static_call(kvm_x86_prepare_guest_switch)(vcpu);
 
 	/*
@@ -946,59 +1198,10 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 	local_irq_disable();
 	vcpu->mode = IN_GUEST_MODE;
 
-	srcu_read_unlock(&vcpu->kvm->srcu, vcpu->srcu_idx);
-
-	/*
-	 * 1) We should set ->mode before checking ->requests.  Please see
-	 * the comment in kvm_vcpu_exiting_guest_mode().
-	 *
-	 * 2) For APICv, we should set ->mode before checking PID.ON. This
-	 * pairs with the memory barrier implicit in pi_test_and_set_on
-	 * (see vmx_deliver_posted_interrupt).
-	 *
-	 * 3) This also orders the write to mode from any reads to the page
-	 * tables done while the VCPU is running.  Please see the comment
-	 * in kvm_flush_remote_tlbs.
-	 */
-	smp_mb__after_srcu_read_unlock();
-
-	/*
-	 * This handles the case where a posted interrupt was
-	 * notified with kvm_vcpu_kick.
-	 */
-	if (kvm_lapic_enabled(vcpu) && vcpu->arch.apicv_active)
-		static_call(kvm_x86_sync_pir_to_irr)(vcpu);
-
-	if (kvm_vcpu_exit_request(vcpu)) {
-		vcpu->mode = OUTSIDE_GUEST_MODE;
-		smp_wmb();
-		local_irq_enable();
-		preempt_enable();
-		vcpu->srcu_idx = srcu_read_lock(&vcpu->kvm->srcu);
-		r = 1;
-		goto cancel_injection;
-	}
-
-	if (req_immediate_exit) {
-		kvm_make_request(KVM_REQ_EVENT, vcpu);
-		static_call(kvm_x86_request_immediate_exit)(vcpu);
-	}
-
-	fpregs_assert_state_consistent();
-	if (test_thread_flag(TIF_NEED_FPU_LOAD))
-		switch_fpu_return();
-
-	if (unlikely(vcpu->arch.switch_db_regs)) {
-		set_debugreg(0, 7);
-		set_debugreg(vcpu->arch.eff_db[0], 0);
-		set_debugreg(vcpu->arch.eff_db[1], 1);
-		set_debugreg(vcpu->arch.eff_db[2], 2);
-		set_debugreg(vcpu->arch.eff_db[3], 3);
-	} else if (unlikely(hw_breakpoint_active())) {
-		set_debugreg(0, 7);
-	}
+	...
 
 	for (;;) {
+        // 这里的回调函数为 vmx_vcpu_run
 		exit_fastpath = static_call(kvm_x86_run)(vcpu);
 		if (likely(exit_fastpath != EXIT_FASTPATH_REENTER_GUEST))
 			break;
@@ -1037,13 +1240,8 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 	r = static_call(kvm_x86_handle_exit)(vcpu, exit_fastpath);
 	return r;
 
-cancel_injection:
-	if (req_immediate_exit)
-		kvm_make_request(KVM_REQ_EVENT, vcpu);
-	static_call(kvm_x86_cancel_injection)(vcpu);
-	if (unlikely(vcpu->arch.apic_attention))
-		kvm_lapic_sync_from_vapic(vcpu);
-out:
+	...
+
 	return r;
 }
 ```
@@ -1180,4 +1378,63 @@ static struct kvm_x86_ops vmx_x86_ops __initdata = {
 
 ### 8. VCPU 的调度
 
-待续。。。
+虚拟机的每个 VCPU 都对应宿主机中的一个线程，通过宿主及内核调度器进行统一调度管理。如果不将虚拟机的 VCPU 线程绑定到物理 CPU 上，那么 VCPU 线程可能每次运行时被调度到不同的物理 CPU 上。每个物理 CPU 都有一个指向当前 VMCS 的指针——current_vmcs。而 VCPU 调度的本质就是将物理 CPU 的 per_current 指向需要调度的 VCPU 的 VMCS。这里设计到两个重要的函数：
+
+`vcpu_load` 负责将 VCPU 状态加载到物理 CPU 上，`vcpu_put` 负责将当前物理 CPU 上运行的 VCPU 的 VMCS 调度出去并保存。
+
+```c
+/*
+ * Switches to specified vcpu, until a matching vcpu_put()
+ */
+void vcpu_load(struct kvm_vcpu *vcpu)
+{
+	int cpu = get_cpu(); // 获取当前 CPU ID
+
+	__this_cpu_write(kvm_running_vcpu, vcpu);
+	preempt_notifier_register(&vcpu->preempt_notifier);
+	kvm_arch_vcpu_load(vcpu, cpu); // 不同架构的加载函数，将 VMCS 加载到 cpu 中，X86 对应的是 vmx_vcpu_load
+	put_cpu(); // 开启抢占
+}
+EXPORT_SYMBOL_GPL(vcpu_load);
+```
+
+```c
+void vcpu_put(struct kvm_vcpu *vcpu)
+{
+	preempt_disable();
+	kvm_arch_vcpu_put(vcpu);
+	preempt_notifier_unregister(&vcpu->preempt_notifier);
+	__this_cpu_write(kvm_running_vcpu, NULL);
+	preempt_enable();
+}
+EXPORT_SYMBOL_GPL(vcpu_put);
+```
+
+`kvm_arch_vcpu_ioctl_run`  是 `ioctl(KVM_RUN)` 的处理函数，它在函数开始和结束时会调用 `vcpu_load` 和 `vcpu_put`。
+
+```c
+int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
+{
+	struct kvm_run *kvm_run = vcpu->run;
+	int r;
+
+    // here
+	vcpu_load(vcpu);
+	kvm_sigset_activate(vcpu);
+	kvm_run->flags = 0;
+	kvm_load_guest_fpu(vcpu);
+
+	...
+
+	if (kvm_run->immediate_exit)
+		r = -EINTR;
+	else // cpu run
+		r = vcpu_run(vcpu);
+
+	...
+
+    // here
+	vcpu_put(vcpu);
+	return r;
+}
+```
