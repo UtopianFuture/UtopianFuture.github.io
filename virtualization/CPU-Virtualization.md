@@ -793,6 +793,7 @@ int kvm_init_vcpu(CPUState *cpu, Error **errp)
 
    	...
 
+    // kvm_fd: vCPU file descriptor for KVM.
     cpu->kvm_run = mmap(NULL, mmap_size, PROT_READ | PROT_WRITE, MAP_SHARED,
                         cpu->kvm_fd, 0);
     ...
