@@ -235,7 +235,7 @@
 
    以上的源码都可以找我要。
 
-四、在 LA 上用 QEMU + KVM 调试 LA 内核
+### 四、在 LA 上用 QEMU + KVM 调试 LA 内核
 
 1. 运行参数
 
@@ -247,8 +247,50 @@
 
    ![img](https://user-images.githubusercontent.com/66514719/143871503-116ebc5e-b02f-4a22-916c-a6b3817fa38e.png)
 
+### 五、更新 linux 内核
+
+下载需要的内核，
+
+```plain
+make menuconfig
+```
+
+ 配置 .config 文件，这里注意不要打开调试选项: kernel hacking -> Compile-time checkes and compiler options 中的 DEBUG_INFO 选项，不然会导致生成的内核太大以至于不能装入 /boot 目录下，而 /boot 目录扩容又比较麻烦。
+
+之后就是正常的编译
+
+```plain
+make -jn
+```
+
+编译完成之后首先安装内核模块
+
+```plain
+sudo make modules_install
+```
+
+然后安装内核
+
+```plain
+sudo make intall
+```
+
+将内核安装好后还需要修改 `/boot/grub/grub.cfg` 文件，这里不用手动修改，而是通过 initramfs-tool 来做
+
+```plain
+sudo apt install initramfs-tools
+```
+
+下载后更新一下 grub 即可。
+
+```plain
+sudo updata_grub
+```
+
 ### reference
 
-[1]https://cloud.tencent.com/developer/article/1039421
+[1] https://cloud.tencent.com/developer/article/1039421
 
-[2]https://imkira.com/QEMU-GDB-Linux-Kernel/
+[2] https://imkira.com/QEMU-GDB-Linux-Kernel/
+
+[3] https://www.cnblogs.com/harrypotterjackson/p/11846222.html
