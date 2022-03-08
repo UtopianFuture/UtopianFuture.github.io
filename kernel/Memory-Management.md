@@ -1,5 +1,9 @@
 ## Memory Management
 
+分析内存管理为了解决一个很简单的问题：用户进程从发起存储空间的请求开始到得到该内存空间需要经过哪些步骤？
+
+首先用户进程发起请求，这个请求肯定是由内核函数来响应，然后调用内核的内存分配函数来分配空间。
+
 ### 页框管理
 
 以页框为最小单位分配内存。从 page  作为页描述符记录每个页框当前的状态。
@@ -175,7 +179,7 @@ struct zone {
 
 管理区分配器搜索能够满足分配请求的管理区，在每个管理区中，伙伴系统负责分配页框，每 CPU 页框高速缓存用来满足但个页框的分配请求。
 
-![image-20211216093255057](/home/guanshun/.config/Typora/typora-user-images/image-20211216093255057.png)
+![image-20211216093255057](/home/guanshun/gitlab/UFuture.github.io/image/memory-management.1.png)
 
 #### 管理区分配器
 
@@ -215,7 +219,7 @@ EXPORT_SYMBOL(alloc_pages);
 
 调用 `alloc_pages` 的地方很多。
 
-![image-20211216094418595](/home/guanshun/.config/Typora/typora-user-images/image-20211216094418595.png)
+![image-20211216094418595](/home/guanshun/gitlab/UFuture.github.io/image/memory-management.2.png)
 
 `alloc_pages` 主要是调用 `__alloc_pages` 。
 
@@ -326,7 +330,7 @@ EXPORT_SYMBOL(__free_pages);
 >
 > - 一个很小的块往往会阻碍一个大块的合并，一个系统中，对内存块的分配，大小是随机的，一片内存中仅一个小的内存块没有释放，旁边两个大的就不能合并。
 > - 算法中有一定的浪费现象，伙伴算法是按 2 的幂次方大小进行分配内存块，当然这样做是有原因的，即为了避免把大的内存块拆的太碎，更重要的是使分配和释放过程迅速。但是他也带来了不利的一面，如果所需内存大小不是 2 的幂次方，就会有部分页面浪费。有时还很严重。比如原来是 1024 个块，申请了 16 个块，再申请 600 个块就申请不到了，因为已经被分割了。
-> - 另外拆分和合并涉及到 较多的链表和位图操作，开销还是比较大的。
+> - 另外拆分和合并涉及到较多的链表和位图操作，开销还是比较大的。
 >
 > Buddy 算法的释放原理：
 >
@@ -574,12 +578,12 @@ struct per_cpu_pages {
 
 每 CPU 高速缓存通过 `buffered_rmqueue` 在指定的 zone 中分配页框，使用 `free_hot_code_page` 释放页框到每 CPU 高速缓存。
 
-
-
 ### 内存区管理
+
+伙伴系统算法采用页框作为基本内存区，但一个页框一般是 4KB，而程序很多时候都是申请很小的内存，比如几百字节，十几 KB，这时分配一个页会造成很大的浪费，slab 分配器解决的就是对小内存区的请求。
 
 ### 非连续内存区管理
 
 ### Reference
 
-[1] https://www.zhihu.com/search?type=content&q=%E5%86%85%E6%A0%B8%E5%86%85%E5%AD%98%E7%AE%A1%E7%90%86
+[1] https://zhuanlan.zhihu.com/p/339800986
