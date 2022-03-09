@@ -415,7 +415,46 @@ struct MemoryListener {
 };
 ```
 
-`MemoryListener` 通过 `memory_listener_register` 函数注册，其主要是将 `MemoryListener` 加入到链表中。
+`MemoryListener` 通过 `memory_listener_register` 函数注册，其主要是将 `MemoryListener` 加入到链表中。`kvm_memory_listener_register` 就是注册对应的处理函数。在之后的分析中我们可以看到，如果虚拟机变更了内存布局，如在 mr 中增加 submr，就会使用 `kvm_region_add` 来通知 KVM 更改映射关系。
+
+```c
+void kvm_memory_listener_register(KVMState *s, KVMMemoryListener *kml,
+                                  AddressSpace *as, int as_id, const char *name)
+{
+    int i;
+
+    kml->slots = g_malloc0(s->nr_slots * sizeof(KVMSlot));
+    kml->as_id = as_id;
+
+    for (i = 0; i < s->nr_slots; i++) {
+        kml->slots[i].slot = i;
+    }
+
+    kml->listener.region_add = kvm_region_add;
+    kml->listener.region_del = kvm_region_del;
+    kml->listener.log_start = kvm_log_start;
+    kml->listener.log_stop = kvm_log_stop;
+    kml->listener.priority = 10;
+    kml->listener.name = name;
+
+    if (s->kvm_dirty_ring_size) {
+        kml->listener.log_sync_global = kvm_log_sync_global;
+    } else {
+        kml->listener.log_sync = kvm_log_sync;
+        kml->listener.log_clear = kvm_log_clear;
+    }
+
+    memory_listener_register(&kml->listener, as);
+
+    for (i = 0; i < s->nr_as; ++i) {
+        if (!s->as[i].as) {
+            s->as[i].as = as;
+            s->as[i].ml = kml;
+            break;
+        }
+    }
+}
+```
 
 当 QEMU 进行了创建一个新的 as、调用 `memory_region_add_subregion` 将一个 `MemoryRegion` 添加到另一个 `MemoryRegion` 的 `subregions` 中等操作时就需要通知到各个 `listener`，这个过程叫 `commit`。
 
@@ -539,6 +578,7 @@ static void render_memory_region(FlatView *view,  // 该 as 的 FlatView
         return;
     }
 
+    // 找到该 mr 的 range
     int128_addto(&base, int128_make64(mr->addr));
     readonly |= mr->readonly;
     nonvolatile |= mr->nonvolatile;
@@ -551,6 +591,7 @@ static void render_memory_region(FlatView *view,  // 该 as 的 FlatView
 
     clip = addrrange_intersection(tmp, clip);
 
+    // 如果该 mr 是 alias，找到实际的 mr
     if (mr->alias) {
         int128_subfrom(&base, int128_make64(mr->alias->addr));
         int128_subfrom(&base, int128_make64(mr->alias_offset));
@@ -580,10 +621,15 @@ static void render_memory_region(FlatView *view,  // 该 as 的 FlatView
     fr.nonvolatile = nonvolatile;
 
     /* Render the region itself into any gaps left by the current view. */
+    // 遍历所有的 FlatRange
     for (i = 0; i < view->nr && int128_nz(remain); ++i) {
+        // 如果 mr 的 base 大于该 range 的最后长度，那么该 mr 应该在该 range 的右侧，
+        // 不需要插入，直接判断下一个 range。
         if (int128_ge(base, addrrange_end(view->ranges[i].addr))) {
             continue;
         }
+        // 这里处理 mr 的 base 小于该 range 的起始地址的情况，
+        // 需要将小于起始地址的那部分单独创建一个 range 插入到 flatview 中，
         if (int128_lt(base, view->ranges[i].addr.start)) {
             now = int128_min(remain,
                              int128_sub(view->ranges[i].addr.start, base));
@@ -595,6 +641,8 @@ static void render_memory_region(FlatView *view,  // 该 as 的 FlatView
             offset_in_region += int128_get64(now);
             int128_subfrom(&remain, now);
         }
+        // 这里处理该 mr 超过该 range 的部分。
+        // 直接越过该 range，超过的部分下一轮循环处理。
         now = int128_sub(int128_min(int128_add(base, remain),
                                     addrrange_end(view->ranges[i].addr)),
                          base);
@@ -609,6 +657,292 @@ static void render_memory_region(FlatView *view,  // 该 as 的 FlatView
     }
 }
 ```
+
+`flatview_simplify` 会根据两个相邻的 range 的属性是否一致来判断是否将两个 range 合并。
+
+虚拟机每次通知 KVM 内修布局修改时都会调用 `generate_memory_topology` 将内存平坦化。
+
+#### 向 KVM 注册内存
+
+首先要了解两个重要的数据结构， `KVMSlot` 是 KVM 中表示内存条的数据结构，而 `kvm_set_user_memory_region` 将其转化成  KVM 中用户态表示虚拟内存条的数据结构 `kvm_userspace_memory_region` 。这里还有一个类似的数据结构 `kvm_memory_region` ，不过没有地方使用它，猜测应该是历史遗留结构。
+
+```c
+typedef struct KVMSlot
+{
+    hwaddr start_addr; // 这块内存条在虚拟机中的物理地址
+    ram_addr_t memory_size;
+    void *ram; // 虚拟机对应的 QEMU 的进程虚拟地址
+    int slot;
+    int flags;
+    int old_flags;
+    /* Dirty bitmap cache for the slot */
+    unsigned long *dirty_bmap;
+    unsigned long dirty_bmap_size;
+    /* Cache of the address space ID */
+    int as_id;
+    /* Cache of the offset in ram address space */
+    ram_addr_t ram_start_offset;
+} KVMSlot;
+```
+
+```c
+struct kvm_userspace_memory_region {
+	__u32 slot; // 内存条编号
+	__u32 flags;
+	__u64 guest_phys_addr; // 这块内存条在虚拟机中的物理地址
+	__u64 memory_size; /* bytes */
+	__u64 userspace_addr; /* start of the userspace allocated memory */
+};
+```
+
+经过映射，当虚拟机将 GVA 转换成 GPA 进行访问时，访问的实际上是 QEMU 的用户态进程地址。而该函数最后调用 `ioctl(KVM_SET_USER_MEMORY_REGION)` 来设置虚拟机的物理地址与 QEMU 虚拟地址的映射关系,。
+
+```c
+static int kvm_set_user_memory_region(KVMMemoryListener *kml, KVMSlot *slot, bool new)
+{
+    KVMState *s = kvm_state;
+    struct kvm_userspace_memory_region mem;
+    int ret;
+
+    mem.slot = slot->slot | (kml->as_id << 16);
+    // 虚拟机的物理地址
+    mem.guest_phys_addr = slot->start_addr;
+    // 虚拟机对应的 QEMU 的进程虚拟地址
+    mem.userspace_addr = (unsigned long)slot->ram;
+    mem.flags = slot->flags;
+
+    if (slot->memory_size && !new && (mem.flags ^ slot->old_flags) & KVM_MEM_READONLY) {
+        /* Set the slot size to 0 before setting the slot to the desired
+         * value. This is needed based on KVM commit 75d61fbc. */
+        mem.memory_size = 0;
+        ret = kvm_vm_ioctl(s, KVM_SET_USER_MEMORY_REGION, &mem);
+        if (ret < 0) {
+            goto err;
+        }
+    }
+    mem.memory_size = slot->memory_size;
+    ret = kvm_vm_ioctl(s, KVM_SET_USER_MEMORY_REGION, &mem);
+    slot->old_flags = mem.flags;
+
+    ...
+
+    return ret;
+}
+```
+
+下面是该函数的调用过程，可以看到初始化 `address_space_memory` 时就会通知 KVM，`memory_region_transaction_commit` 中也会进行内存平坦化操作。
+
+```plain
+#0  kvm_set_user_memory_region (kml=0x55555681d200, slot=0x7ffff2354010, new=true) at ../accel/kvm/kvm-all.c:353
+#1  0x0000555555d086d5 in kvm_set_phys_mem (kml=0x55555681d200, section=0x7fffffffdbb0, add=true) at ../accel/kvm/kvm-all.c:1430
+#2  0x0000555555d088bf in kvm_region_add (listener=0x55555681d200, section=0x7fffffffdbb0) at ../accel/kvm/kvm-all.c:1497
+#3  0x0000555555bf68a0 in address_space_update_topology_pass (as=0x55555675ce00 <address_space_memory>, old_view=0x555556a5ace0, new_view=0x555556a83fb0, adding=true)
+    at ../softmmu/memory.c:975
+#4  0x0000555555bf6ba4 in address_space_set_flatview (as=0x55555675ce00 <address_space_memory>) at ../softmmu/memory.c:1051
+#5  0x0000555555bf6d57 in memory_region_transaction_commit () at ../softmmu/memory.c:1103
+#6  0x0000555555bfa9b2 in memory_region_update_container_subregions (subregion=0x555556a57480) at ../softmmu/memory.c:2531
+#7  0x0000555555bfaa1d in memory_region_add_subregion_common (mr=0x555556822070, offset=0, subregion=0x555556a57480) at ../softmmu/memory.c:2541
+#8  0x0000555555bfaa5d in memory_region_add_subregion (mr=0x555556822070, offset=0, subregion=0x555556a57480) at ../softmmu/memory.c:2549
+#9  0x0000555555b5fba5 in pc_memory_init (pcms=0x55555699a400, system_memory=0x555556822070, rom_memory=0x555556a57590, ram_memory=0x7fffffffde58) at ../hw/i386/pc.c:826
+#10 0x0000555555b441ee in pc_init1 (machine=0x55555699a400, host_type=0x555556061704 "i440FX-pcihost", pci_type=0x5555560616fd "i440FX") at ../hw/i386/pc_piix.c:185
+#11 0x0000555555b44b1d in pc_init_v6_2 (machine=0x55555699a400) at ../hw/i386/pc_piix.c:425
+#12 0x000055555594b889 in machine_run_board_init (machine=0x55555699a400) at ../hw/core/machine.c:1181
+#13 0x0000555555c08082 in qemu_init_board () at ../softmmu/vl.c:2652
+#14 0x0000555555c082ad in qmp_x_exit_preconfig (errp=0x55555677c100 <error_fatal>) at ../softmmu/vl.c:2740
+#15 0x0000555555c0a936 in qemu_init (argc=13, argv=0x7fffffffe278, envp=0x7fffffffe2e8) at ../softmmu/vl.c:3775
+#16 0x000055555583b6f5 in main (argc=13, argv=0x7fffffffe278, envp=0x7fffffffe2e8) at ../softmmu/main.c:49
+```
+
+而 KVM 中的处理流程如下：
+
+`kvm_vm_ioctl_set_memory_region` ->
+
+​													`kvm_set_memory_region` ->
+
+​																						`__kvm_set_memory_region`
+
+最后的 `__kvm_set_memory_region` 函数很复杂，展开来又是一大块，之后再分析。
+
+### 内存分派
+
+#### 内存分派表的构建
+
+还是先了解相关的数据结构：
+
+```c
+struct PhysPageEntry {
+    /* How many bits skip to next level (in units of L2_SIZE). 0 for a leaf. */
+    uint32_t skip : 6;
+     /* index into phys_sections (!skip) or phys_map_nodes (skip) */
+    uint32_t ptr : 26;
+};
+
+typedef PhysPageEntry Node[P_L2_SIZE]; // 512
+
+typedef struct PhysPageMap {
+    struct rcu_head rcu;
+
+    unsigned sections_nb;
+    unsigned sections_nb_alloc;
+    unsigned nodes_nb;
+    unsigned nodes_nb_alloc;
+    Node *nodes; // node 就是一个包含 512 个 entry 的结构
+    MemoryRegionSection *sections;
+} PhysPageMap;
+
+struct AddressSpaceDispatch {
+    MemoryRegionSection *mru_section; // 保存最近一次的 mrs
+    /* This is a multi-level map on the physical address space.
+     * The bottom level has pointers to MemoryRegionSections.
+     */
+    PhysPageEntry phys_map; // 指向第一级页表，相当于 x86 的 cr3 寄存器
+    PhysPageMap map;
+};
+```
+
+寻址过程和正常的多级页表寻址类似，`AddressSpaceDispatch` 中的 `phys_map` 就相当于 x86 的 cr3 寄存器，指向第一级页表，`PhysPageMap` 可以理解为一个页表，其中有一些基本信息，还有页表项的指针 `nodes`。而每个页表的页表项就是 `PhysPageEntry` 其可以指向下一级页表，也可以执行最终的最终的 `MemoryRegionSection`。`MemoryRegionSection` 就是就是 mr，只是增加了一些辅助信息。
+
+映射的建立流程如下：
+
+`generate_memory_topology`(这个函数在进行映射前会进行平坦化操作) ->
+
+​								`flatview_add_to_dispatch`() ->
+
+​																     `register_subpage` / `register_multipage`(前者映射单个页，后者映射多个页) ->
+
+​																			    	`phys_page_set` ->
+
+​																									   	`phys_page_set_level`(多级页表映射)
+
+```c
+static void phys_page_set_level(PhysPageMap *map, PhysPageEntry *lp,
+                                hwaddr *index, uint64_t *nb, uint16_t leaf,
+                                int level)
+{
+    PhysPageEntry *p;
+    hwaddr step = (hwaddr)1 << (level * P_L2_BITS);
+
+    if (lp->skip && lp->ptr == PHYS_MAP_NODE_NIL) {
+        lp->ptr = phys_map_node_alloc(map, level == 0);
+    }
+    p = map->nodes[lp->ptr];
+    lp = &p[(*index >> (level * P_L2_BITS)) & (P_L2_SIZE - 1)];
+
+    while (*nb && lp < &p[P_L2_SIZE]) {
+        if ((*index & (step - 1)) == 0 && *nb >= step) {
+            lp->skip = 0;
+            lp->ptr = leaf;
+            *index += step;
+            *nb -= step;
+        } else {
+            phys_page_set_level(map, lp, index, nb, leaf, level - 1);
+        }
+        ++lp;
+    }
+}
+```
+
+#### 地址分派
+
+映射信息建立完了就可以利用其找到对应的 mr。这里以 MMIO 的写寻址为例分析地址如何查找。
+
+```c
+int kvm_cpu_exec(CPUState *cpu)
+{
+    struct kvm_run *run = cpu->kvm_run;
+    int ret, run_ret;
+
+    ...
+
+    do {
+        MemTxAttrs attrs;
+
+        if (cpu->vcpu_dirty) {
+            kvm_arch_put_registers(cpu, KVM_PUT_RUNTIME_STATE);
+            cpu->vcpu_dirty = false;
+        }
+
+        kvm_arch_pre_run(cpu, run);
+
+        /* Read cpu->exit_request before KVM_RUN reads run->immediate_exit.
+         * Matching barrier in kvm_eat_signals.
+         */
+        smp_rmb();
+
+        run_ret = kvm_vcpu_ioctl(cpu, KVM_RUN, 0);
+
+        attrs = kvm_arch_post_run(cpu, run);
+
+        ...
+
+        trace_kvm_run_exit(cpu->cpu_index, run->exit_reason);
+        switch (run->exit_reason) {
+        case KVM_EXIT_MMIO:
+            DPRINTF("handle_mmio\n");
+            /* Called outside BQL */
+            address_space_rw(&address_space_memory,
+                             run->mmio.phys_addr, attrs,
+                             run->mmio.data,
+                             run->mmio.len,
+                             run->mmio.is_write);
+            ret = 0;
+            break;
+
+            ...
+
+        default:
+            DPRINTF("kvm_arch_handle_exit\n");
+            ret = kvm_arch_handle_exit(cpu, run);
+            break;
+        }
+    } while (ret == 0);
+
+    ...
+
+    return ret;
+}
+```
+
+之后的执行流程如下：
+
+`address_space_rw` ->
+
+​			`address_space_write` ->
+
+​						`flatview_write` ->
+
+​									`flatview_write_continue` ->
+
+​												`flatview_translate` ->
+
+​															`flatview_do_translate` ->
+
+​																			`address_space_translate_internal` ->
+
+​																							`address_space_lookup_region`
+
+```c
+static MemoryRegionSection *address_space_lookup_region(AddressSpaceDispatch *d,
+                                                        hwaddr addr,
+                                                        bool resolve_subpage)
+{
+    MemoryRegionSection *section = qatomic_read(&d->mru_section);
+    subpage_t *subpage;
+
+    if (!section || section == &d->map.sections[PHYS_SECTION_UNASSIGNED] ||
+        !section_covers_addr(section, addr)) {
+        section = phys_page_find(d, addr);
+        qatomic_set(&d->mru_section, section);
+    }
+    if (resolve_subpage && section->mr->subpage) {
+        subpage = container_of(section->mr, subpage_t, iomem);
+        section = &d->map.sections[subpage->sub_section[SUBPAGE_IDX(addr)]];
+    }
+    return section;
+}
+```
+
+这样就完成了虚拟机物理地址的分派，找到了 GPA 对应的 mr，也就找到了对应的 QEMU 中的进程虚拟地址。
 
 ### Reference
 
