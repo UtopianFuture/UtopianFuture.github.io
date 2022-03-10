@@ -10,6 +10,11 @@
 - [What is UEFI?](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/what-is-uefi.md)
 - [Run helloworld in edk2](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/run-helloworld-in-edk2.md)
 - [How to configure edk2?](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/UEFI.md)
+- [From keyboard to Display](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/From-keyboard-to-Display.md)
+- [kernel init](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/kernel_init.md)
+- [Analysis memblock](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/Analysis-memblock_add_range.md)
+- [kthreadd in kernel](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/kthreadd.md)
+- [workqueue in kernel](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/workqueue.md)
 
 ## linux
 
@@ -30,6 +35,7 @@
 - [linux 系统虚拟化](./virtualization/linux-system-virtualization.md)
 - [run "hello world" in LA bare metal](./virtualization/run-helloworld-in-LA-bare-metal.md)
 - [CPU Virtualization](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/CPU-Virtualization.md)
+- [Memory Virtualization](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Memory-Virtualization.md)
 - [Interrupt Virtualization](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Interrupt-Virtualization.md)
 - [QOM](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/QOM.md)
 - [QEMU Event Loop](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/QEMU-event-loop.md)
