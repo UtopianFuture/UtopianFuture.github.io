@@ -521,7 +521,7 @@ A **general-purpose input/output** (**GPIO**) is an uncommitted digital signal p
 
 ### [IOMMU](https://en.wikipedia.org/wiki/Input%E2%80%93output_memory_management_unit)
 
-IOMMU(**input–output memory management unit**) 有两大功能：控制设备 dma 地址映射到机器物理地址（dmar），中断重映射(intremap)（可选）
+IOMMU(**input–output memory management unit**) 有两大功能：控制设备 dma 地址映射到机器物理地址（DMA Remmaping），中断重映射(intremap)（可选）
 
 第一个功能进一步解释是这样的，在没有 Iommu 的时候，设备通过 dma 可以访问到机器的全部的地址空间，这样会导致系统被攻击。当出现了 iommu 以后，iommu 通过控制每个设备 dma 地址到实际物理地址的映射转换，使得在一定的内核驱动框架下，用户态驱动能够完全操作某个设备 dma 和中断成为可能，同时保证安全性。
 
