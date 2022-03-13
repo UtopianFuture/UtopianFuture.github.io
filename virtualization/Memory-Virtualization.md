@@ -944,6 +944,34 @@ static MemoryRegionSection *address_space_lookup_region(AddressSpaceDispatch *d,
 
 这样就完成了虚拟机物理地址的分派，找到了 GPA 对应的 mr，也就找到了对应的 QEMU 中的进程虚拟地址。
 
+### KVM 内存虚拟化
+
+这部分涉及的内容也很多，之后有需要再分析。
+
+### MMIO 机制
+
+#### 虚拟设备 MMIO 实现原理
+
+在 X86 下可以通过 PIO 或 MMIO 两种方式访问设备。PIO 即通过专门的访问设备指令进行访问，而 MMIO 是将设备地址映射到内存空间，访问外设和访问内存是一样的，那么 MMIO 是怎样实现的呢？这里先简单介绍 MMIO 的机制，具体的实现在设备虚拟化部分分析。
+
+（1）QEMU 申明一段内存作为 MMIO 内存，这里只是建立一个映射关系，不会立即分配内存空间。
+
+（2）SeaBIOS 会分配好所有设备 MMIO 对应的基址。
+
+（3）当 guestos 第一次访问 MMIO 的地址时，会发生 EPT violation，产生 VM Exit。
+
+（4）KVM 创建一个 EPT 也表，并设置页表项特殊标志。
+
+（5）虚拟机之后再访问对应的 MMIO 地址时会产生 EPT misconfig，从而产生 VM Exit，退出到 KVM，然后 KVM 负责将该事件分发到 QEMU。
+
+#### coalesced MMIO
+
+根据 MMIO 的实现原理，我们知道每次发生 MMIO 都会导致虚拟机退出到 QEMU 应用层，但是往往是多个 MMIO 一起操作，这时可以将多个 MMIO 操作暂存，等到最后一个 MMIO 时再退出到 QEMU 一起处理，这就是 coalesced MMIO。
+
+### 虚拟机脏页跟踪
+
+脏页跟踪是热迁移的基础。热迁移即在虚拟机运行时将其从一台宿主机迁移到另一台宿主机，但是在迁移过程中，虚拟机还是会不断的写内存，如果虚拟机在 QEMU 迁移了该也之后又对该页写入了新数据，那么 QEMU 就需要重新迁移该页。那么脏页跟踪就是通过一个脏页位图跟踪虚拟机的物理内存有哪些内存被修改了。具体的实现在热迁移部分再分析。
+
 ### Reference
 
 [1] http://blog.vmsplice.net/2016/01/qemu-internals-how-guest-physical-ram.html
