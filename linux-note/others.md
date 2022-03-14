@@ -373,6 +373,8 @@ A **network socket** is a software structure within a [network node](https://en.
 
 SMM is **a special-purpose operating mode** provided for handling system-wide functions like **power management, system hardware control, or proprietary OEM designed code**. It is intended for use only by system firmware ([BIOS](https://en.wikipedia.org/wiki/BIOS) or [UEFI](https://en.wikipedia.org/wiki/UEFI)), not by applications software or general-purpose systems software. The main benefit of SMM is that it **offers a distinct and easily isolated processor environment** that operates transparently to the operating system or executive and software applications.
 
+翻译过来就是 SMM 是一个特别的处理器工作模式，它运行在独立的空间里，具有自己独立的运行环境，与 real mode/protected mode/long mode 隔离，但是具有极高的权限。SMM 用来处理 power 管理、hardware 控制这些比较底层，比较紧急的事件。这些事件使用 SMI(System Management Interrupt) 来处理，因此进入了 SMI 处理程序也就是进入了 SMM ，SMI 是不可屏蔽的外部中断，并且不可重入（在 SMI 处理程序中不能响应另一个 SMI 请求）。
+
 ### [微内核和宏内核](https://zhuanlan.zhihu.com/p/53612117)
 
 微内核是将各种服务功能放到内核之外，自身仅仅是一个消息中转站，用于各种功能间的通讯，如 WindowNT。
