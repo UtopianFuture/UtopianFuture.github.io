@@ -372,7 +372,111 @@ static void timer_interrupt_handler(int sig, siginfo_t *si, void *uc) {
 
 #### 内存模拟
 
-内存初始化看代码不难，但我似乎没有仔细想过为什么要这样初始化，以及每块内存区域的含义，正好在将 BMBT 移植到 edk2 的过程中遇到了 sys/mmap.h 头没有在 edk2 中没有实现的问题，晚上花了很久在向怎样解决这个问题，主要的思路是看看 edk2 中已经实现的代码中是怎样使用 mmap 的，但这条路似乎不太行，所以换个思路，理解为什么要这样实现，有没有替换的方法。下面分析一下 BMBT 的内存虚拟化。代码主要在 memory.c 中。
+##### 系统态内存初始化
+
+BMBT 是直接运行在裸机上的，它也需要像操作系统那样探测内存，其实也就是内核中的 `start_kernel` 部分，将内存初始化，中断初始化等的内容移植过来即可。这里先分析内存初始化。
+
+```c
+void setup_arch(char **cmdline_p) {
+  cpu_probe(); // 探测 CPU 信息
+  early_init(); // 获取从 bios 中传来的信息，目前主要是内存信息
+  platform_init();
+}
+```
+
+BMBT 会在 `parse_mem` 解析内存信息，将其保存到 `loongson_mem_map` 中，这个在之前的[文章](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/kernel_init.md)中已经分析过，就是在伙伴系统还没有初始化的系统运行初期进行内存管理。
+
+```c
+static int parse_mem(struct _extention_list_hdr *head) {
+  loongson_mem_map = (struct loongsonlist_mem_map *)head;
+  if (ext_listhdr_checksum((u8 *)loongson_mem_map, head->length)) {
+    printf("mem checksum error\n");
+    return -EPERM;
+  }
+  return 0;
+}
+```
+
+之后会将 `loongson_mem_map` 中的内存一一加入到链表 `free_mem` 中。
+
+```c
+void fw_init_memory(void) {
+  int i;
+  u32 mem_type;
+  u64 mem_start, mem_end, mem_size;
+  static unsigned long num_physpages;
+  // unsigned long start_pfn, end_pfn;
+  // unsigned long kernel_end_pfn;
+  u64 total_mem = 0;
+
+  init_pages();
+  u64 bss_end = TO_PHYS(PFN_ALIGN((u64)__bss_stop));
+
+  /* parse memory information */
+  // 将 loongson_mem_map 的内存信息添加到链表中
+  for (i = 0; i < loongson_mem_map->map_count; i++) {
+    mem_type = loongson_mem_map->map[i].mem_type;
+    mem_start = loongson_mem_map->map[i].mem_start;
+    mem_size = loongson_mem_map->map[i].mem_size;
+    mem_end = mem_start + mem_size;
+
+    switch (mem_type) {
+    case ADDRESS_TYPE_SYSRAM:
+      mem_start = PFN_ALIGN(mem_start);
+      mem_end = PFN_ALIGN(mem_end - PAGE_SIZE + 1);
+      if (mem_start >= mem_end)
+        break;
+      if (mem_end <= bss_end)
+        break;
+      if (mem_start < bss_end) {
+        mem_start = bss_end;
+        mem_size = mem_end - mem_start;
+      }
+
+      num_physpages += (mem_size >> PAGE_SHIFT);
+      total_mem += mem_size;
+      // printf("mem_start:0x%lx, mem_size:0x%lx Bytes\n", mem_start,
+      // mem_size);
+      printf("start_pfn:0x%lx, end_pfn:0x%lx\n", mem_start >> PAGE_SHIFT,
+             (mem_start + mem_size) >> PAGE_SHIFT);
+      printf("pfn number %lx\n", mem_size >> PAGE_SHIFT);
+
+      // 在这里添加到 free_mem 中
+      fw_add_mem(mem_start, mem_size);
+
+      ...
+
+    }
+  }
+  mmap_ready = true;
+  printf("total_mem %lx bytes\n", total_mem);
+}
+```
+
+```plain
+#0  fw_init_memory () at env/loongarch/la64/mem.c:21
+#1  0x9000000000362efc in platform_init () at env/loongarch/la64/init.c:9
+#2  0x9000000000363688 in setup_arch (
+    cmdline_p=cmdline_p@entry=0x9000000000820018 <kernel_stack+65488>)
+    at env/loongarch/kernel/setup.c:13
+#3  0x9000000000365a00 in start_kernel () at env/loongarch/init/main.c:23
+```
+
+到这里就完成了系统内存的初始化，包括简单的内存管理。用户态程序通过 `mmap` 进行内存映射时，最后会通过系统调用调用到 `kernel_mmap`，
+
+```c
+  case SYS_mmap:
+    ret = kernel_mmap(arg0, arg1, arg2, arg3, arg4, arg5, arg6);
+    break;
+```
+
+当然，这里只是名字叫系统调用，其实就是一个函数调用，因为整个 BMBT 都是运行在硬件上，所有对其没有系统态，用户态之分。
+
+`kernel_mmap` 就会从 `free_mem` 中分配适当的内存空间。
+
+##### 用户态内存模拟
+
+内存初始化看代码不难，但我似乎没有仔细想过为什么要这样初始化，以及每块内存区域的含义，正好在将 BMBT 移植到 edk2 的过程中遇到了 sys/mmap.h 头在 edk2 中没有实现的问题，晚上花了很久在想怎样解决这个问题，主要的思路是看看 edk2 中已经实现的代码中是怎样使用 mmap 的，但这条路似乎不太行，所以换个思路，理解为什么要这样实现，有没有替换的方法。下面分析一下 BMBT 的内存虚拟化。代码主要在 memory.c 中。BMBT 的内存模拟也是 QEMU 的简化实现，[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Memory-Virtualization.md)分析了 QEMU 是怎样实现内存模拟的，可以先了解其大概结构，然后看 BMBT 代码就很容易看懂了。
 
 先看看几个重要的数据结构，之后会理清这些数据结构之间的关系：
 
@@ -451,7 +555,7 @@ void qemu_init() {
 }
 ```
 
-先设置 memory_dispatch, look_up 的回调函数，然后调用 `ram_init`
+先设置 `memory_dispatch`, `look_up` 的回调函数，然后调用 `ram_init`
 
 ```C
 void memory_map_init(ram_addr_t size) {
@@ -547,7 +651,22 @@ name: pc.bios, index: 16, offset: 4194048, size: 256
 
 前面的都很好理解，为什么到 pc.bios 的 offset 就对不上了呢？
 
-在所有的 block 都初始化了之后，会调用 `as_add_memory_regoin` ，将 memory_region 加到 `dispatch->segments` 中，但为什么这样加还没有搞清楚。这样添加之后因为 `AddressSpace` 的回调函数已经初始化为  `mem_mr_look_up` ，所以之后可以直接根据 `offset` 找到该 block。
+而所有分配给 block 的内存空间都是通过 `alloc_ram` 向”系统“申请来的，
+
+```c
+static void *alloc_ram(hwaddr size) {
+  // (qemu) qemu_ram_mmap size=0x180200000 flags=0x22 guardfd=-1
+  // size = 128MB
+  void *host = mmap(0, size, PROT_EXEC | PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  assert(host != (void *)-1);
+  return host;
+}
+```
+
+上文介绍过了，用户态程序可以通过 `mmap` 来获取内存空间，其实在这里就完成了 HPA 到 HVA 的映射，不过是一一映射。
+
+在所有的 block 都初始化了之后，会调用 `as_add_memory_regoin` ，将 `memory_region` 加到 `dispatch->segments` 中，但为什么这样加还没有搞清楚。这样添加之后因为 `AddressSpace` 的回调函数已经初始化为  `mem_mr_look_up` ，所以之后可以直接根据 `offset` 找到该 block。
 
 ```c
 static void as_add_memory_regoin(AddressSpaceDispatch *dispatch,
@@ -590,9 +709,9 @@ static ram_addr_t x86_bios_rom_init() {
 
 然后是 `setup_dirty_memory` ，为什么要初始化 dirty memory，BMBT 需要这个干啥？
 
-所有的初始化内容就是这些，接下来看看还有哪些地方会用到 memory region。
+dirty memory 是记录 guestos 修改了哪些物理页面，这个在热迁移的时候会用到，但是目前的 BMBT 没有实现这个功能。
 
-还是不懂，看看 QEMU 中的 memory virtualization 吧！之后进一步看 kernel 的内存管理。
+所有的初始化内容就是这些，接下来看看还有哪些地方会用到 memory region。
 
 ### 问题
 
