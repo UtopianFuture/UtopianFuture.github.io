@@ -141,6 +141,16 @@ APIC 包含两个部分：`LAPIC`和`I/O APIC`， LAPIC 位于处理器一端，
 
 中断注入的大致流程如下：
 
+`vcpu_enter_guest` ->
+
+​			`inject_pending_event` ->
+
+​						`kvm_inject_exception` / `vmx_inject_irq` ->
+
+​									`vmx_queue_exception` /   ->
+
+​												`vmcs_write32`
+
 在进入 VMX non-root 之前，KVM 会调用 `vcpu_enter_guest` -> `inject_pending_event` 检查并处理其中的 pending request。这里不单单处理设备中断，还有 smi 和 nmi 中断的注入，在注入之前还要检查之前是否有异常需要注入。
 
 这里有一个问题，pending 和 injected 分别代表什么？
@@ -152,7 +162,7 @@ static int inject_pending_event(struct kvm_vcpu *vcpu, bool *req_immediate_exit)
 	bool can_inject = true;
 
 	/* try to reinject previous events if any */
-
+	// 从原本的注释中就知道，这里处理上一次 vcpu_enter_guest 没有处理的 exception
 	if (vcpu->arch.exception.injected) { // 检查是否有异常需要注入
 		kvm_inject_exception(vcpu);
 		can_inject = false;
@@ -171,6 +181,7 @@ static int inject_pending_event(struct kvm_vcpu *vcpu, bool *req_immediate_exit)
 	 * serviced prior to recognizing any new events in order to
 	 * fully complete the previous instruction.
 	 */
+    // 翻译一下就是 exception 的优先级较高，要先注册，没有 exception 了才注册 interrupt
 	else if (!vcpu->arch.exception.pending) { // 没有异常检查 nmi
 		if (vcpu->arch.nmi_injected) {
 			static_call(kvm_x86_set_nmi)(vcpu);
@@ -181,20 +192,7 @@ static int inject_pending_event(struct kvm_vcpu *vcpu, bool *req_immediate_exit)
 		}
 	}
 
-	WARN_ON_ONCE(vcpu->arch.exception.injected &&
-		     vcpu->arch.exception.pending);
-
-	/*
-	 * Call check_nested_events() even if we reinjected a previous event
-	 * in order for caller to determine if it should require immediate-exit
-	 * from L2 to L1 due to pending L1 events which require exit
-	 * from L2 to L1.
-	 */
-	if (is_guest_mode(vcpu)) {
-		r = kvm_check_nested_events(vcpu);
-		if (r < 0)
-			goto out;
-	}
+    ...
 
 	/* try to inject new event if pending */
 	if (vcpu->arch.exception.pending) { // 注入异常事件
@@ -202,28 +200,16 @@ static int inject_pending_event(struct kvm_vcpu *vcpu, bool *req_immediate_exit)
 					vcpu->arch.exception.has_error_code,
 					vcpu->arch.exception.error_code);
 
-		vcpu->arch.exception.pending = false;
-		vcpu->arch.exception.injected = true;
+		vcpu->arch.exception.pending = false; // 上面那个问题这里就有很好的解释。先有 pending 的 exception，
+		vcpu->arch.exception.injected = true; // 然后 inject，这时的状态就变成 injected
 
-		if (exception_type(vcpu->arch.exception.nr) == EXCPT_FAULT)
-			__kvm_set_rflags(vcpu, kvm_get_rflags(vcpu) |
-					     X86_EFLAGS_RF);
+		...
 
-		if (vcpu->arch.exception.nr == DB_VECTOR) {
-			kvm_deliver_exception_payload(vcpu);
-			if (vcpu->arch.dr7 & DR7_GD) {
-				vcpu->arch.dr7 &= ~DR7_GD;
-				kvm_update_dr7(vcpu);
-			}
-		}
-
-		kvm_inject_exception(vcpu);
+		kvm_inject_exception(vcpu); // 进行异常注入，之后再分析
 		can_inject = false;
 	}
 
-	/* Don't inject interrupts if the user asked to avoid doing so */
-	if (vcpu->guest_debug & KVM_GUESTDBG_BLOCKIRQ)
-		return 0;
+    ...
 
 	/*
 	 * Finally, inject interrupt events.  If an event cannot be injected
@@ -236,17 +222,19 @@ static int inject_pending_event(struct kvm_vcpu *vcpu, bool *req_immediate_exit)
 	 * in order to make progress and get back here for another iteration.
 	 * The kvm_x86_ops hooks communicate this by returning -EBUSY.
 	 */
+    // 符合逻辑，exception 的优先级高于 interrupt
+    // 一种种中断检查
 	if (vcpu->arch.smi_pending) { // 为什么前面没有检查
-		r = can_inject ? static_call(kvm_x86_smi_allowed)(vcpu, true) : -EBUSY;
+		r = can_inject ? static_call(kvm_x86_smi_allowed)(vcpu, true) : -EBUSY; // 回调函数是 vmx_smi_allowed
 		if (r < 0)
 			goto out;
 		if (r) {
 			vcpu->arch.smi_pending = false;
 			++vcpu->arch.smi_count;
-			enter_smm(vcpu);
+			enter_smm(vcpu); // 进入 smm，它是 x86 cpu 的一种运行模式，用于处理 power，hardware 等问题，权限很高
 			can_inject = false;
 		} else
-			static_call(kvm_x86_enable_smi_window)(vcpu);
+			static_call(kvm_x86_enable_smi_window)(vcpu); // 回调函数是 vmx_enable_smi_window
 	}
 
 	if (vcpu->arch.nmi_pending) {
@@ -256,7 +244,7 @@ static int inject_pending_event(struct kvm_vcpu *vcpu, bool *req_immediate_exit)
 		if (r) {
 			--vcpu->arch.nmi_pending;
 			vcpu->arch.nmi_injected = true;
-			static_call(kvm_x86_set_nmi)(vcpu);
+			static_call(kvm_x86_set_nmi)(vcpu); // vmx_inject_nmi
 			can_inject = false;
 			WARN_ON(static_call(kvm_x86_nmi_allowed)(vcpu, true) < 0);
 		}
@@ -272,20 +260,12 @@ static int inject_pending_event(struct kvm_vcpu *vcpu, bool *req_immediate_exit)
             // kvm_cpu_get_interrupt() 获取中断向量
             // 将中断向量写入arch.interrupt.nr，见下面的kvm_queue_interrupt()函数
 			kvm_queue_interrupt(vcpu, kvm_cpu_get_interrupt(vcpu), false);
-			static_call(kvm_x86_set_irq)(vcpu); // 调用kvm_x86_set_irq()进行注入
+			static_call(kvm_x86_set_irq)(vcpu); // vmx_inject_irq
 			WARN_ON(static_call(kvm_x86_interrupt_allowed)(vcpu, true) < 0);
 		}
 		if (kvm_cpu_has_injectable_intr(vcpu))
 			static_call(kvm_x86_enable_irq_window)(vcpu);
 	}
-
-	if (is_guest_mode(vcpu) &&
-	    kvm_x86_ops.nested_ops->hv_timer_pending &&
-	    kvm_x86_ops.nested_ops->hv_timer_pending(vcpu))
-		*req_immediate_exit = true;
-
-	WARN_ON(vcpu->arch.exception.pending);
-	return 0;
 
     ...
 }
@@ -322,7 +302,7 @@ static void vmx_inject_irq(struct kvm_vcpu *vcpu)
 		int inc_eip = 0;
 		if (vcpu->arch.interrupt.soft)
 			inc_eip = vcpu->arch.event_exit_inst_len;
-		kvm_inject_realmode_interrupt(vcpu, irq, inc_eip);
+		kvm_inject_realmode_interrupt(vcpu, irq, inc_eip); // 实模式下的写入，有趣
 		return;
 	}
 	intr = irq | INTR_INFO_VALID_MASK;
@@ -332,9 +312,39 @@ static void vmx_inject_irq(struct kvm_vcpu *vcpu)
 			     vmx->vcpu.arch.event_exit_inst_len);
 	} else
 		intr |= INTR_TYPE_EXT_INTR;
-	vmcs_write32(VM_ENTRY_INTR_INFO_FIELD, intr);
+	vmcs_write32(VM_ENTRY_INTR_INFO_FIELD, intr); // 写入 vmcs
 
-	vmx_clear_hlt(vcpu); // 写入VMCS
+	vmx_clear_hlt(vcpu);
+}
+```
+
+上面是 interrupt 的注入，exception 的注入也类似。
+
+```c
+static void vmx_queue_exception(struct kvm_vcpu *vcpu)
+{
+	...
+
+	kvm_deliver_exception_payload(vcpu);
+
+	if (has_error_code) {
+		vmcs_write32(VM_ENTRY_EXCEPTION_ERROR_CODE, error_code);
+		intr_info |= INTR_INFO_DELIVER_CODE_MASK;
+	}
+
+	if (vmx->rmode.vm86_active) {
+		int inc_eip = 0;
+		if (kvm_exception_is_soft(nr))
+			inc_eip = vcpu->arch.event_exit_inst_len;
+		kvm_inject_realmode_interrupt(vcpu, nr, inc_eip);
+		return;
+	}
+
+	...
+
+	vmcs_write32(VM_ENTRY_INTR_INFO_FIELD, intr_info); // 关键还是在这里写入
+
+	vmx_clear_hlt(vcpu);
 }
 ```
 
@@ -344,12 +354,27 @@ static void vmx_inject_irq(struct kvm_vcpu *vcpu)
 
 和 CPU 一样，终端设备的模拟也分 KVM 端和 QEMU 端。QEMU 端在 `kvm_init` 中通过 ioctl 向 vmfd （这个 fd 在前面介绍过）发起创建 irqchip 的请求，KVM 进行处理。
 
+```plain
+#0  kvm_init (ms=0x55555699a400) at ../accel/kvm/kvm-all.c:2307
+#1  0x0000555555af387b in accel_init_machine (accel=0x55555681c140, ms=0x55555699a400) at ../accel/accel-softmmu.c:39
+#2  0x0000555555c0752b in do_configure_accelerator (opaque=0x7fffffffd9dd, opts=0x555556a448e0, errp=0x55555677c100 <error_fatal>) at ../softmmu/vl.c:2348
+#3  0x0000555555f01307 in qemu_opts_foreach (list=0x5555566a18c0 <qemu_accel_opts>, func=0x555555c07401 <do_configure_accelerator>, opaque=0x7fffffffd9dd, errp=0x55555677c100 <error_fatal>)
+    at ../util/qemu-option.c:1135
+#4  0x0000555555c07790 in configure_accelerators (progname=0x7fffffffe098 "/home/guanshun/gitlab/qemu-newest/build/x86_64-softmmu/qemu-system-x86_64") at ../softmmu/vl.c:2414
+#5  0x0000555555c0a834 in qemu_init (argc=13, argv=0x7fffffffdc98, envp=0x7fffffffdd08) at ../softmmu/vl.c:3724
+#6  0x000055555583b6f5 in main (argc=13, argv=0x7fffffffdc98, envp=0x7fffffffdd08) at ../softmmu/main.c:49
+```
+
 ```c
 static int kvm_init(MachineState *ms)
 {
     MachineClass *mc = MACHINE_GET_CLASS(ms);
 
     ...
+
+    do {
+        ret = kvm_ioctl(s, KVM_CREATE_VM, type);
+    } while (ret == -EINTR);
 
     if (s->kernel_irqchip_allowed) {
         kvm_irqchip_create(s);
@@ -399,38 +424,23 @@ long kvm_arch_vm_ioctl(struct file *filp,
 	switch (ioctl) {
 	...
 	case KVM_CREATE_IRQCHIP: {
-		mutex_lock(&kvm->lock);
 
 		...
 
 		r = kvm_pic_init(kvm);
-		if (r)
-			goto create_irqchip_unlock;
-
 		r = kvm_ioapic_init(kvm);
-		if (r) {
-			kvm_pic_destroy(kvm);
-			goto create_irqchip_unlock;
-		}
-
 		r = kvm_setup_default_irq_routing(kvm);
-		if (r) {
-			kvm_ioapic_destroy(kvm);
-			kvm_pic_destroy(kvm);
-			goto create_irqchip_unlock;
-		}
+
 		/* Write kvm->irq_routing before enabling irqchip_in_kernel. */
 		smp_wmb();
 		kvm->arch.irqchip_mode = KVM_IRQCHIP_KERNEL;
-	create_irqchip_unlock:
-		mutex_unlock(&kvm->lock);
 		break;
 	}
 	...
 }
 ```
 
-`KVM_CREATE_IRQCHIP` 主要调用 `kvm_pic_init` 创建 PIC 设备，`kvm_ioapic_init` 创建 IOAPIC 设备，`kvm_setup_default_irq_routing` 初始化中断路由表。
+`KVM_CREATE_IRQCHIP` 主要调用 `kvm_pic_init` 创建 PIC 设备，`kvm_ioapic_init` 创建 IOAPIC 设备，它在下一节在分析，`kvm_setup_default_irq_routing` 初始化中断路由表。
 
 ```c
 int kvm_pic_init(struct kvm *kvm)
@@ -455,22 +465,15 @@ int kvm_pic_init(struct kvm *kvm)
 	kvm_iodevice_init(&s->dev_slave, &picdev_slave_ops);
 	kvm_iodevice_init(&s->dev_elcr, &picdev_elcr_ops);
 	mutex_lock(&kvm->slots_lock);
-	ret = kvm_io_bus_register_dev(kvm, KVM_PIO_BUS, 0x20, 2,
-				      &s->dev_master);
-	if (ret < 0)
-		goto fail_unlock;
-
+    // 在 kvm_pic 中创建 3 个设备，并注册端口，
+    // 这个端口就是用来访问 pic 的么
+	ret = kvm_io_bus_register_dev(kvm, KVM_PIO_BUS, 0x20, 2, &s->dev_master);
 	ret = kvm_io_bus_register_dev(kvm, KVM_PIO_BUS, 0xa0, 2, &s->dev_slave);
-	if (ret < 0)
-		goto fail_unreg_2;
-
 	ret = kvm_io_bus_register_dev(kvm, KVM_PIO_BUS, 0x4d0, 2, &s->dev_elcr);
-	if (ret < 0)
-		goto fail_unreg_1;
 
 	mutex_unlock(&kvm->slots_lock);
 
-	kvm->arch.vpic = s;
+	kvm->arch.vpic = s; // 创建好了
 
 	return 0;
 
@@ -483,8 +486,8 @@ int kvm_pic_init(struct kvm *kvm)
 这里比较复杂的是初始化中断路由表。`default_routing` 是默认路由信息。没有完全搞懂，还需要进一步分析。
 
 ```c
-#define IOAPIC_ROUTING_ENTRY(irq) \
-	{ .gsi = irq, .type = KVM_IRQ_ROUTING_IRQCHIP,	\
+#define IOAPIC_ROUTING_ENTRY(irq) \ // gsi 表示该中断在系统全局范围的中断号，type 用来决定中断的种类
+	{ .gsi = irq, .type = KVM_IRQ_ROUTING_IRQCHIP,	\ // KVM_IRQ_ROUTING_IRQCHIP，表示 u.irqchip 有效
 	  .u.irqchip = { .irqchip = KVM_IRQCHIP_IOAPIC, .pin = (irq) } }
 #define ROUTING_ENTRY1(irq) IOAPIC_ROUTING_ENTRY(irq)
 
@@ -495,15 +498,15 @@ int kvm_pic_init(struct kvm *kvm)
 	IOAPIC_ROUTING_ENTRY(irq), PIC_ROUTING_ENTRY(irq)
 
 static const struct kvm_irq_routing_entry default_routing[] = {
-	ROUTING_ENTRY2(0), ROUTING_ENTRY2(1),
-	ROUTING_ENTRY2(2), ROUTING_ENTRY2(3),
+	ROUTING_ENTRY2(0), ROUTING_ENTRY2(1), // apic 和 pic 前 16 个有重叠，
+	ROUTING_ENTRY2(2), ROUTING_ENTRY2(3), // 所以初始化 2 个 entry
 	ROUTING_ENTRY2(4), ROUTING_ENTRY2(5),
 	ROUTING_ENTRY2(6), ROUTING_ENTRY2(7),
 	ROUTING_ENTRY2(8), ROUTING_ENTRY2(9),
 	ROUTING_ENTRY2(10), ROUTING_ENTRY2(11),
 	ROUTING_ENTRY2(12), ROUTING_ENTRY2(13),
 	ROUTING_ENTRY2(14), ROUTING_ENTRY2(15),
-	ROUTING_ENTRY1(16), ROUTING_ENTRY1(17),
+	ROUTING_ENTRY1(16), ROUTING_ENTRY1(17), // 剩下的 8 个 gsi 都是 apic 使用
 	ROUTING_ENTRY1(18), ROUTING_ENTRY1(19),
 	ROUTING_ENTRY1(20), ROUTING_ENTRY1(21),
 	ROUTING_ENTRY1(22), ROUTING_ENTRY1(23),
@@ -530,15 +533,7 @@ struct kvm_kernel_irq_routing_entry {
 			unsigned irqchip;
 			unsigned pin;
 		} irqchip;
-		struct {
-			u32 address_lo;
-			u32 address_hi;
-			u32 data;
-			u32 flags;
-			u32 devid;
-		} msi;
-		struct kvm_s390_adapter_int adapter;
-		struct kvm_hv_sint hv_sint;
+		...
 	};
 	struct hlist_node link;
 };
@@ -546,14 +541,14 @@ struct kvm_kernel_irq_routing_entry {
 
 ```c
 #ifdef CONFIG_HAVE_KVM_IRQ_ROUTING
-struct kvm_irq_routing_table {
-	int chip[KVM_NR_IRQCHIPS][KVM_IRQCHIP_NUM_PINS];
+struct kvm_irq_routing_table { // 和 default_routing 的类型不一样，kvm_irq_routing_entry
+	int chip[KVM_NR_IRQCHIPS][KVM_IRQCHIP_NUM_PINS]; // 每一项代表芯片引脚对应的全局中断号 gsi
 	u32 nr_rt_entries;
 	/*
 	 * Array indexed by gsi. Each entry contains list of irq chips
 	 * the gsi is connected to.
 	 */
-	struct hlist_head map[];
+	struct hlist_head map[]; // 链接 gsi 对应的所有的 kvm_kernel_irq_routing_entry
 };
 #endif
 
@@ -588,25 +583,10 @@ int kvm_set_irq_routing(struct kvm *kvm,
 			new->chip[i][j] = -1; // chip[][]，第一维表示3个 pic 设备，第二维表示引脚数
 
 	for (i = 0; i < nr; ++i) {
-		r = -ENOMEM;
-		e = kzalloc(sizeof(*e), GFP_KERNEL_ACCOUNT);
-		if (!e)
-			goto out;
 
-		r = -EINVAL;
-		switch (ue->type) {
-		case KVM_IRQ_ROUTING_MSI:
-			if (ue->flags & ~KVM_MSI_VALID_DEVID)
-				goto free_entry;
-			break;
-		default:
-			if (ue->flags)
-				goto free_entry;
-			break;
-		}
+        ...
+        //
 		r = setup_routing_entry(kvm, new, e, ue); // 建立中断路由信息
-		if (r)
-			goto free_entry;
 		++ue;
 	}
 
@@ -616,38 +596,40 @@ int kvm_set_irq_routing(struct kvm *kvm,
 }
 ```
 
-`setup_routing_entry` 将 `kvm_irq_routing_entry` 中的 gsi 和 type 复制到 `kvm_kernel_irq_routing_entry` 中，并根据 `kvm_irq_routing_entry` 中的中断类型设置回调函数。还没有完全搞懂。
+`setup_routing_entry` 将 `kvm_irq_routing_entry` 中的 gsi 和 type 复制到 `kvm_kernel_irq_routing_entry` 中，并根据 `kvm_irq_routing_entry` 中的中断类型设置回调函数。那虚拟机的中断处理流程是怎样的呢，还没有完全搞懂。
+
+当设备向虚拟中断控制器发起中断时，根据设备注册的 gsi，首先会在 `kvm_irq_routing_table` 中寻找映射信息，然后根据 map 中找到对应的 `kvm_kernel_irq_routing_entry` ，而 `kvm_kernel_irq_routing_entry` 中根据 gsi 注册的回调函数 `kvm_set_pic_irq` 和 `kvm_set_ioapic_irq` 发起中断。这个流程在下面的章节会进一步分析。
 
 ```c
 static int setup_routing_entry(struct kvm *kvm,
 			       struct kvm_irq_routing_table *rt, // 虚拟机中断路由信息
-			       struct kvm_kernel_irq_routing_entry *e, // 内核
-			       const struct kvm_irq_routing_entry *ue) // 默认
+			       struct kvm_kernel_irq_routing_entry *e, // 内核路由信息
+			       const struct kvm_irq_routing_entry *ue) // 默认路由信息
 {
 	struct kvm_kernel_irq_routing_entry *ei;
 	int r;
-	u32 gsi = array_index_nospec(ue->gsi, KVM_MAX_IRQ_ROUTES);
+	u32 gsi = array_index_nospec(ue->gsi, KVM_MAX_IRQ_ROUTES); // 获取默认路由的 gsi
 
 	/*
 	 * Do not allow GSI to be mapped to the same irqchip more than once.
 	 * Allow only one to one mapping between GSI and non-irqchip routing.
 	 */
+    // 翻译过来就是一个 gsi 只能映射到不同的芯片引脚上
 	hlist_for_each_entry(ei, &rt->map[gsi], link)
 		if (ei->type != KVM_IRQ_ROUTING_IRQCHIP ||
 		    ue->type != KVM_IRQ_ROUTING_IRQCHIP ||
 		    ue->u.irqchip.irqchip == ei->irqchip.irqchip)
 			return -EINVAL;
 
+    // 建立映射
 	e->gsi = gsi;
 	e->type = ue->type;
-	r = kvm_set_routing_entry(kvm, e, ue);
-	if (r)
-		return r;
+	r = kvm_set_routing_entry(kvm, e, ue); // 设置回调函数
 	if (e->type == KVM_IRQ_ROUTING_IRQCHIP)
 		rt->chip[e->irqchip.irqchip][e->irqchip.pin] = e->gsi; // 虚拟机中每个引脚的中断号为内核中的中断号
 
 	hlist_add_head(&e->link, &rt->map[e->gsi]); // 为什么是 e 加到 rt 中？
-
+	// 也就是说每个虚拟机中断(gsi)都对应到内核路由表项
 	return 0;
 }
 ```
