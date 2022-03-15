@@ -658,6 +658,28 @@ struct IRQState { // 表示一个中断引脚
 };
 ```
 
+中断初始化都是在 `pc_init1` 中进行的，
+
+```c
+/* PC hardware initialisation */
+static void pc_init1(MachineState *machine,
+                     const char *host_type, const char *pci_type)
+{
+    ...
+
+    gsi_state = pc_gsi_create(&x86ms->gsi, pcmc->pci_enabled); // gsi_state 是中断路由的起点
+
+    if (pcmc->pci_enabled) {
+    	...
+    }
+    isa_bus_irqs(isa_bus, x86ms->gsi);
+
+    pc_i8259_create(isa_bus, gsi_state->i8259_irq); // 创建具体的设备
+
+    ...
+}
+```
+
 首先调用 `pc_gsi_create` 创建虚拟机的 `GSIState` ，之后再创建具体的外设。这里 `x86ms->gsi`就是 guestos 中断路由的起点。但是在该函数中，只是分配一个空间向一个指向该 `GSIState` 的指针，然后所有的设备所有一个指向 `GSIState` 的指针，而 `GSIState` 本身还没有赋值。
 
 ```c
@@ -675,37 +697,7 @@ GSIState *pc_gsi_create(qemu_irq **irqs, bool pci_enabled)
 }
 ```
 
-这里 `gsi_handler` 就是中断处理函数，所有的中断引脚 `IRQState * irq -> handler` 都是指向这个处理函数，它会根据中断号请求对应的中断。0~15 号是 `i8259_irq` 中断，16~23 是 `ioapic_irq` 中断，24 是`ioapic2_irq` 中断。这里有个问题，`s->i8259_irq[n]` 为什么就会指向 `kvm_pic_set_irq` ？ `kvm_pc_setup_irq_routing` 这个函数初始化的。
-
-```c
-/* PC Utility function */
-void kvm_pc_setup_irq_routing(bool pci_enabled)
-{
-    KVMState *s = kvm_state;
-    int i;
-
-    assert(kvm_has_gsi_routing());
-    for (i = 0; i < 8; ++i) {
-        if (i == 2) {
-            continue;
-        }
-        kvm_irqchip_add_irq_route(s, i, KVM_IRQCHIP_PIC_MASTER, i);
-    }
-    for (i = 8; i < 16; ++i) {
-        kvm_irqchip_add_irq_route(s, i, KVM_IRQCHIP_PIC_SLAVE, i - 8);
-    }
-    if (pci_enabled) {
-        for (i = 0; i < 24; ++i) {
-            if (i == 0) {
-                kvm_irqchip_add_irq_route(s, i, KVM_IRQCHIP_IOAPIC, 2);
-            } else if (i != 2) {
-                kvm_irqchip_add_irq_route(s, i, KVM_IRQCHIP_IOAPIC, i);
-            }
-        }
-    }
-    kvm_irqchip_commit_routes(s);
-}
-```
+这里 `gsi_handler` 就是中断处理函数，所有的中断引脚 `IRQState * irq -> handler` 都是指向这个处理函数，它会根据中断号请求对应的中断。0~15 号是 `i8259_irq` 中断，16~23 是 `ioapic_irq` 中断，24 是`ioapic2_irq` 中断。这里有个问题，`s->i8259_irq[n]` 为什么就会指向 `kvm_pic_set_irq` ？这里只是将处理函数统一设置为 `gsi_handler`，而每个 irq 对应的处理函数要等到对应的中断控制器初始化时才会设置。在之后设备发起中断时，会先进入到 `gsi_handler` 中处理，然后由 `gsi_handler` 分发到不同的中断控制器处理函数进行处理。这个过程在后面能看到。
 
  opaque 则是一个全局中断处理器 `GSIState` 的指针。最重要的 `x86ms->gsi` 已经准备好了。
 
@@ -823,7 +815,8 @@ if (pcmc->pci_enabled) {
         pcms->hpet_enabled = false;
     }
     isa_bus_irqs(isa_bus, x86ms->gsi);
-	pc_i8259_create(isa_bus, gsi_state->i8259_irq);
+	pc_i8259_create(isa_bus, gsi_state->i8259_irq); // 在这里将初始化的 pic 装入 gsi_state，所以中断是先发送到 														// gsi_state 的 gsi_handler，
+													// 然后再由它分发给注册到 gsi_state 中的不同的中断控制器中。
 ```
 
 `pc_i8259_create` 除了调用 `kvm_i8259_init` 创建 pic 设备，还会指定 pic 设备的中断回调函数 `kvm_pic_set_irq` 。之后发生 pic 设备中断就由 `kvm_pic_set_irq` 进行处理，这个之后会分析。
@@ -836,10 +829,10 @@ void pc_i8259_create(ISABus *isa_bus, qemu_irq *i8259_irqs)
     qemu_irq *i8259;
 
     if (kvm_pic_in_kernel()) {
-        i8259 = kvm_i8259_init(isa_bus);
-    } else if (xen_enabled()) {
+        i8259 = kvm_i8259_init(isa_bus); // 使用 kvm 模拟
+    } else if (xen_enabled()) { // xen 是我理解的 Xen 么，怎么哪都有它
         i8259 = xen_interrupt_controller_init();
-    } else {
+    } else { // 使用 tcg 模拟
         i8259 = i8259_init(isa_bus, x86_allocate_cpu_irq());
     }
 
@@ -859,9 +852,12 @@ qemu_irq *kvm_i8259_init(ISABus *bus)
     i8259_init_chip(TYPE_KVM_I8259, bus, true);
     i8259_init_chip(TYPE_KVM_I8259, bus, false);
 
+    // pic 的回调函数，gsi_handler 最后会调用到这里
     return qemu_allocate_irqs(kvm_pic_set_irq, NULL, ISA_NUM_IRQS);
 }
 ```
+
+它会通过 `kvm_pic_set_irq` -> `kvm_set_irq` -> `kvm_vm_ioctl(s, s->irq_set_ioctl, &event)` 向 kvm 发起中断。
 
 而对于用 tcg 模拟，使用的是 `i8259_init` 。
 
@@ -908,6 +904,7 @@ qemu_irq *i8259_init(ISABus *bus, qemu_irq parent_irq)
 #3  0x00005555558be508 in pic_update_irq (s=0x555556ae5800) at ../hw/intc/i8259.c:116
 #4  0x00005555558be6ad in pic_set_irq (opaque=0x555556ae5800, irq=1, level=0) at ../hw/intc/i8259.c:156
 #5  0x0000555555ce3a77 in qemu_set_irq (irq=0x555556b67680, level=0) at ../hw/core/irq.c:45
+// 看，发起中断先进入 gsi_handler 处理，然后转发到对应的中断控制器注册的处理函数。
 #6  0x0000555555b01fb5 in gsi_handler (opaque=0x555556b2d970, n=1, level=0) at ../hw/i386/x86.c:596
 #7  0x0000555555ce3a77 in qemu_set_irq (irq=0x555556aec400, level=0) at ../hw/core/irq.c:45
 #8  0x0000555555a8c544 in kbd_update_irq (s=0x5555576825d8) at ../hw/input/pckbd.c:177
@@ -933,16 +930,9 @@ static void pic_irq_request(void *opaque, int irq, int level)
     CPUState *cs = first_cpu;
     X86CPU *cpu = X86_CPU(cs);
 
-    trace_x86_pic_interrupt(irq, level);
-    if (cpu->apic_state && !kvm_irqchip_in_kernel() &&
-        !whpx_apic_in_platform()) {
-        CPU_FOREACH(cs) {
-            cpu = X86_CPU(cs);
-            if (apic_accept_pic_intr(cpu->apic_state)) {
-                apic_deliver_pic_intr(cpu->apic_state, level);
-            }
-        }
-    } else {
+    ...
+
+    else {
         if (level) {
             cpu_interrupt(cs, CPU_INTERRUPT_HARD);
         } else {
@@ -988,7 +978,7 @@ void tcg_handle_interrupt(CPUState *cpu, int mask)
 
 ##### 2.2.3. 设备使用 PIC 中断
 
-pic 设备使用 `isa_init_irq` 申请 irq 资源。每个设备都会传入一个 `isairq` 表示中断引脚号和自己的 `qemu_irq` ，根据 isairq 来获取 `isabus` 中对应的 `qemu_irq` ，共有 14 个设备使用 pic 中断。以键盘鼠标为例：
+pic 设备使用 `isa_init_irq` 申请 irq 资源。每个设备都会传入一个 `isairq` 表示中断引脚号和自己的 `qemu_irq` ，根据 `isairq` 来获取 `isabus` 中对应的 `qemu_irq` ，共有 14 个设备使用 pic 中断。以键盘鼠标为例：
 
 ```c
 static void i8042_realizefn(DeviceState *dev, Error **errp)
@@ -1003,7 +993,7 @@ static void i8042_realizefn(DeviceState *dev, Error **errp)
     isa_register_ioport(isadev, isa_s->io + 0, 0x60);
     isa_register_ioport(isadev, isa_s->io + 1, 0x64);
 
-    s->kbd = ps2_kbd_init(kbd_update_kbd_irq, s);
+    s->kbd = ps2_kbd_init(kbd_update_kbd_irq, s); // 设置回调函数
     s->mouse = ps2_mouse_init(kbd_update_aux_irq, s);
     qemu_register_reset(kbd_reset, s);
 }
@@ -1030,7 +1020,7 @@ void isa_init_irq(ISADevice *dev, qemu_irq *p, unsigned isairq) // isairq 表示
     assert(dev->nirqs < ARRAY_SIZE(dev->isairq));
     assert(isairq < ISA_NUM_IRQS);
     dev->isairq[dev->nirqs] = isairq;
-    *p = isa_get_irq(dev, isairq); // p 就是申请到的 qemu_irq ，
+    *p = isa_get_irq(dev, isairq); // p 就是申请到的 qemu_irq
     dev->nirqs++;
 }
 ```
@@ -1043,15 +1033,6 @@ void isa_init_irq(ISADevice *dev, qemu_irq *p, unsigned isairq) // isairq 表示
             /* Under KVM, Kernel will forward to both PIC and IOAPIC */
             qemu_set_irq(s->i8259_irq[n], level);
         }
-```
-
-```c
-isa_bus_irqs(isa_bus, x86ms->gsi);
-
-void isa_bus_irqs(ISABus *bus, qemu_irq *irqs)
-{
-    bus->irqs = irqs;
-}
 ```
 
 申请了 `qemu_irq` 之后，设备会通过 `qemu_set_irq` 来发起中断。如 kbd 和 mouse 设备。
@@ -1068,21 +1049,9 @@ static void kbd_update_irq(KBDState *s)
     irq_mouse_level = 0;
     s->status &= ~(KBD_STAT_OBF | KBD_STAT_MOUSE_OBF);
     s->outport &= ~(KBD_OUT_OBF | KBD_OUT_MOUSE_OBF);
-    if (s->pending) {
-        s->status |= KBD_STAT_OBF;
-        s->outport |= KBD_OUT_OBF;
-        /* kbd data takes priority over aux data.  */
-        if (s->pending == KBD_PENDING_AUX) {
-            s->status |= KBD_STAT_MOUSE_OBF;
-            s->outport |= KBD_OUT_MOUSE_OBF;
-            if (s->mode & KBD_MODE_MOUSE_INT)
-                irq_mouse_level = 1;
-        } else {
-            if ((s->mode & KBD_MODE_KBD_INT) &&
-                !(s->mode & KBD_MODE_DISABLE_KBD))
-                irq_kbd_level = 1;
-        }
-    }
+
+    ...
+
     qemu_set_irq(s->irq_kbd, irq_kbd_level);
     qemu_set_irq(s->irq_mouse, irq_mouse_level);
 }
@@ -1135,6 +1104,38 @@ int kvm_set_irq(KVMState *s, int irq, int level)
 }
 ```
 
+我们看看具体的执行流程：
+
+```plain
+#0  kvm_pic_set_irq (opaque=0x0, irq=10, level=0) at ../hw/i386/kvm/i8259.c:118
+#1  0x0000555555d4018c in qemu_set_irq (irq=0x555556fdb980, level=0) at ../hw/core/irq.c:45
+#2  0x0000555555b39e8a in gsi_handler (opaque=0x555556b991a0, n=10, level=0) at ../hw/i386/x86.c:599
+#3  0x0000555555d4018c in qemu_set_irq (irq=0x555556b98010, level=0) at ../hw/core/irq.c:45
+#4  0x00005555559b708d in piix3_set_irq_pic (piix3=0x555556f3bd00, pic_irq=10) at ../hw/isa/piix3.c:43
+#5  0x00005555559b7196 in piix3_set_irq_level (piix3=0x555556f3bd00, pirq=0, level=0) at ../hw/isa/piix3.c:75
+#6  0x00005555559b728b in piix3_update_irq_levels (piix3=0x555556f3bd00) at ../hw/isa/piix3.c:108
+#7  0x00005555559b7318 in piix3_write_config (dev=0x555556f3bd00, address=96, val=10, len=1) at ../hw/isa/piix3.c:121
+#8  0x0000555555a3a99f in pci_host_config_write_common (pci_dev=0x555556f3bd00, addr=96, limit=256, val=10, len=1) at ../hw/pci/pci_host.c:84
+#9  0x0000555555a3ab20 in pci_data_write (s=0x555556b9f1f0, addr=2147485792, val=10, len=1) at ../hw/pci/pci_host.c:122
+#10 0x0000555555a3ac56 in pci_host_data_write (opaque=0x555556b9e100, addr=0, val=10, len=1) at ../hw/pci/pci_host.c:169
+#11 0x0000555555bf49bb in memory_region_write_accessor (mr=0x555556b9e520, addr=0, value=0x7ffff228f3f8, size=1, shift=0, mask=255, attrs=...) at ../softmmu/memory.c:492
+#12 0x0000555555bf4c09 in access_with_adjusted_size (addr=0, value=0x7ffff228f3f8, size=1, access_size_min=1, access_size_max=4, access_fn=0x555555bf48c1 <memory_region_write_accessor>,
+    mr=0x555556b9e520, attrs=...) at ../softmmu/memory.c:554
+#13 0x0000555555bf7d07 in memory_region_dispatch_write (mr=0x555556b9e520, addr=0, data=10, op=MO_8, attrs=...) at ../softmmu/memory.c:1504
+#14 0x0000555555beaa5c in flatview_write_continue (fv=0x7ffde40417b0, addr=3324, attrs=..., ptr=0x7ffff7fc7000, len=1, addr1=0, l=1, mr=0x555556b9e520) at ../softmmu/physmem.c:2782
+#15 0x0000555555beaba5 in flatview_write (fv=0x7ffde40417b0, addr=3324, attrs=..., buf=0x7ffff7fc7000, len=1) at ../softmmu/physmem.c:2822
+#16 0x0000555555beaf1f in address_space_write (as=0x55555675cda0 <address_space_io>, addr=3324, attrs=..., buf=0x7ffff7fc7000, len=1) at ../softmmu/physmem.c:2914
+#17 0x0000555555beaf90 in address_space_rw (as=0x55555675cda0 <address_space_io>, addr=3324, attrs=..., buf=0x7ffff7fc7000, len=1, is_write=true) at ../softmmu/physmem.c:2924
+#18 0x0000555555d0b58e in kvm_handle_io (port=3324, attrs=..., data=0x7ffff7fc7000, direction=1, size=1, count=1) at ../accel/kvm/kvm-all.c:2642
+#19 0x0000555555d0bd3d in kvm_cpu_exec (cpu=0x555556a4bce0) at ../accel/kvm/kvm-all.c:2893
+#20 0x0000555555d0dc13 in kvm_vcpu_thread_fn (arg=0x555556a4bce0) at ../accel/kvm/kvm-accel-ops.c:49
+#21 0x0000555555ef8857 in qemu_thread_start (args=0x555556a59e80) at ../util/qemu-thread-posix.c:556
+#22 0x00007ffff6753609 in start_thread () from /lib/x86_64-linux-gnu/libpthread.so.0
+#23 0x00007ffff6678163 in clone () from /lib/x86_64-linux-gnu/libc.so.6
+```
+
+解释一下就是 `kvm_cpu_exec` 在调用 `ioctl(KVM_RUN)` 进入到 KVM 执行后，KVM 遇到了不能处理的事情（在这里是 I/O 访问），返回到 QEMU 执行，QEMU 在执行完 I/O 操作后通过 pic 中断通过 KVM I/O 的活我这边处理完了，剩下了你自己搞定。下面就是 KVM 怎样处理从 QEMU 传入的中断。
+
 kvm 在 `kvm_vm_ioctl` 中处理所有的虚拟机有关的系统调用，在 `KVM_IRQ_LINE_STATUS` 中处理中断。
 
 ```c
@@ -1149,22 +1150,14 @@ kvm 在 `kvm_vm_ioctl` 中处理所有的虚拟机有关的系统调用，在 `K
 
 		r = kvm_vm_ioctl_irq_line(kvm, &irq_event,
 					ioctl == KVM_IRQ_LINE_STATUS);
-		if (r)
-			goto out;
+		...
 
-		r = -EFAULT;
-		if (ioctl == KVM_IRQ_LINE_STATUS) {
-			if (copy_to_user(argp, &irq_event, sizeof(irq_event)))
-				goto out;
-		}
-
-		r = 0;
 		break;
 	}
 #endif
 ```
 
-这里值得一提的是 `copy_from_user` 和  `copy_to_user` 这两个函数在 xv6 中遇到过，是在用户态和系统态传递数据的。
+这里值得一提的是 `copy_from_user` 和  `copy_to_user` 这两个函数在 xv6 中遇到过，是在用户态和系统态之间传递数据的。
 
 ```c
 int kvm_vm_ioctl_irq_line(struct kvm *kvm, struct kvm_irq_level *irq_event,
@@ -1199,7 +1192,7 @@ int kvm_set_irq(struct kvm *kvm, int irq_source_id, u32 irq, int level,
 
 	while (i--) {
 		int r;
-		r = irq_set[i].set(&irq_set[i], kvm, irq_source_id, level,
+		r = irq_set[i].set(&irq_set[i], kvm, irq_source_id, level, // 一次调用该 irq 对应的回调函数，总有一个合适
 				   line_status);
 		if (r < 0)
 			continue;
@@ -1224,7 +1217,7 @@ int kvm_irq_map_gsi(struct kvm *kvm,
 	irq_rt = srcu_dereference_check(kvm->irq_routing, &kvm->irq_srcu,
 					lockdep_is_held(&kvm->irq_lock));
 	if (irq_rt && gsi < irq_rt->nr_rt_entries) {
-		hlist_for_each_entry(e, &irq_rt->map[gsi], link) {
+		hlist_for_each_entry(e, &irq_rt->map[gsi], link) { // map 中是 kernel 的中断路由信息
 			entries[n] = *e;
 			++n;
 		}
@@ -1307,7 +1300,7 @@ static void pic_unlock(struct kvm_pic *s)
 		kvm_for_each_vcpu(i, vcpu, s->kvm) {
 			if (kvm_apic_accept_pic_intr(vcpu)) {
 				kvm_make_request(KVM_REQ_EVENT, vcpu);
-				kvm_vcpu_kick(vcpu);
+				kvm_vcpu_kick(vcpu); // 唤醒 vcpu
 				return;
 			}
 		}
@@ -1316,6 +1309,8 @@ static void pic_unlock(struct kvm_pic *s)
 ```
 
 最后再经过上文介绍的中断注入过程向 guestos 注入中断。之后在进入 non-root 模式时会读取注入的中断进行处理。
+
+这就是整个中断的执行流程。
 
 #### 2.3. I/O APIC 中断模拟
 
