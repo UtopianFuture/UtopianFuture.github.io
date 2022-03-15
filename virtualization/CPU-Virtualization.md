@@ -920,7 +920,7 @@ void qemu_cpu_kick(CPUState *cpu)
 }
 ```
 
-接下来分析 `kvm_cpu_exec`
+接下来分析 `kvm_cpu_exec`，当然这个函数是 QEMU + KVM 的执行函数，tcg 的执行函数不一样。
 
 ```c
 int kvm_cpu_exec(CPUState *cpu)
@@ -950,14 +950,14 @@ int kvm_cpu_exec(CPUState *cpu)
          */
         smp_rmb();
 
-        run_ret = kvm_vcpu_ioctl(cpu, KVM_RUN, 0);
-
+        run_ret = kvm_vcpu_ioctl(cpu, KVM_RUN, 0); // 在这里进入 kvm 执行，如果返回了，说明出现了 KVM 无法处理的
+												   // 情况，需要返回到 QEMU 处理
         attrs = kvm_arch_post_run(cpu, run);
 
 		...
 
-        trace_kvm_run_exit(cpu->cpu_index, run->exit_reason);
-        switch (run->exit_reason) {
+        trace_kvm_run_exit(cpu->cpu_index, run->exit_reason); // exit_reason 是 KVM 写入的
+        switch (run->exit_reason) { // 这里处理的都是 KVM 无法处理的情况
         case KVM_EXIT_IO:
             DPRINTF("handle_io\n");
             /* Called outside BQL */
@@ -998,7 +998,7 @@ int kvm_cpu_exec(CPUState *cpu)
             ret = kvm_arch_handle_exit(cpu, run);
             break;
         }
-    } while (ret == 0);
+    } while (ret == 0); // 循环执行，除非退出
 
     cpu_exec_end(cpu);
     qemu_mutex_lock_iothread();
@@ -1013,7 +1013,7 @@ int kvm_cpu_exec(CPUState *cpu)
 }
 ```
 
-`kvm_arch_pre_run` 首先做一些运行前的准备工作，如 `nmi` 和 `smi` 的[中断注入](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Interrupt-Virtualization.md)，之后使用 `ioctl(KVM_RUN)` 系统调用通知 KVM 使该 KVM 运行起来。KVM 模块在处理该 ioctl 时会执行对应的 vmx 指令，将 VCPU 运行的物理 CPU 从 `VMX root` 转换成 `VMX non-root` ，开始运行虚拟机中的代码。虚拟机内部如果产生 `VM Exit` ，就会退出到 KVM ，如果 KVM 无法处理就会分发到 QEMU ，也就是在 `ioctl(KVM_RUN)`  返回的时候调用 `kvm_arch_post_run` 进行初步的处理。然后根据共享内存 `kvm_run` （这个是第 5 节的内容，没有分析）中的数据来判断退出原因，并进行处理。之后的 `switch` 就是处理 KVM 不能处理的问题。
+`kvm_arch_pre_run` 首先做一些运行前的准备工作，如 `nmi` 和 `smi` 的[中断注入](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Interrupt-Virtualization.md)，之后使用 `ioctl(KVM_RUN)` 系统调用通知 KVM 使该 KVM 运行起来。KVM 模块在处理该 ioctl 时会执行对应的 vmx 指令，将 VCPU 运行的物理 CPU 从 `VMX root` 转换成 `VMX non-root` ，开始运行虚拟机中的代码。虚拟机内部如果产生 `VM Exit` ，就会退出到 KVM ，如果 KVM 无法处理就会分发到 QEMU ，也就是在 `ioctl(KVM_RUN)`  返回的时候调用 `kvm_arch_post_run` 进行初步的处理。然后根据共享内存 `kvm_run` （这个是第 5 节的内容）中的数据来判断退出原因，并进行处理。之后的 `switch` 就是处理 KVM 不能处理的问题。
 
 接下来分析 `ioctl(KVM_RUN)` 是怎样在 kernel 中运行的。这个 `ioctl` 是在 `kvm_vcpu_ioctl` 中处理的，这个函数是专门处理 `VCPU ioctl` 的，和之前的两个处理函数不同（一个是处理 dev ，一个是处理 vm ）。
 
@@ -1119,7 +1119,7 @@ static int vcpu_run(struct kvm_vcpu *vcpu)
 			r = vcpu_block(kvm, vcpu);
 		}
 
-		if (r <= 0)
+		if (r <= 0) // 根据返回值决定是否要返回 QEMU，如果 KVM 能够处理，就进入下一次循环
 			break;
 
 		kvm_clear_request(KVM_REQ_UNBLOCK, vcpu);
@@ -1376,6 +1376,70 @@ static struct kvm_x86_ops vmx_x86_ops __initdata = {
 最后处理完中断后根据 `vcpu_enter_guest` 的返回值判断是否需要返回到 QEMU ，如果 `vcpu_enter_guest` 返回值小于等于 0 ，会导致退出循环，进而该 `ioctl` 返回到用户态 QEMU ，如果返回 1 ，则 KVM 能处理，继续下一轮执行。
 
 如果 `kvm_vcpu_running` 判断出该 cpu 不能执行，那么就会调用 `vcpu_block` ，最终调用 `schedule` 请求调度，让出物理 cpu 。
+
+我们再来看看 tcg 是怎样让 vcpu 运行的。
+
+`rr_start_vcpu_thread` / `mttcg_start_vcpu_thread` ->
+
+​			`rr_cpu_thread_fn`（单线程）/ `mttcg_cpu_thread_fn`（多线程）->
+
+​						`tcg_cpus_exec` ->
+
+​									`cpu_exec` ->
+
+​												`cpu_exec_enter`
+
+```c
+static void *mttcg_cpu_thread_fn(void *arg)
+{
+    ...
+
+    /* process any pending work */
+    cpu->exit_request = 1;
+
+    // 同样是一个 while 循环
+    do {
+        if (cpu_can_run(cpu)) {
+            int r;
+            qemu_mutex_unlock_iothread();
+            r = tcg_cpus_exec(cpu);
+            qemu_mutex_lock_iothread();
+            switch (r) {
+            case EXCP_DEBUG:
+                cpu_handle_guest_debug(cpu);
+                break;
+            case EXCP_HALTED:
+                /*
+                 * during start-up the vCPU is reset and the thread is
+                 * kicked several times. If we don't ensure we go back
+                 * to sleep in the halted state we won't cleanly
+                 * start-up when the vCPU is enabled.
+                 *
+                 * cpu->halted should ensure we sleep in wait_io_event
+                 */
+                g_assert(cpu->halted);
+                break;
+            case EXCP_ATOMIC:
+                qemu_mutex_unlock_iothread();
+                cpu_exec_step_atomic(cpu);
+                qemu_mutex_lock_iothread();
+            default:
+                /* Ignore everything else? */
+                break;
+            }
+        }
+
+        qatomic_mb_set(&cpu->exit_request, 0);
+        qemu_wait_io_event(cpu);
+    } while (!cpu->unplug || cpu_can_run(cpu));
+
+    tcg_cpus_destroy(cpu);
+    qemu_mutex_unlock_iothread();
+    rcu_remove_force_rcu_notifier(&force_rcu.notifier);
+    rcu_unregister_thread();
+    return NULL;
+}
+```
 
 ### 8. VCPU 的调度
 
