@@ -52,11 +52,21 @@ APIC 包含两个部分：`LAPIC`和`I/O APIC`， LAPIC 位于处理器一端，
 
 在基于软件虚拟中断芯片中，只能在 VM entry 时向 guest 注入中断，必须触发一次 VM exit，这是中断虚拟化的主要开销。
 
-（1）`virtual-APIC page`。LAPIC 中有一个 4KB 大小的页面，intel 称之为 APIC page，LAPIC 的所有寄存器都存在这个页面上。当内核访问这些寄存器时，将触发 guest 退出到 host 的 KVM 模块中的虚拟 LAPIC。intel 在 guest 模式下实现了一个用于存储中断寄存器的 `virtual-APIC page`。配置之后的中断逻辑处理，很多中断就无需 vmm 介入。但发送 IPI 还是需要触发 VM exit。通过 `virtual-APIC page`维护寄存器的状态，guest 读取这些寄存器时无需切换状态，而写入时需要切换状态。
+（1）`virtual-APIC page`（解决读 LAPIC 时需要 VM exit 的问题）
 
-（2）guest 模式下的中断评估逻辑。guest 模式下的 CPU 借助 VMCS 中的字段`guest interrupt status`评估中断。当 guest 开中断或者执行完不能中断的指令后，CPU 会检查这个字段是否有中断需要处理。（这个检查的过程是谁规定的？guest 模式下的 CPU 自动检查 VMCS）。
+LAPIC 中有一个 4KB 大小的页面，intel 称之为 APIC page，LAPIC 的所有寄存器都存在这个页面上。当内核访问这些寄存器时，将触发 guest 退出到 host 的 KVM 模块中的虚拟 LAPIC。intel 在 guest 模式下实现了一个用于存储中断寄存器的 `virtual-APIC page`。配置之后的中断逻辑处理，很多中断就无需 vmm 介入。但发送 IPI 还是需要触发 VM exit。通过 `virtual-APIC page`维护寄存器的状态，guest 读取这些寄存器时无需切换状态，而写入时需要切换状态。
 
-（3）`posted-interrupt processing`。当 CPU 支持在 guest 模式下的中断评估逻辑后，虚拟中断芯片可以在收到中断请求后，由 guest 模式下的中断评估逻辑评估后，将中断信息更新到`posted-interrupt descriptor`中，然后向处于 guest 模式下的 CPU 发送`posted-interrupt notification`，向 guest 模式下的 CPU 直接递交中断。
+（2）guest 模式下的中断评估逻辑（解决 guest 无法及时响应中断和 guest 模式下中断评估的问题）
+
+在前文介绍的中断虚拟化过程中，guestos 只有在 VM entry 时才能进行中断注入，处理中断。但如果在 VM entry 时 guestos 是关中断的，或者正在执行不能被中断的指令，那么这时 guestos 无法处理中断。而又不能让中断处理延时过大，所以，一旦 guest 能够中断，CPU 应该马上从 guest 模式退出到 host 模式，这样就能在下一次 VM entry 时注入中断，为此， VMX 提供了一种特性: Interrupt-window exiting。
+
+这个特性表示在任何指令执行前，如果 REFLAGS 寄存器的 IF 位，即 guestos 能够处理中断了，那么如果 Interrupt-window exiting 被设置为 1，则一旦由中断 pending，那么 guest 模式下的 CPU 要触发 VM exit，这个触发时机与物理 CPU 处理中断时类似的。如果 guestos 这时不能处理中断，那么需要设置 Interrupt-window exiting，告知 CPU 有中断在等待处理。
+
+guest 模式下的 CPU 借助 VMCS 中的字段 `guest interrupt status` 评估中断。当 guest 开中断或者执行完不能中断的指令后，CPU 会检查这个字段是否有中断需要处理。（这个检查的过程是谁规定的？guest 模式下的 CPU 自动检查 VMCS）。当 guest 模式下支持中断评估后，guest 模式的 CPU 就不仅仅在 VM entry 时才能进行中断评估，其在 guest 模式下也能评估中断，一旦识别出中断，在 guest 模式即可自动完成中断注入，无须触发 VM exit。
+
+（3）posted-interrupt processing（解决无须 VM exit 进行中断注入的问题）
+
+当 CPU 支持在 guest 模式下的中断评估逻辑后，虚拟中断芯片可以在收到中断请求后，由 guest 模式下的中断评估逻辑评估后，将中断信息更新到 posted-interrupt descriptor 中，然后向处于 guest 模式下的 CPU 发送 posted-interrupt notification，向 guest 模式下的 CPU 直接递交中断。这个通知就是 IPI，目的 CPU 在接收到这个 IPI 后，将不再触发 VM exit，而是去处理被虚拟中断芯片写在 posted-interrupt notification 中的中断。
 
 #### 1.6. 几种中断类型
 
