@@ -549,3 +549,11 @@ Control registers (CR0, CR1, CR2, CR3, and CR4; CR8 is available in 64-bit mode 
 - CR8 — Provides read and write access to the Task Priority Register (TPR). It specifies the priority threshold value that operating systems use to control the priority class of **external interrupts allowed to interrupt the processor**.
 
 this content can be find in Inter software developer's manual: Volume 3 2.5.
+
+### [TLB exceptions in mips](https://techpubs.jurassic.nl/manuals/hdwr/developer/R10K_UM/sgi_html/t5.Ver.2.0.book_353.html)
+
+Three types of TLB exceptions can occur:
+
+- **TLB Refill** occurs when there is **no TLB entry that matches** an attempted reference to a mapped address space.
+- **TLB Invalid** occurs when a virtual address reference **matches** a TLB entry that is marked **invalid**.
+- **TLB Modified** occurs when a store operation virtual address reference to memory matches a TLB entry which is marked **valid** but is not dirty (the entry is not writable).
