@@ -536,3 +536,16 @@ IOMMU(**input–output memory management unit**) 有两大功能：控制设备 
 ### System.map
 
 system.map 是保存内核的符号和该符号在内存中的地址映射关系的表。
+
+### control registor in X86
+
+Control registers (CR0, CR1, CR2, CR3, and CR4; CR8 is available in 64-bit mode only.) determine **operating mode of the processor** and **the characteristics of the currently executing task**. These registers are 32 bits in all 32-bit modes and compatibility mode. In 64-bit mode, control registers are expanded to 64 bits.
+
+- **CR0** — Contains system control flags that control operating mode and states of the processor.
+- CR1 — Reserved.
+- CR2 — Contains **the page-fault linear address** (the linear address that caused a page fault).
+- CR3 — Contains **the physical address of the base of the paging-structure hierarchy** and two flags (PCD and PWT). Only the most-significant bits (less the lower 12 bits) of the base address are specified; **the lower 12 bits of the address are assumed to be 0**. The first paging structure must thus be aligned to a page (4-KByte) boundary. The PCD and PWT flags control caching of that paging structure in the processor’s internal data caches (they do not control TLB caching of page-directory information).
+- CR4 — Contains a group of flags that enable several architectural extensions, and indicate operating system or executive support for specific processor capabilities.
+- CR8 — Provides read and write access to the Task Priority Register (TPR). It specifies the priority threshold value that operating systems use to control the priority class of **external interrupts allowed to interrupt the processor**.
+
+this content can be find in Inter software developer's manual: Volume 3 2.5.
