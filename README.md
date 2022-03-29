@@ -37,12 +37,12 @@
 - [CPU Virtualization](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/CPU-Virtualization.md)
 - [Memory Virtualization](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Memory-Virtualization.md)
 - [Interrupt Virtualization](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Interrupt-Virtualization.md)
+- [Device Virtualization](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Device-Virtualization.md)
 - [QOM](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/QOM.md)
 - [QEMU Event Loop](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/QEMU-event-loop.md)
 - [QEMU Timer](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/QEMU-timer.md)
 - [Seabios source code analysis](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Analysis-Seabios.md)
 - [Port serial to BMBT](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/port-serial.md)
-- [BMBT source code analysis](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/bmbt.md)
 
 ## firends
 
