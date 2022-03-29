@@ -1,12 +1,32 @@
 ## Device Virtualization
 
-设备虚拟化可以分为完全虚拟化和半虚拟化。完全虚拟化就是类似与 QEMU 的设备模拟，完全用软件来做，通过 Inter-Virtualization 大致就懂了，这里不再介绍。这篇文章来分析半虚拟化——Virtio 虚拟化。
+设备虚拟化可以分为完全虚拟化和半虚拟化。完全虚拟化就是类似与 QEMU 的设备模拟，完全用软件来做，通过 Inter-Virtualization 大致就懂了，这里不再介绍。这篇文章来分析设备透传和 Virtio 虚拟化。
+
+### 1. 设备透传
+
+SR-IOV(Single Root I/O Virtualization and Sharing)，**在硬件层面将一个物理设备虚拟出多个设备，每个设备可以透传给一台虚拟机**。 SR-IOV 引入了两个新的 function 类型，一个是 PF(Physical Function)，一个是 VF(Virtual Function)。一个 SR-IOV 可以支持多个 VF，每个 VF 可以分别透传给 guest，guest 就不用通过 VMM 的模拟设备访问物理设备。每个 VF 都有自己独立的用于数据传输的存储空间、队列、中断以及命令处理单元，即虚拟的物理设备，VMM 通过 PF 管理这些 VF。同时，host 上的软件仍然可以通过 PF 访问物理设备。
+
+#### 1.1. 虚拟配置空间
+
+guest 访问 VF 的数据不需要经过 VMM，guest 的 I/O 性能提高了，但出于安全考虑，guest 访问 VF 的**配置空间**时会触发 VM exit 陷入 VMM，这一过程不会影响数据传输效率（但是上下文切换不也降低性能么？注意是配置空间，不是数据）。
+
+在系统启动时，host 的 bios 为 VF 划分了内存地址空间并存储在寄存器 BAR 中，而且 guest 可以直接读取这个信息，但是因为 guest 不能直接访问 host 的物理地址，所有 kvmtool 要将 VF 的 BAR 寄存器中的`HPA`转换为`GPA`，这样 guest 才可以直接访问。之后当 guest 发出对 BAR 对应的内存地址空间的访问时，EPT 或影子页表会将`GPA`翻译为`HPA`，PCI 或 Root Complex 将认领这个地址，完成外设读取工作。
+
+#### 1.2. DMA 重映射
+
+采用设备透传时，guest 能够访问该设备下其他 guest 和 host 的内存，导致安全隐患。为此，设计了 DMA 重映射机制。
+
+当 VMM 处理透传给 guest 的外设时，VMM 将请求 kernel 为 guest 建立一个页表，这个页表的翻译由 DMA 重映射硬件负责，它限制了外设只能访问这个页面覆盖的内存。当外设访问内存时，内存地址首先到达 DMA 重映射硬件，DMA 重映射硬件根据这个外设的总线号、设备号和功能号确定其对应的页表，查表的出物理内存地址，然后将地址送上总线。
+
+#### 1.3. 中断重映射
+
+为避免外设编程发送一些恶意的中断引入了中断虚拟化机制，即在外设和 CPU 之间加了一个硬件中断重映射单元(IOMMU)。当接受到中断时，该单元会对中断请求的来源进行有效性验证，然后以中断号为索引查询中断重映射表，之后代发中断。中断映射表由 VMM 进行设置。
+
+### 2. Virtio 虚拟化
 
 与完全虚拟化相比，使用 Virtio 协议的驱动和设备模拟的交互不再使用寄存器等传统的 I/O 方式，而是采用了 Virtqueue 的方式来传输数据。这种方式减少了 vm exit 和 vm entry 的次数，提高了设备访问性能。
 
-### 1. Virtio 虚拟化
-
-#### 1.1. 执行流程
+#### 2.1. 执行流程
 
 下面以 virtio-blk 为例，简单描述一下 read request 从发出到读到数据的过程。
 
@@ -18,7 +38,9 @@
 
 至此，read request 流程结束。write request 与 read request 的处理流程相同。
 
-#### 1.2. Virtio 协议
+![virtio](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/virtio.png)
+
+#### 2.2. Virtio 协议
 
 Virtio 的核心数据结构是 Virtqueue，其是 guestOS 驱动和 VMM 中模拟设备之间传输数据的载体。一个设备可以有一个 Virtqueue，也可以有多个 Virtqueue。Virtqueue 主要包含 3 个部分：描述符表（vring_desc）、可用描述符区域（vring_avail）和已用描述符表（vring_used）。
 
@@ -49,20 +71,6 @@ struct vring_used {
 ```
 
 每个描述符指向一块内存，该内存保存 guest 写入虚拟设备或虚拟设备写入 guest 的数据。Virtqueue 由 guest 中的驱动负责。
-
-#### 1.3. 初始化 Virtqueue
-
-#### 1.4. 驱动根据 I/O 请求组织描述符链
-
-#### 1.5. 驱动通知设备处理请求
-
-#### 1.6. 设备处理 I/O 请求
-
-#### 1.7. 驱动侧回收 I/O 请求
-
-#### 1.8. 设备异步处理 I/O
-
-#### 1.9. 轻量虚拟机退出
 
 ### reference
 
