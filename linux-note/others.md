@@ -557,3 +557,7 @@ Three types of TLB exceptions can occur:
 - **TLB Refill** occurs when there is **no TLB entry that matches** an attempted reference to a mapped address space.
 - **TLB Invalid** occurs when a virtual address reference **matches** a TLB entry that is marked **invalid**.
 - **TLB Modified** occurs when a store operation virtual address reference to memory matches a TLB entry which is marked **valid** but is not dirty (the entry is not writable).
+
+### Linux address space layout
+
+![layout](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/linux-address-space-layout.png)
