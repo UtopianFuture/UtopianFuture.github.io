@@ -10,13 +10,19 @@ SR-IOV(Single Root I/O Virtualization and Sharing)，**在硬件层面将一个�
 
 guest 访问 VF 的数据不需要经过 VMM，guest 的 I/O 性能提高了，但出于安全考虑，guest 访问 VF 的**配置空间**时会触发 VM exit 陷入 VMM，这一过程不会影响数据传输效率（但是上下文切换不也降低性能么？注意是配置空间，不是数据）。
 
-在系统启动时，host 的 bios 为 VF 划分了内存地址空间并存储在寄存器 BAR 中，而且 guest 可以直接读取这个信息，但是因为 guest 不能直接访问 host 的物理地址，所有 kvmtool 要将 VF 的 BAR 寄存器中的`HPA`转换为`GPA`，这样 guest 才可以直接访问。之后当 guest 发出对 BAR 对应的内存地址空间的访问时，EPT 或影子页表会将`GPA`翻译为`HPA`，PCI 或 Root Complex 将认领这个地址，完成外设读取工作。
+在系统启动时，host 的 bios 为 VF 划分了内存地址空间并存储在寄存器 BAR 中，而且 guest 可以直接读取这个信息，但是因为 guest 不能直接访问 host 的物理地址，所有 kvmtool 要将 VF 的 BAR 寄存器中的 `HPA` 转换为 `GPA`，这样 guest 才可以直接访问。之后当 guest 发出对 BAR 对应的内存地址空间的访问时，EPT 或影子页表会将 `GPA` 翻译为 `HPA`，PCI 或 Root Complex 将认领这个地址，完成外设读取工作。
 
 #### 1.2. DMA 重映射
 
-采用设备透传时，guest 能够访问该设备下其他 guest 和 host 的内存，导致安全隐患。为此，设计了 DMA 重映射机制。
+由于虚拟机在指定设备 DMA 的时候能够随意指定地址，所有需要有一种机制来对设备 DMA 地址访问进行隔离。换句话说，采用设备透传时，如果设备的 DMA 访问没有隔离，该设备就能够访问物理机上所有的地址空间，即**guest 能够访问该设备下其他 guest 和 host 的内存**，导致安全隐患。为此，设计了 DMA 重映射机制。
 
 当 VMM 处理透传给 guest 的外设时，VMM 将请求 kernel 为 guest 建立一个页表，这个页表的翻译由 DMA 重映射硬件负责，它限制了外设只能访问这个页面覆盖的内存。当外设访问内存时，内存地址首先到达 DMA 重映射硬件，DMA 重映射硬件根据这个外设的总线号、设备号和功能号确定其对应的页表，查表的出物理内存地址，然后将地址送上总线。
+
+![IOMMU](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/IOMMU.png)
+
+从这幅图看一看出，DMA Remapping 也需要建立类似于 MMU 的页表来完成 DMA 的地址转换。
+
+![DMA-Remapping](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/DMA-Remapping.png)
 
 #### 1.3. 中断重映射
 
@@ -71,6 +77,10 @@ struct vring_used {
 ```
 
 每个描述符指向一块内存，该内存保存 guest 写入虚拟设备或虚拟设备写入 guest 的数据。Virtqueue 由 guest 中的驱动负责。
+
+### 3. 设备直通与 VFIO
+
+
 
 ### reference
 
