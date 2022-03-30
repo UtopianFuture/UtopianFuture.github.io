@@ -44,6 +44,14 @@
 - [Seabios source code analysis](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Analysis-Seabios.md)
 - [Port serial to BMBT](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/port-serial.md)
 
+## others
+
+- [makefile](https://makefiletutorial.com/#fancy-rules)
+
+## Useful Blog
+
+- [OenHan](https://abelsu7.top/2019/07/07/qemu-kvm-live-migration/#OenHan-%E7%9A%84%E6%96%87%E7%AB%A0%E5%88%97%E8%A1%A8)
+
 ## firends
 
 - [martins3](https://martins3.github.io/)
