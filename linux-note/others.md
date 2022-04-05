@@ -561,3 +561,14 @@ Three types of TLB exceptions can occur:
 ### Linux address space layout
 
 ![layout](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/linux-address-space-layout.png)
+
+### Implicit Rules of Make
+
+The important variables used by implicit rules are:
+
+- `CC`: Program for compiling C programs; default `cc`
+- `CXX`: Program for compiling C++ programs; default `g++`
+- `CFLAGS`: Extra flags to give to the C compiler
+- `CXXFLAGS`: Extra flags to give to the C++ compiler
+- `CPPFLAGS`: Extra flags to give to the C preprocessor
+- `LDFLAGS`: Extra flags to give to compilers when they are supposed to invoke the linker
