@@ -327,7 +327,7 @@ EXPORT_SYMBOL(alloc_pages);
   - 页面回收修饰符（page reclaim modifier）
   - 行为修饰符（action modifier）
 
-  具体的定义在 gfp.h 中。而要正确使用这么多标志很难，所以定义了一些常用的表示组合——类型标志，如 `GFP_KERNEL`, `GFP_USER` 等，这里就不一一介绍，直到它是干什么的就行了。
+  具体的定义在 gfp.h 中。而要正确使用这么多标志很难，所以定义了一些常用的表示组合——类型标志，如 `GFP_KERNEL`, `GFP_USER` 等，这里就不一一介绍，知道它是干什么的就行了。
 
 - `pglist_data`
 
@@ -668,6 +668,16 @@ EXPORT_SYMBOL(alloc_pages);
   `per_cpu_pageset` 是一个 Per-CPU 变量，即每个 CPU 中都有一个本地的 `per_cpu_pageset` 变量，里面暂存了一部分单个的物理页面。当系统需要单个物理页面时，直接从本地 CPU 的 `per_cpu_pageset` 中获取物理页面即可，这样能减少对 zone 中相关锁的操作。
 
   ```c
+  struct per_cpu_pageset	pageset[NR_CPUS];
+  ```
+
+  ```c
+  struct per_cpu_pageset {
+  	struct per_cpu_pages pcp[2];	/* 0: hot.  1: cold */
+  }
+  ```
+
+  ```c
   struct per_cpu_pages {
   	int count;		/* number of pages in the list */
   	int high;		/* high watermark, emptying needed */
@@ -677,6 +687,8 @@ EXPORT_SYMBOL(alloc_pages);
   	struct list_head lists[NR_PCP_LISTS];
   };
   ```
+
+
 
 有 4 个函数和宏能够释放页框，这里只分析 `__free_pages`。
 
@@ -856,35 +868,13 @@ static inline void free_the_page(struct page *page, unsigned int order)
   }
   ```
 
-#### 每 CPU 页框高速缓存
-
-内核经常请求和释放单个页框，因此每个 zone 定义了一个 “每 CPU ”页框高速缓存，其包括一些预先分配的页框。主要的数据结构是在 zone 的 pageset。
-
-```c
-struct per_cpu_pageset	pageset[NR_CPUS];
-```
-
-```c
-struct per_cpu_pageset {
-	struct per_cpu_pages pcp[2];	/* 0: hot.  1: cold */
-}
-```
-
-```c
-struct per_cpu_pages {
-	int count;		/* number of pages in the list */
-	int low;		/* low watermark, refill needed */
-	int high;		/* high watermark, emptying needed */
-	int batch;		/* chunk size for buddy add/remove */
-	struct list_head list;	/* the list of pages */
-};
-```
-
-每 CPU 高速缓存通过 `buffered_rmqueue` 在指定的 zone 中分配页框，使用 `free_hot_code_page` 释放页框到每 CPU 高速缓存。
-
 ### 内存区管理
 
 伙伴系统算法采用页框作为基本内存区，但一个页框一般是 4KB，而程序很多时候都是申请很小的内存，比如几百字节，十几 KB，这时分配一个页会造成很大的浪费，slab 分配器解决的就是对小内存区的请求。
+
+slab 分配器最终还是使用伙伴系统来分配实际的物理页面，只不过 slab 分配器在这些连续的物理页面上实现了自己的管理机制。
+
+![slab_structure](/home/guanshun/gitlab/UFuture.github.io/image/slab_structure.png)
 
 ### 非连续内存区管理
 
