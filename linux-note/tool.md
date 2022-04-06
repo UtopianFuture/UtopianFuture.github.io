@@ -559,3 +559,36 @@ tmux 的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`t
     :set nowrap 设置不自动折行
 
 45. xdg-open 能够自动使用对应的软件打开任意文件。
+
+46. 在脚本中使用 alias，这样就不用每次打开一个新的终端就敲一遍 alias。
+
+    ```shell
+    # custom alias
+    alias gc="git commit"
+    alias gs="git status"
+    alias gl="git log"
+    alias gsh="git stash"
+    alias ga="git add"
+    alias gp="git push -origin"
+
+    funcsave gc
+    funcsave gs
+    funcsave gl
+    funcsave gsh
+    funcsave ga
+    funcsave gp
+    ```
+
+    将这段脚本放到 `/home/guanshun/.config/fish/config.fish` 中重新运行 fish 即可。
+
+    如果没有使用 fish 而是使用原来的 bash，那么将下面这段代码添加到 `/home/guanshun/.bashrc` 中即可。
+
+    ```shell
+    # custom alias
+    alias gc='git commit'
+    alias gs='git status'
+    alias gl='git log'
+    alias gsh='git stash'
+    alias ga='git add'
+    alias gp='git push -origin'
+    ```
