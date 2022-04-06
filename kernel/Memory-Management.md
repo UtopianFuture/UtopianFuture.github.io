@@ -874,10 +874,357 @@ static inline void free_the_page(struct page *page, unsigned int order)
 
 slab 分配器最终还是使用伙伴系统来分配实际的物理页面，只不过 slab 分配器在这些连续的物理页面上实现了自己的管理机制。
 
+下面是 slab 系统涉及到的 slab 描述符、slab 节点、本地对象缓冲池、共享对象缓冲池、3 个 slab 链表、n 个 slab 分配器，以及众多 slab 缓存对象之间的关系。先对整个系统有大概的印象再去了解具体实现就比较容易。
+
 ![slab_structure.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/slab_structure.png?raw=true)
+
+#### 创建 slab 描述符
+
+1. `kmem_cache` 是 slab 分配器中的核心数据结构，我们将其称为 slab 描述符。
+
+   ```c
+   struct kmem_cache {
+   	struct kmem_cache_cpu __percpu *cpu_slab; // 共享对象缓冲池
+   	/* Used for retrieving partial slabs, etc. */
+   	slab_flags_t flags; // 对象的分配掩码
+   	unsigned long min_partial;
+   	unsigned int size;	/* The size of an object including metadata */
+   	unsigned int object_size;/* The size of an object without metadata */
+   	struct reciprocal_value reciprocal_size;
+   	unsigned int offset;	/* Free pointer offset */
+   	struct kmem_cache_order_objects oo;
+
+   	/* Allocation and freeing of slabs */
+   	struct kmem_cache_order_objects max; // 其实就是 slab 描述符中空闲对象的最大最小值
+   	struct kmem_cache_order_objects min;
+   	gfp_t allocflags;	/* gfp flags to use on each alloc */
+   	int refcount;		/* Refcount for slab cache destroy */
+   	void (*ctor)(void *); // 构造函数
+   	unsigned int inuse;		/* Offset to metadata */
+   	unsigned int align;		/* Alignment */
+   	unsigned int red_left_pad;	/* Left redzone padding size */
+   	const char *name;	/* Name (only for display!) */
+   	struct list_head list;	/* List of slab caches */ // 用于把 slab 描述符添加到全局链表 slab_caches 中
+
+       ...
+
+   	unsigned int useroffset;	/* Usercopy region offset */
+   	unsigned int usersize;		/* Usercopy region size */
+
+   	struct kmem_cache_node *node[MAX_NUMNODES]; // slab 节点
+   };
+   ```
+
+2. `kmem_cache_create`
+
+   ` kmem_cache_create` 只是 `kmem_cache_create_usercopy` 的包装，直接看 `kmem_cache_create_usercopy`，
+
+   ```c
+   struct kmem_cache *
+   kmem_cache_create_usercopy(const char *name,
+   		  unsigned int size, unsigned int align,
+   		  slab_flags_t flags,
+   		  unsigned int useroffset, unsigned int usersize,
+   		  void (*ctor)(void *))
+   {
+   	struct kmem_cache *s = NULL;
+   	const char *cache_name;
+   	int err;
+
+   	mutex_lock(&slab_mutex);
+
+   	err = kmem_cache_sanity_check(name, size);
+   	if (err) {
+   		goto out_unlock;
+   	}
+
+   	...
+
+   	if (!usersize)
+   		s = __kmem_cache_alias(name, size, align, flags, ctor); // 查找是否有现成的 slab 描述符可以用
+   	if (s)
+   		goto out_unlock;
+
+   	cache_name = kstrdup_const(name, GFP_KERNEL);
+   	if (!cache_name) {
+   		err = -ENOMEM;
+   		goto out_unlock;
+   	}
+
+   	s = create_cache(cache_name, size, // 创建 slab 描述符
+   			 calculate_alignment(flags, align, size),
+   			 flags, useroffset, usersize, ctor, NULL);
+   	if (IS_ERR(s)) {
+   		err = PTR_ERR(s);
+   		kfree_const(cache_name);
+   	}
+
+   out_unlock:
+   	mutex_unlock(&slab_mutex)
+   	return s;
+   }
+   ```
+
+3. `__kmem_cache_create`
+
+   `create_cache` 只是初步初始化一个 slab 描述符，主要的创建过程在 `__kmem_cache_create` 中。
+
+   ```c
+   int __kmem_cache_create(struct kmem_cache *cachep, slab_flags_t flags)
+   {
+   	size_t ralign = BYTES_PER_WORD;
+   	gfp_t gfp;
+   	int err;
+   	unsigned int size = cachep->size;
+
+   	...
+
+   	if (flags & SLAB_RED_ZONE) {
+   		ralign = REDZONE_ALIGN;
+   		/* If redzoning, ensure that the second redzone is suitably
+   		 * aligned, by adjusting the object size accordingly. */
+   		size = ALIGN(size, REDZONE_ALIGN);
+   	}
+
+   	/* 3) caller mandated alignment */
+   	if (ralign < cachep->align) {
+   		ralign = cachep->align;
+   	}
+   	/* disable debug if necessary */
+   	if (ralign > __alignof__(unsigned long long))
+   		flags &= ~(SLAB_RED_ZONE | SLAB_STORE_USER);
+   	/*
+   	 * 4) Store it.
+   	 */
+   	cachep->align = ralign;
+   	cachep->colour_off = cache_line_size(); // 着色区的大小为 l1 cache 的行
+   	/* Offset must be a multiple of the alignment. */
+   	if (cachep->colour_off < cachep->align)
+   		cachep->colour_off = cachep->align;
+
+   	if (slab_is_available())
+   		gfp = GFP_KERNEL;
+   	else
+   		gfp = GFP_NOWAIT;
+
+   	...
+
+   	kasan_cache_create(cachep, &size, &flags);
+
+   	size = ALIGN(size, cachep->align);
+   	/*
+   	 * We should restrict the number of objects in a slab to implement
+   	 * byte sized index. Refer comment on SLAB_OBJ_MIN_SIZE definition.
+   	 */
+   	if (FREELIST_BYTE_INDEX && size < SLAB_OBJ_MIN_SIZE)
+   		size = ALIGN(SLAB_OBJ_MIN_SIZE, cachep->align);
+
+   	...
+
+   	if (set_objfreelist_slab_cache(cachep, size, flags)) { // 设置 slab 管理器的内存布局格式
+   		flags |= CFLGS_OBJFREELIST_SLAB;
+   		goto done;
+   	}
+
+   	if (set_off_slab_cache(cachep, size, flags)) { // 这里对 3 中布局不做详细分析
+   		flags |= CFLGS_OFF_SLAB;
+   		goto done;
+   	}
+
+   	if (set_on_slab_cache(cachep, size, flags)) // 这 3 个函数最终都会调用 calculate_slab_order
+   		goto done;
+
+   	return -E2BIG;
+
+   done:
+   	cachep->freelist_size = cachep->num * sizeof(freelist_idx_t); // freelist 是 slab 分配器的管理区
+   	cachep->flags = flags;
+   	cachep->allocflags = __GFP_COMP;
+   	if (flags & SLAB_CACHE_DMA)
+   		cachep->allocflags |= GFP_DMA;
+   	if (flags & SLAB_CACHE_DMA32)
+   		cachep->allocflags |= GFP_DMA32;`
+   	if (flags & SLAB_RECLAIM_ACCOUNT)
+   		cachep->allocflags |= __GFP_RECLAIMABLE;
+   	cachep->size = size; // 一个 slab 对象的大小
+   	cachep->reciprocal_buffer_size = reciprocal_value(size);
+
+   	...
+
+   	if (OFF_SLAB(cachep)) {
+   		cachep->freelist_cache =
+   			kmalloc_slab(cachep->freelist_size, 0u);
+   	}
+
+   	err = setup_cpu_cache(cachep, gfp); // 继续配置 slab，包括 slab 节点，下面介绍
+   	if (err) {
+   		__kmem_cache_release(cachep);
+   		return err;
+   	}
+
+   	return 0;
+   }
+   ```
+
+#### slab 分配器的内存布局
+
+slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure：
+
+- 着色区。
+- n 个 slab 对象。
+- 管理区。管理区可以看作一个 freelist 数组，数组的每个成员大小为 1 字节，每个成员管理一个 slab 对象。
+
+1. `calculate_slab_order`
+
+   这个函数会解决如下 3 个问题：
+
+   - 一个 slab 分配器需要多少个物理页面。
+   - 一个 slab 分配器中能够包含多少个 slab 对象。
+   - 一个 slab 分配器中包含多少个着色区。
+
+   ```c
+   static size_t calculate_slab_order(struct kmem_cache *cachep,
+   				size_t size, slab_flags_t flags)
+   {
+   	size_t left_over = 0;
+   	int gfporder;
+
+   	for (gfporder = 0; gfporder <= KMALLOC_MAX_ORDER; gfporder++) { // 从 0 开始计算最合适（最小）的 gfporder
+   		unsigned int num;
+   		size_t remainder;
+
+   		num = cache_estimate(gfporder, size, flags, &remainder); // 计算该 gfporder 下能容纳多少个 slab 对象
+   		if (!num) // 不能容纳对象，显然不行
+   			continue;
+
+   		/* Can't handle number of objects more than SLAB_OBJ_MAX_NUM */
+   		if (num > SLAB_OBJ_MAX_NUM) // SLAB_OBJ_MAX_NUM 是一个 slab 分配器能容纳的最多的对象数
+   			break;
+
+   		if (flags & CFLGS_OFF_SLAB) {
+   			struct kmem_cache *freelist_cache;
+   			size_t freelist_size;
+
+   			freelist_size = num * sizeof(freelist_idx_t);
+   			freelist_cache = kmalloc_slab(freelist_size, 0u);
+   			if (!freelist_cache)
+   				continue;
+
+   			/*
+   			 * Needed to avoid possible looping condition
+   			 * in cache_grow_begin()
+   			 */
+   			if (OFF_SLAB(freelist_cache))
+   				continue;
+
+   			/* check if off slab has enough benefit */
+   			if (freelist_cache->size > cachep->size / 2)
+   				continue;
+   		}
+
+   		/* Found something acceptable - save it away */
+   		cachep->num = num; // 不大不小，先保存下来，之后有更好的再换
+   		cachep->gfporder = gfporder;
+   		left_over = remainder; // remainder 是剩余空间
+
+   		/*
+   		 * A VFS-reclaimable slab tends to have most allocations
+   		 * as GFP_NOFS and we really don't want to have to be allocating
+   		 * higher-order pages when we are unable to shrink dcache.
+   		 */
+   		if (flags & SLAB_RECLAIM_ACCOUNT)
+   			break;
+
+   		/*
+   		 * Large number of objects is good, but very large slabs are
+   		 * currently bad for the gfp()s.
+   		 */
+   		if (gfporder >= slab_max_order)
+   			break;
+
+   		/*
+   		 * Acceptable internal fragmentation?
+   		 */
+   		if (left_over * 8 <= (PAGE_SIZE << gfporder)) // 剩余空间不能太大
+   			break;
+   	}
+   	return left_over;
+   }
+   ```
+
+#### 配置 slab 描述符
+
+确定了 slab 分配器的内存布局后，调用 `setup_cpu_cache` 继续配置 slab 描述符。主要是配置如下两个变量：
+
+- limit：空闲对象的最大数量，根据对象的大小计算。
+- batchcount：表示本地对象缓冲池和共享对象缓冲池之间填充对象的数量，通常是 limit 的一半。
+
+之后再调用 `do_tune_cpucache` 配置对象缓冲池。
+
+1. `do_tune_cpucache`
+
+   ```c
+   static int do_tune_cpucache(struct kmem_cache *cachep, int limit,
+   			    int batchcount, int shared, gfp_t gfp)
+   {
+   	struct array_cache __percpu *cpu_cache, *prev;
+   	int cpu;
+
+   	cpu_cache = alloc_kmem_cache_cpus(cachep, limit, batchcount);
+   	if (!cpu_cache)
+   		return -ENOMEM;
+
+   	prev = cachep->cpu_cache;
+   	cachep->cpu_cache = cpu_cache;
+   	/*
+   	 * Without a previous cpu_cache there's no need to synchronize remote
+   	 * cpus, so skip the IPIs.
+   	 */
+   	if (prev)
+   		kick_all_cpus_sync();
+
+   	check_irq_on();
+   	cachep->batchcount = batchcount;
+   	cachep->limit = limit;
+   	cachep->shared = shared;
+
+   	if (!prev)
+   		goto setup_node;
+
+   	for_each_online_cpu(cpu) {
+   		LIST_HEAD(list);
+   		int node;
+   		struct kmem_cache_node *n;
+   		struct array_cache *ac = per_cpu_ptr(prev, cpu);
+
+   		node = cpu_to_mem(cpu);
+   		n = get_node(cachep, node);
+   		spin_lock_irq(&n->list_lock);
+   		free_block(cachep, ac->entry, ac->avail, node, &list);
+   		spin_unlock_irq(&n->list_lock);
+   		slabs_destroy(cachep, &list);
+   	}
+   	free_percpu(prev);
+
+   setup_node:
+   	return setup_kmem_cache_nodes(cachep, gfp);
+   }
+   ```
+
+#### 分配 slab 对象
+
+#### 释放 slab 对象
+
+#### slab 分配器和伙伴系统的接口函数
+
+#### 管理区 freelist
+
+#### kmalloc
 
 ### 非连续内存区管理
 
 ### Reference
 
 [1] https://zhuanlan.zhihu.com/p/339800986
+
+[2] 奔跑吧 Linux 内核，卷 1：基础架构
