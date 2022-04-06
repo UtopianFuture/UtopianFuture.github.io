@@ -12,7 +12,11 @@ The MemoryRegion is the link between guest physical address space and the RAMBlo
 
 #### 基本结构
 
-还是从基本的数据结构入手，首先介绍 `AddressSpace` 结构体，QEMU 用其表示一个虚拟机所能够访问的所有物理地址。
+我们先看看整体的结构图（[查看大图](https://raw.githubusercontent.com/UtopianFuture/UtopianFuture.github.io/fd62f363c30f80ffb2711c56f4c7a989eb916195/image/qemu-address-space.svg)）。
+
+![qemu-address-space](https://raw.githubusercontent.com/UtopianFuture/UtopianFuture.github.io/fd62f363c30f80ffb2711c56f4c7a989eb916195/image/qemu-address-space.svg)
+
+然后从基本的数据结构入手，首先介绍 `AddressSpace` 结构体，QEMU 用其表示一个虚拟机所能够访问的所有物理地址。
 
 ```c
 /**
@@ -82,7 +86,7 @@ struct MemoryRegion {
 };
 ```
 
-当给定一个 as 中的地址时，其根据如下原则需要对应的 mr：
+当给定一个 as 中的地址时，其根据如下原则找到对应的 mr：
 
 （1）从 as 中找到 root 的所有 subregion，如果地址不在 region 中则放弃考虑 region。
 
@@ -954,7 +958,7 @@ static MemoryRegionSection *address_space_lookup_region(AddressSpaceDispatch *d,
 
 在 X86 下可以通过 PIO 或 MMIO 两种方式访问设备。PIO 即通过专门的访问设备指令进行访问，而 MMIO 是将设备地址映射到内存空间，访问外设和访问内存是一样的，那么 MMIO 是怎样实现的呢？这里先简单介绍 MMIO 的机制，具体的实现在设备虚拟化部分分析。
 
-（1）QEMU 申明一段内存作为 MMIO 内存，这里只是建立一个映射关系，不会立即分配内存空间。
+（1）**QEMU 申明一段内存作为 MMIO 内存**，这里只是建立一个映射关系，不会立即分配内存空间。
 
 （2）SeaBIOS 会分配好所有设备 MMIO 对应的基址。
 
