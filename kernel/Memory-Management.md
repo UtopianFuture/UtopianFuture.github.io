@@ -6,7 +6,7 @@
 
 ### 数据结构
 
-![](/home/guanshun/gitlab/UFuture.github.io/image/memory-management-structure.png)
+![memory-management-structure.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/memory-management-structure.png?raw=true)
 
 ### 页框管理
 
@@ -170,7 +170,7 @@ struct zone {
 
 管理区分配器搜索能够满足分配请求的管理区，在每个管理区中，伙伴系统负责分配页框，每 CPU 页框高速缓存用来满足单个页框的分配请求。
 
-![image-20211216093255057](/home/guanshun/gitlab/UFuture.github.io/image/memory-management.1.png)
+![memory-management.1.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/memory-management.1.png?raw=true)
 
 #### 管理区分配器
 
@@ -240,7 +240,7 @@ EXPORT_SYMBOL(alloc_pages);
 
 调用 `alloc_pages` 的地方很多。
 
-![image-20211216094418595](/home/guanshun/gitlab/UFuture.github.io/image/memory-management.2.png)
+![memory-management.2.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/memory-management.2.png?raw=true)
 
 `alloc_pages` 主要是调用 `__alloc_pages` 。接下来详细分析相关函数。
 
@@ -443,7 +443,7 @@ EXPORT_SYMBOL(alloc_pages);
 
   我们假设系统中只有一个内存节点，有两个 zone，分别是 `ZONE_DMA` 和 `ZONE_NORMAL`，那么 `zonelist` 中的相关数据结构的关系如下：
 
-  ![ZONELIST](/home/guanshun/gitlab/UFuture.github.io/image/ZONELIST.png)
+  ![ZONELIST.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/ZONELIST.png?raw=true)
 
 3.  `get_page_from_freelist`
 
@@ -874,7 +874,7 @@ static inline void free_the_page(struct page *page, unsigned int order)
 
 slab 分配器最终还是使用伙伴系统来分配实际的物理页面，只不过 slab 分配器在这些连续的物理页面上实现了自己的管理机制。
 
-![slab_structure](/home/guanshun/gitlab/UFuture.github.io/image/slab_structure.png)
+![slab_structure.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/slab_structure.png?raw=true)
 
 ### 非连续内存区管理
 
