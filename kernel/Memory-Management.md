@@ -1,10 +1,16 @@
 ## Memory Management
 
-分析内存管理为了解决一个很简单的问题：用户进程从发起存储空间的请求开始到得到该内存空间需要经过哪些步骤？
+很多文章都说内存管理是内核中最复杂的部分、最重要的部分之一，在来实验室之后跟着师兄做项目、看代码的这段时间里，渐渐感觉自己的知识框架是不完整的，底下少了一部分，后来发现这部分就是内核，所以开始学习内核。其实这也不是第一次接触内核，之前也陆陆续续的看过一部分，包括做 RISC-V 操作系统实验，LoongArch 内核的启动部分，但始终没有花时间去肯内存管理，进程调度和文件管理这几个核心模块。而师兄也说过，内核都看的懂，啥代码你看不懂。
 
-首先用户进程发起请求，这个请求肯定是由内核函数来响应，然后调用内核的内存分配函数来分配空间。
+### 内存分布
+
+64 位 linux 内核的内存分布
+
+![linux-address-space.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/linux-address-space.png?raw=true)
 
 ### 数据结构
+
+内存管理模块涉及到的结构体之间的关系。
 
 ![memory-management-structure.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/memory-management-structure.png?raw=true)
 
@@ -1778,6 +1784,125 @@ static __always_inline unsigned int __kmalloc_index(size_t size,
 
 ### vmalloc
 
+这部分只是大概了解 vmalloc 是干什么的和其分配流程，但其详细的实现还不懂。
+
+上面介绍了 `kmalloc` 使用 slab 分配器分配小块的、连续的物理内存，因为 slab 分配器在创建的时候也需要使用伙伴系统分配物理内存页面的接口，所以 slab 分配器建立在一个物理地址连续的大块内存之上。那如果在内核中不需要连续的物理地址，而仅仅需要虚拟地址连续的内存块该如何处理？这就是 `vmalloc` 的工作。
+
+vmalloc 有不同的给外界提供了不同的接口，如 `__vmalloc`, `vmalloc` 等，但它们都是 `__vmalloc_node` 的封装，然后再调用`__vmalloc_node_range`。
+
+```c
+void *__vmalloc_node(unsigned long size, unsigned long align,
+			    gfp_t gfp_mask, int node, const void *caller)
+{
+	return __vmalloc_node_range(size, align, VMALLOC_START, VMALLOC_END,
+				gfp_mask, PAGE_KERNEL, 0, node, caller);
+}
+```
+
+vmalloc 分配的空间在 [内存分布](# 内存分布) 小节中的图中有清晰的说明。
+
+1. vmalloc 的核心功能都是在 `__vmalloc_node_range` 函数中实现的。
+
+   ```c
+   void *__vmalloc_node_range(unsigned long size, unsigned long align,
+   			unsigned long start, unsigned long end, gfp_t gfp_mask,
+   			pgprot_t prot, unsigned long vm_flags, int node,
+   			const void *caller)
+   {
+   	struct vm_struct *area;
+   	void *addr;
+   	unsigned long real_size = size;
+   	unsigned long real_align = align;
+   	unsigned int shift = PAGE_SHIFT;
+
+   	...
+
+   again:
+   	area = __get_vm_area_node(real_size, align, shift, VM_ALLOC |
+   				  VM_UNINITIALIZED | vm_flags, start, end, node,
+   				  gfp_mask, caller);
+   	if (!area) {
+   		warn_alloc(gfp_mask, NULL,
+   			"vmalloc error: size %lu, vm_struct allocation failed",
+   			real_size);
+   		goto fail;
+   	}
+
+   	addr = __vmalloc_area_node(area, gfp_mask, prot, shift, node); // 分配物理内存，并和 vm_struct 空间
+   	if (!addr)                                                     // 建立映射关系
+   		goto fail;
+
+   	/*
+   	 * In this function, newly allocated vm_struct has VM_UNINITIALIZED
+   	 * flag. It means that vm_struct is not fully initialized.
+   	 * Now, it is fully initialized, so remove this flag here.
+   	 */
+   	clear_vm_uninitialized_flag(area);
+
+   	size = PAGE_ALIGN(size);
+   	kmemleak_vmalloc(area, size, gfp_mask);
+
+   	return addr;
+
+   fail:
+   	if (shift > PAGE_SHIFT) {
+   		shift = PAGE_SHIFT;
+   		align = real_align;
+   		size = real_size;
+   		goto again;
+   	}
+
+   	return NULL;
+   }
+   ```
+
+2. `__get_vm_area_node`
+
+   ```c
+   static struct vm_struct *__get_vm_area_node(unsigned long size,
+   		unsigned long align, unsigned long shift, unsigned long flags,
+   		unsigned long start, unsigned long end, int node,
+   		gfp_t gfp_mask, const void *caller)
+   {
+   	struct vmap_area *va;
+   	struct vm_struct *area;
+   	unsigned long requested_size = size;
+
+   	BUG_ON(in_interrupt());
+   	size = ALIGN(size, 1ul << shift);
+   	if (unlikely(!size))
+   		return NULL;
+
+   	if (flags & VM_IOREMAP) // 如果是用于 IOREMAP，那么默认按 128 个页面对齐（？）
+   		align = 1ul << clamp_t(int, get_count_order_long(size),
+   				       PAGE_SHIFT, IOREMAP_MAX_ORDER);
+
+   	area = kzalloc_node(sizeof(*area), gfp_mask & GFP_RECLAIM_MASK, node); // 怎么调用 kmalloc_node 了
+   	if (unlikely(!area))
+   		return NULL;
+
+   	if (!(flags & VM_NO_GUARD))
+   		size += PAGE_SIZE;
+
+   	va = alloc_vmap_area(size, align, start, end, node, gfp_mask); // 分配 vmalloc 区域
+   	if (IS_ERR(va)) {
+   		kfree(area);
+   		return NULL;
+   	}
+
+   	kasan_unpoison_vmalloc((void *)va->va_start, requested_size);
+
+   	setup_vmalloc_vm(area, va, flags, caller); // 构建一个 vm_struct 空间
+
+   	return area;
+   }
+   ```
+
+   - `alloc_vmap_area` 负责分配 vmalloc 区域。其在 vmalloc 区域中查找一块大小合适的并且没有使用的空间，这段空间称为缝隙（hole）。
+     - 从 vmalloc 区域的起始位置 `VMALLOC_START` 开始，首先从红黑树 `vmap_area_root` 上查找，这棵树存放着系统正在使用的 vmalloc 区域，遍历左叶子节点赵区域地址最小的区域。如果区域的开始地址等于 `VMALLOC_START` ，说明这个区域是第一个 vmalloc 区域；如果红黑树没有一个节点，说明整个 vmalloc 区域都是空的。
+     - 从 `VMALLOC_START` 开始查找每个已存在的 vmalloc 区域的缝隙能够容纳目前申请的大小。如果已有的 vmalloc 区域的缝隙不能容纳，那么从最后一块 vmalloc 区域的结束地址开辟一个新的 vmalloc 区域。
+     - 找到新的区域缝隙后，调用 `insert_vmap_area` 将其注册到红黑树。
+
 ### 进程地址空间
 
 ### malloc
@@ -1787,3 +1912,7 @@ static __always_inline unsigned int __kmalloc_index(size_t size,
 [1] https://zhuanlan.zhihu.com/p/339800986
 
 [2] 奔跑吧 Linux 内核，卷 1：基础架构
+
+### 些许感想
+
+内存管理的学习是循序渐进的，开始可能只能将书中的内容稍加精简记录下来，随着看的内容越多，难免对前面的内容产生疑惑，这时再回过头去理解，同时补充自己的笔记。这样多来几次也就理解、记住了。所以最开始“抄”的过程对于我来说无法跳过。
