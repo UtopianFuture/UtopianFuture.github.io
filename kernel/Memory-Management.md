@@ -1905,6 +1905,155 @@ vmalloc 分配的空间在 [内存分布](# 内存分布) 小节中的图中有�
 
 ### 进程地址空间
 
+还是先看看进程的地址空间布局
+
+![process_address_space.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/process_address_space.png?raw=true)
+
+- 数据段和代码段就不再介绍，就是程序存储的位置。
+- 用户进程栈。通常位于用户地址空间的最高地址，从上往下延伸。其包含栈帧，里面包含了局部变量和函数调用参数等。注意，不要和内核栈混淆，进程的内核栈独立存在并由内核维护，主要用于上下文切换。用户栈和内核栈的作用可以[看这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/linux-note/others.md#%E7%94%A8%E6%88%B7%E6%A0%88)，其区别可以[看这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/linux-note/others.md#%E7%94%A8%E6%88%B7%E6%A0%88%E5%92%8C%E5%86%85%E6%A0%B8%E6%A0%88%E7%9A%84%E5%8C%BA%E5%88%AB)。
+- 堆映射区域。malloc 分配的进程虚拟地址就是这段区域。
+
+每个进程都有一套页表，这样每个进程的地址空间就是隔离的。
+
+#### mm_struct 数据结构
+
+`mm_struct` 是内核管理用户进程的内存区域和其页表映射的数据结构。进程控制块（PCB）中由指向 `mm_struct` 的指针 mm。
+
+```c
+struct mm_struct {
+	struct {
+		struct vm_area_struct *mmap; // 进程中所有的 VMA 形成单链表的表头
+		struct rb_root mm_rb; // VMA 红黑树的根节点
+		u64 vmacache_seqnum;                   /* per-thread vmacache */
+#ifdef CONFIG_MMU
+		unsigned long (*get_unmapped_area) (struct file *filp, // 用于判断虚拟地址空间是否有足够的空间，
+				unsigned long addr, unsigned long len, // 返回一段没有映射过的空间的起始地址
+				unsigned long pgoff, unsigned long flags);
+#endif
+		unsigned long mmap_base;	/* base of mmap area */
+		unsigned long mmap_legacy_base;	/* base of mmap area in bottom-up allocations */
+
+		unsigned long task_size;	/* size of task vm space */
+		unsigned long highest_vm_end;	/* highest vma end address */
+		pgd_t * pgd; // 指向进程的一级页表（PGD）
+
+		atomic_t mm_users; // The number of users(thread) including userspace
+		atomic_t mm_count; // The number of references to &struct mm_struct
+
+#ifdef CONFIG_MMU
+		atomic_long_t pgtables_bytes;	/* PTE page table pages */
+#endif
+		int map_count;			/* number of VMAs */
+
+		struct list_head mmlist; // 所有的 mm_task 都连接到一个双向链表中，该链表的表头是 init_mm 内存描述符
+								 // 即 init 进程的地址空间
+
+		unsigned long hiwater_rss; /* High-watermark of RSS usage */
+		unsigned long hiwater_vm;  /* High-water virtual memory usage */
+
+		unsigned long total_vm;	   /* Total pages mapped */
+		unsigned long locked_vm;   /* Pages that have PG_mlocked set */
+		atomic64_t    pinned_vm;   /* Refcount permanently increased */
+		unsigned long data_vm;	   /* VM_WRITE & ~VM_SHARED & ~VM_STACK */
+		unsigned long exec_vm;	   /* VM_EXEC & ~VM_WRITE & ~VM_STACK */
+		unsigned long stack_vm;	   /* VM_STACK */
+		unsigned long def_flags;
+
+		unsigned long start_code, end_code, start_data, end_data;
+		unsigned long start_brk, brk, start_stack; // 堆空间的起始地址、当前堆中的 VMA 的结束地址（？）
+		unsigned long arg_start, arg_end, env_start, env_end;
+
+		unsigned long saved_auxv[AT_VECTOR_SIZE]; /* for /proc/PID/auxv */
+
+#ifdef CONFIG_MEMCG
+		struct task_struct __rcu *owner; // owner of this mm_struct
+#endif
+		struct user_namespace *user_ns;
+
+        ...
+
+	} __randomize_layout;
+
+	/*
+	 * The mm_cpumask needs to be at the end of mm_struct, because it
+	 * is dynamically sized based on nr_cpu_ids.
+	 */
+	unsigned long cpu_bitmap[];
+};
+```
+
+#### VMA 数据结构
+
+VMA 描述的是进程用 mmap，malloc 等函数分配的地址空间，或者说它描述的是进程地址空间的一个区间。
+
+```c
+struct vm_area_struct {
+	/* The first cache line has the info for VMA tree walking. */ //（？）
+
+	unsigned long vm_start;		/* Our start address within vm_mm. */
+	unsigned long vm_end;		/* The first byte after our end address within vm_mm. */
+
+	/* linked list of VM areas per task, sorted by address */
+	struct vm_area_struct *vm_next, *vm_prev;
+
+	struct rb_node vm_rb; // VMA 作为一个节点插入红黑树
+
+	/*
+	 * Largest free memory gap in bytes to the left of this VMA.
+	 * Either between this VMA and vma->vm_prev, or between one of the
+	 * VMAs below us in the VMA rbtree and its ->vm_prev. This helps
+	 * get_unmapped_area find a free area of the right size.
+	 */
+	unsigned long rb_subtree_gap;
+
+	/* Second cache line starts here. */ //（？）
+
+	struct mm_struct *vm_mm;	/* The address space we belong to. */
+
+	pgprot_t vm_page_prot; // Access permissions of this VMA
+	unsigned long vm_flags;		/* Flags, see mm.h. */
+
+	struct list_head anon_vma_chain; // 这两个变量用于管理反向映射
+	struct anon_vma *anon_vma;
+
+	/* Function pointers to deal with this struct. */
+	const struct vm_operations_struct *vm_ops;
+
+	/* Information about our backing store: */
+	unsigned long vm_pgoff;		/* Offset (within vm_file) in PAGE_SIZE units */
+	struct file * vm_file;		/* File we map to (can be NULL). */
+	void * vm_private_data;		/* was vm_pte (shared mem) */
+
+#ifdef CONFIG_SWAP
+	atomic_long_t swap_readahead_info;
+#endif
+#ifndef CONFIG_MMU
+	struct vm_region *vm_region;	/* NOMMU mapping region */
+#endif
+#ifdef CONFIG_NUMA
+	struct mempolicy *vm_policy;	/* NUMA policy for the VMA */
+#endif
+	struct vm_userfaultfd_ctx vm_userfaultfd_ctx;
+} __randomize_layout;
+```
+
+将 `mm_struct` 和 `vm_area_struct` 结合起来看。
+
+![mm_strct-VMA.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/mm_strct-VMA.png?raw=true)
+
+这里有个问题，X86 CPU 中不是有 cr3 寄存器指向一级页表么，为什么这里还要设置一个 pgd，难道 cr3 中的数据是从这里来的？
+
+#### VMA 相关操作
+
+- 查找 VMA。调用 `find_vma` 通过虚拟地址查找对应的 VMA。`find_vma` 根据给定的 vaddr 查找满足如下条件之一的 VMA。
+  - vaddr 在 VMA 空间范围内，即 vma -> vm_start <= vaddr <= vma -> vm_end。
+  - 距离 vaddr 最近并且 VMA 的结束地址大于 vaddr 的 VMA。
+- 插入 VMA。`insert_vm_struct` 向 VMA 链表和红黑树中插入一个新的 VMA。
+- 合并 VMA。在新的 VMA 插入到进程的地址空间后，内核会检查它是否可以和现有的 VMA 合并。`vma_merge` 完成这个功能。合并中常见如下 3 中情况：
+  - 新的 VMA 的起始地址和 prev 节点结束地址重叠；
+  - 新的 VMA 的结束地址和 next 节点起始地址重叠；
+  - 新的 VMA 和 prev, next 节点正好衔接上。
+
 ### malloc
 
 ### Reference
