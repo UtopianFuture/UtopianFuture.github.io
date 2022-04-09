@@ -560,7 +560,7 @@ Three types of TLB exceptions can occur:
 
 ### Linux address space layout
 
-![layout](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/linux-address-space-layout.png)
+![layout](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/linux-address-space-layout.png?raw=true)
 
 ### Implicit Rules of Make
 
@@ -572,3 +572,25 @@ The important variables used by implicit rules are:
 - `CXXFLAGS`: Extra flags to give to the C++ compiler
 - `CPPFLAGS`: Extra flags to give to the C preprocessor
 - `LDFLAGS`: Extra flags to give to compilers when they are supposed to invoke the linker
+
+### 用户栈
+
+用户栈是属于用户进程空间的一块区域，用于保存用户进程子程序间的相互调用的参数、返回值等。
+
+用户栈的栈底靠近进程空间的上边缘，但一般不会刚好对齐到边缘，出于安全考虑，会在栈底与进程上边缘之间插入一段随机大小的隔离区。这样，程序在每次运行时，栈的位置都不同，这样黑客就不大容易利用基于栈的安全漏洞来实施攻击。
+
+当用户程序逐级调用函数时，用户栈从高地址向低地址方向扩展，每次增加一个栈帧，一个栈帧中存放的是函数的参数、返回地址和局部变量等，所以栈帧的长度是不定的。
+
+### 内核栈
+
+内核栈是属于操作系统空间的一块固定区域，可以用于保存中断现场、保存操作系统子程序间相互调用的参数、返回值等。
+
+### 用户栈和内核栈的区别
+
+内核在创建进程的时候，需要创建 `task_struct` ，同时也会创建相应的堆栈。每个进程会有两个栈，一个用户栈，存在于用户空间，一个内核栈，存在于内核空间。当进程在用户空间运行时，cpu 堆栈指针寄存器（sp）里面的内容是用户堆栈地址，使用用户栈；当进程因为中断或者系统调用而陷入内核态执行时，sp 里面的内容是内核栈空间地址，使用内核栈。
+
+进程陷入内核态后，先把用户态堆栈的地址保存在内核栈之中，然后设置 sp 的内容为内核栈的地址，这样就完成了用户栈向内核栈的转换；当进程从内核态恢复到用户态执行时，在内核态执行的最后将保存在内核栈里面的用户栈的地址恢复到堆栈指针寄存器即可。这样就实现了内核栈和用户栈的互转。
+
+那么，我们知道从内核转到用户态时用户栈的地址是在陷入内核的时候保存在内核栈里面的，但是在陷入内核的时候，我们是如何知道内核栈的地址的呢？
+
+关键在进程从用户态转到内核态的时候，**进程的内核栈总是空的**。这是因为当进程在用户态运行时，使用的是用户栈，当进程陷入到内核态时，内核栈保存进程在内核态运行的相关信息，但是一旦进程返回到用户态后，内核栈中保存的信息无效，会全部恢复，因此**每次进程从用户态陷入内核的时候得到的内核栈都是空的**。所以在进程陷入内核的时候，直接把内核栈的栈顶地址给堆栈指针寄存器就可以了。
