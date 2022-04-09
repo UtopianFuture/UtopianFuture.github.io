@@ -2041,9 +2041,11 @@ struct vm_area_struct {
 
 ![mm_strct-VMA.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/mm_strct-VMA.png?raw=true)
 
-这里有个问题，X86 CPU 中不是有 cr3 寄存器指向一级页表么，为什么这里还要设置一个 pgd，难道 cr3 中的数据是从这里来的？
+这里有个问题，X86 CPU 中不是有 cr3 寄存器指向一级页表么，为什么这里还要设置一个 pgd，难道 cr3 中的数据是从这里来的？而且图虽然清晰，但是很多细节还需要仔细分析，如 VMA 和物理页面建立映射关系等等。
 
 #### VMA 相关操作
+
+有个问题，为什么要合并 VMA，合并了那么两个 VMA 的内容进程要怎样区分呢？它们应该是有不同的用途。
 
 - 查找 VMA。调用 `find_vma` 通过虚拟地址查找对应的 VMA。`find_vma` 根据给定的 vaddr 查找满足如下条件之一的 VMA。
   - vaddr 在 VMA 空间范围内，即 vma -> vm_start <= vaddr <= vma -> vm_end。
@@ -2055,6 +2057,279 @@ struct vm_area_struct {
   - 新的 VMA 和 prev, next 节点正好衔接上。
 
 ### malloc
+
+malloc 函数是标准 C 库封装的一个核心函数，C 标准库最终会调用内核的 brk 系统调用。brk 系统调用展开后变成 `__do_sys_brk`。
+
+1. brk 系统调用
+
+   ```c
+   SYSCALL_DEFINE1(brk, unsigned long, brk)
+   {
+   	unsigned long newbrk, oldbrk, origbrk;
+   	struct mm_struct *mm = current->mm;
+   	struct vm_area_struct *next;
+   	unsigned long min_brk;
+   	bool populate;
+   	bool downgraded = false;
+   	LIST_HEAD(uf); // 内部临时用的链表
+
+   	if (mmap_write_lock_killable(mm))
+   		return -EINTR;
+
+   	origbrk = mm->brk;
+
+   	min_brk = mm->start_brk;
+
+   	if (brk < min_brk) // 出错了
+   		goto out;
+
+   	newbrk = PAGE_ALIGN(brk); // 结合上面的图就很容易理解，新的 brk 上界
+   	oldbrk = PAGE_ALIGN(mm->brk); // 原来的上界
+   	if (oldbrk == newbrk) { // 分配过程没有问题，但是还没有分配物理空间
+   		mm->brk = brk;
+   		goto success;
+   	}
+
+   	/*
+   	 * Always allow shrinking brk.
+   	 * __do_munmap() may downgrade mmap_lock to read.
+   	 */
+   	if (brk <= mm->brk) { // 这表示进程请求释放空间，调用 __do_munmap 释放这一部分空间
+   		int ret;
+
+   		/*
+   		 * mm->brk must to be protected by write mmap_lock so update it
+   		 * before downgrading mmap_lock. When __do_munmap() fails,
+   		 * mm->brk will be restored from origbrk.
+   		 */
+   		mm->brk = brk;
+   		ret = __do_munmap(mm, newbrk, oldbrk-newbrk, &uf, true);
+   		if (ret < 0) {
+   			mm->brk = origbrk;
+   			goto out;
+   		} else if (ret == 1) {
+   			downgraded = true;
+   		}
+   		goto success;
+   	}
+
+   	/* Check against existing mmap mappings. */
+   	next = find_vma(mm, oldbrk);
+   	if (next && newbrk + PAGE_SIZE > vm_start_gap(next)) // 以旧边界地址开始的地址空间已经在使用，不需要再寻找（？）
+   		goto out;
+
+   	/* Ok, looks good - let it rip. */
+   	if (do_brk_flags(oldbrk, newbrk-oldbrk, 0, &uf) < 0) // 没有找到一块已经存在的 VMA，继续分配 VMA
+   		goto out;
+   	mm->brk = brk;
+
+   success:
+   	populate = newbrk > oldbrk && (mm->def_flags & VM_LOCKED) != 0; // 判断进程是否使用 mlockall 系统调用
+   	if (downgraded)
+   		mmap_read_unlock(mm);
+   	else
+   		mmap_write_unlock(mm);
+   	userfaultfd_unmap_complete(mm, &uf);
+   	if (populate) // 进程使用 mlockall 系统调用，
+   		mm_populate(oldbrk, newbrk - oldbrk); // 需要马上分配物理内存
+   	return brk;
+
+   out:
+   	mmap_write_unlock(mm);
+   	return origbrk;
+   }
+   ```
+
+2. `do_brk_flags`
+
+   ```c
+   static int do_brk_flags(unsigned long addr, unsigned long len, unsigned long flags, struct list_head *uf)
+   {
+   	struct mm_struct *mm = current->mm;
+   	struct vm_area_struct *vma, *prev;
+   	struct rb_node **rb_link, *rb_parent;
+   	pgoff_t pgoff = addr >> PAGE_SHIFT;
+   	int error;
+   	unsigned long mapped_addr;
+
+   	/* Until we need other flags, refuse anything except VM_EXEC. */
+   	if ((flags & (~VM_EXEC)) != 0)
+   		return -EINVAL;
+   	flags |= VM_DATA_DEFAULT_FLAGS | VM_ACCOUNT | mm->def_flags;
+
+   	mapped_addr = get_unmapped_area(NULL, addr, len, 0, MAP_FIXED); // 找到一段未使用的线性地址空间
+
+       ...
+
+   	/* Clear old maps, set up prev, rb_link, rb_parent, and uf */
+   	if (munmap_vma_range(mm, addr, len, &prev, &rb_link, &rb_parent, uf))
+   		return -ENOMEM;
+
+   	/* Check against address space limits *after* clearing old maps... */
+   	if (!may_expand_vm(mm, flags, len >> PAGE_SHIFT))
+   		return -ENOMEM;
+
+   	if (mm->map_count > sysctl_max_map_count)
+   		return -ENOMEM;
+
+   	if (security_vm_enough_memory_mm(mm, len >> PAGE_SHIFT))
+   		return -ENOMEM;
+
+   	/* Can we just expand an old private anonymous mapping? */
+   	vma = vma_merge(mm, prev, addr, addr + len, flags, // 尝试合并 VMA
+   			NULL, NULL, pgoff, NULL, NULL_VM_UFFD_CTX);
+   	if (vma)
+   		goto out;
+
+   	/*
+   	 * create a vma struct for an anonymous mapping
+   	 */
+   	vma = vm_area_alloc(mm); // 合并不成功，新建一个 VMA
+   	if (!vma) {
+   		vm_unacct_memory(len >> PAGE_SHIFT);
+   		return -ENOMEM;
+   	}
+
+   	vma_set_anonymous(vma);
+   	vma->vm_start = addr; // 初始化各种信息
+   	vma->vm_end = addr + len;
+   	vma->vm_pgoff = pgoff;
+   	vma->vm_flags = flags;
+   	vma->vm_page_prot = vm_get_page_prot(flags);
+   	vma_link(mm, vma, prev, rb_link, rb_parent);
+   out:
+   	perf_event_mmap(vma); // 更新 mm_struct 信息
+   	mm->total_vm += len >> PAGE_SHIFT;
+   	mm->data_vm += len >> PAGE_SHIFT;
+   	if (flags & VM_LOCKED)
+   		mm->locked_vm += (len >> PAGE_SHIFT);
+   	vma->vm_flags |= VM_SOFTDIRTY;
+   	return 0;
+   }
+   ```
+
+3. `mm_populate` 为该进程分配物理内存。通常用户进程很少使用 `VM_LOCKED` 分配掩码，所以 brk 系统调用不会马上为这个进程分配物理内存，而是一直延迟到用户进程需要访问这些虚拟页面并发生缺页中断时彩绘分配物理内存，并和虚拟地址建立映射关系。
+
+   ```c
+   int __mm_populate(unsigned long start, unsigned long len, int ignore_errors)
+   {
+   	struct mm_struct *mm = current->mm;
+   	unsigned long end, nstart, nend;
+   	struct vm_area_struct *vma = NULL;
+   	int locked = 0;
+   	long ret = 0;
+
+   	end = start + len;
+
+   	for (nstart = start; nstart < end; nstart = nend) {
+   		/*
+   		 * We want to fault in pages for [nstart; end) address range.
+   		 * Find first corresponding VMA.
+   		 */
+   		if (!locked) {
+   			locked = 1;
+   			mmap_read_lock(mm);
+   			vma = find_vma(mm, nstart); // 找到对应的 VMA
+   		} else if (nstart >= vma->vm_end)
+   			vma = vma->vm_next;
+   		if (!vma || vma->vm_start >= end)
+   			break;
+   		/*
+   		 * Set [nstart; nend) to intersection of desired address
+   		 * range with the first VMA. Also, skip undesirable VMA types.
+   		 */
+   		nend = min(end, vma->vm_end);
+   		if (vma->vm_flags & (VM_IO | VM_PFNMAP))
+   			continue;
+   		if (nstart < vma->vm_start) // 重叠
+   			nstart = vma->vm_start;
+   		/*
+   		 * Now fault in a range of pages. populate_vma_page_range()
+   		 * double checks the vma flags, so that it won't mlock pages
+   		 * if the vma was already munlocked.
+   		 */
+   		ret = populate_vma_page_range(vma, nstart, nend, &locked); // 人为的制造缺页并完成映射
+
+           ...
+
+   		nend = nstart + ret * PAGE_SIZE;
+   		ret = 0;
+   	}
+   	if (locked)
+   		mmap_read_unlock(mm);
+   	return ret;	/* 0 or negative error code */
+   }
+   ```
+
+4. `populate_vma_page_range` 调用 `__get_user_pages` 来分配物理内存并建立映射关系。
+
+   `__get_user_pages` 主要用于**锁住内存**，即保证用户空间分配的内存不会被释放。很多驱动程序使用这个接口函数来为用户态程序分配物理内存。
+
+   ```c
+   static long __get_user_pages(struct mm_struct *mm,
+   		unsigned long start, unsigned long nr_pages,
+   		unsigned int gup_flags, struct page **pages,
+   		struct vm_area_struct **vmas, int *locked)
+   {
+   	long ret = 0, i = 0;
+   	struct vm_area_struct *vma = NULL;
+   	struct follow_page_context ctx = { NULL };
+
+   	...
+
+   	do {
+   		struct page *page;
+   		unsigned int foll_flags = gup_flags;
+   		unsigned int page_increm;
+
+   		/* first iteration or cross vma bound */
+   		if (!vma || start >= vma->vm_end) {
+   			vma = find_extend_vma(mm, start); // 查找 VMA
+
+   			...
+   		}
+   retry:
+   		...
+
+   		page = follow_page_mask(vma, start, foll_flags, &ctx); // 判断 VMA 中的虚页是否已经分配了物理内存
+           													// 其中涉及了页表遍历等操作，之后再分析吧
+   		if (!page) { // 没有分配
+   			ret = faultin_page(vma, start, &foll_flags, locked); // 人为的触发缺页异常，后面详细分析
+
+               ...
+   		}
+           ...
+
+   		if (pages) {
+   			pages[i] = page;
+   			flush_anon_page(vma, page, start); // 刷新这些页面对应的高速缓存
+   			flush_dcache_page(page);
+   			ctx.page_mask = 0;
+   		}
+   next_page:
+   		if (vmas) {
+   			vmas[i] = vma;
+   			ctx.page_mask = 0;
+   		}
+   		page_increm = 1 + (~(start >> PAGE_SHIFT) & ctx.page_mask);
+   		if (page_increm > nr_pages)
+   			page_increm = nr_pages;
+   		i += page_increm;
+   		start += page_increm * PAGE_SIZE;
+   		nr_pages -= page_increm;
+   	} while (nr_pages);
+   out:
+   	if (ctx.pgmap)
+   		put_dev_pagemap(ctx.pgmap);
+   	return i ? i : ret;
+   }
+   ```
+
+5. `follow_page_mask` 主要用于遍历页表并返回物理页面的 page 数据结构，这个应该比较复杂，但也是核心函数，之后再分析。这里有个问题，就是遍历页表不是由 MMU 做的，为什么这里还要用软件遍历？
+
+### mmap
+
+### 缺页异常处理
 
 ### Reference
 
