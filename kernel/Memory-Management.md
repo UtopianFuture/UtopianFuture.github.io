@@ -2329,6 +2329,23 @@ malloc 函数是标准 C 库封装的一个核心函数，C 标准库最终会�
 
 ### mmap
 
+mmap 就是将文件映射到进程的物理地址空间，使得进程访问文件和正常的访问内存一样。
+
+![mmap.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/mmap.png?raw=true)
+
+根据文件关联性和映射区域是否共享等属性，mmap 映射可以分为 4 类：
+
+- 私有匿名映射。匿名映射即没有映射对应的相关文件，内存区域的内容会被初始化为 0。
+- 共享匿名映射。
+- 私有文件映射。
+- 共享文件映射。这种映射有两种使用场景：
+  - 读写文件；
+  - 进程间通讯。进程之间的地址空间是相互隔离的，如果多个进程同时映射到一个文件，就实现了多进程间的共享内存通信。
+
+mmap 机制在内核中的实现和 brk 类似，但其和缺页中断机制结合后会复杂很多。如内存漏洞 [Dirty COW](https://blog.csdn.net/hbhgyu/article/details/106245182) 就利用了 mmap 和缺页中断的相关漏洞。这里只记录 mmap 的执行流程，之后有需要再详细分析。
+
+![mmap-implement.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/mmap-implement.png?raw=true)
+
 ### 缺页异常处理
 
 ### Reference
