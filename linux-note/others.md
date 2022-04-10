@@ -594,3 +594,19 @@ The important variables used by implicit rules are:
 那么，我们知道从内核转到用户态时用户栈的地址是在陷入内核的时候保存在内核栈里面的，但是在陷入内核的时候，我们是如何知道内核栈的地址的呢？
 
 关键在进程从用户态转到内核态的时候，**进程的内核栈总是空的**。这是因为当进程在用户态运行时，使用的是用户栈，当进程陷入到内核态时，内核栈保存进程在内核态运行的相关信息，但是一旦进程返回到用户态后，内核栈中保存的信息无效，会全部恢复，因此**每次进程从用户态陷入内核的时候得到的内核栈都是空的**。所以在进程陷入内核的时候，直接把内核栈的栈顶地址给堆栈指针寄存器就可以了。
+
+### x86 五级页表
+
+内核为了支持不同的 CPU 体系架构，设计了五级分页模型。五级分页模型是为了兼容X86-64体系架构中的5-Level Paging分页模式。
+
+![five-level-paging.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/five-level-paging.png?raw=true)
+
+五级分页每级命名分别为页全局目录(PGD)、页4级目录(P4D)、页上级目录(PUD)、页中间目录(PMD)、页表(PTE)。对应的相关宏定义命名如下：
+
+```c
+#define PGDIR_SHIFT
+#define P4D_SHIFT
+#define PUD_SHIFT
+#define PMD_SHIFT
+#define PAGE_SHIFT
+```
