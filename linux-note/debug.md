@@ -131,3 +131,21 @@
         dp[i] = malloc((size2 + 1) * sizeof(int));
       }
     ```
+
+18. 有时候输出信息太长，屏放不下，下面介绍两种将gdb的输出信息存到文件的方法。
+
+
+    （1）临时向文件输出些信息
+
+    比如要用info functions输出所有函数，结果往往有一大坨，所以可以将之输出到文件。
+    (gdb) set logging file <file name>
+
+    (gdb) set logging on
+    (gdb) info functions
+
+    (gdb) set logging off
+
+
+    （2）在整个gdb会话期间都重定向输出
+
+    gdb |tee newfile
