@@ -198,7 +198,7 @@ orl $CR0_PE, %ecx
 ljmpl $SEG32_MODE32_CS, $(BUILD_BIOS_ADDR + 1f)
 ```
 
-这里的 1f 要区分清楚。指的是前方第一个标签为“1”的位置，而不是代表十六进制数 0x1F。下一个标签“1”就是这个指令的下一条。所以，看起来这个跳转是没有价值的。实际上，在 cr0 寄存器被设定好之前，下一条指令已经被放入流水线。而再放入的时候这条指令还是在实模式下的。所以这个 `ljmp 指令是**为了清空流水线，确保下一条指令在保护模式下执行**。
+这里的 1f 要区分清楚。指的是前方第一个标签为“1”的位置，而不是代表十六进制数 0x1F。下一个标签“1”就是这个指令的下一条。所以，看起来这个跳转是没有价值的。实际上，在 cr0 寄存器被设定好之前，下一条指令已经被放入流水线。而再放入的时候这条指令还是在实模式下的。所以这个 `ljmp` 指令是**为了清空流水线，确保下一条指令在保护模式下执行**。
 
 现在，我们已经在保护模式了！在这里，程序进行了这些操作：
 
@@ -348,9 +348,9 @@ handle_post(void)
 
 #### 关于 make_bios_writable
 
-这里不放代码，仅仅简单介绍该函数的作用——允许更改 RAM 中的 BIOS ROM 区域。在介绍 `make_bios_writable` 之前，首先对 Shadow RAM 做一些介绍。实际上，尽管在启动的时候，是从 `F000:FFF0` 加载第一条指令的，你可能会觉得在启动的时候代码段段基址是 `0xF0000`。其实，并不是这样的。在计算机启动的时候，代码段段基地址实际上是是 `0xFFFF0000`（这里就不符合那个乘 16 的计算方式了）。笔者猜测这一一点的实现方式是通过段描述符高速缓冲寄存器实现的（实模式下也是通过查询这个寄存器来获得段基址的），开机的时候代码段的对应基址项被设置成 `0xFFFF0000`。
+该函数的作用是允许更改 RAM 中的 BIOS ROM 区域。在介绍 `make_bios_writable` 之前，首先对 Shadow RAM 做一些介绍。实际上，尽管在启动的时候，是从 `F000:FFF0` 加载第一条指令的，你可能会觉得在启动的时候代码段段基址是 `0xF0000`。其实，并不是这样的。在计算机启动的时候，代码段段基地址实际上是是 `0xFFFF0000`（这里就不符合那个乘 16 的计算方式了）。笔者猜测这一一点的实现方式是通过段描述符高速缓冲寄存器实现的（实模式下也是通过查询这个寄存器来获得段基址的），开机的时候代码段的对应基址项被设置成 `0xFFFF0000`。
 
-为什么从这里开始呢？我们知道 BIOS 是存储在 ROM 当中的。而 Intel 有一个习惯，将 BIOS 固件代码从 ROM 中映射到可寻址地址的末端（最后 64K 内）。这里的“映射”，并不是复制，而是当读取这个地址的时候，就直接读取 ROM 存储器当中的值。在 8086 时期，可寻址的地址为 0x00000-0xFFFFF，所以说它的“末端”确实是从我们理解的 0xF0000 开始的。所以在 8086 时期，硬件设备会将原本存储于 ROM 的 BIOS 映射到 F000:0000-F000:FFFF。然而，到了后面有 32 根地址线，实际上末端应该是 `0xFFFF0000-0xFFFFFFFF` 这一部分。此时的计算机，实际上是将 BIOS 固件代码映射到 `0xFFFF0000-0xFFFFFFFF` 中。
+为什么从这里开始呢？我们知道 BIOS 是存储在 ROM 当中的。而 Intel 有一个习惯，**将 BIOS 固件代码从 ROM 中映射到可寻址地址的末端（最后 64K 内）**。这里的“映射”，并不是复制，而是当读取这个地址的时候，就直接读取 ROM 存储器当中的值。在 8086 时期，可寻址的地址为 0x00000-0xFFFFF，所以说它的“末端”确实是从我们理解的 0xF0000 开始的。所以在 8086 时期，硬件设备会将原本存储于 ROM 的 BIOS 映射到 F000:0000-F000:FFFF。然而，到了后面有 32 根地址线，实际上末端应该是 `0xFFFF0000-0xFFFFFFFF` 这一部分。此时的计算机，实际上是将 BIOS 固件代码映射到 `0xFFFF0000-0xFFFFFFFF` 中。
 
 所以，实际上 SeaBIOS 的这一行指令：
 
@@ -359,11 +359,47 @@ reset_vector:
         ljmpw $SEG_BIOS, $entry_post
 ```
 
-是位于 0xFFFFFFF0 的物理地址位置的。但是我们注意到这是一个 Long jump 指令，这个指令会使 CPU 重新计算代码段寄存器，原本的 0xFFFF0000 基地址，在这一个指令执行之后，就会变成符合乘 16 计算方式的 0xF0000！
+是位于 `0xFFFFFFF0` 的物理地址位置的。但是我们注意到这是一个 Long jump 指令，这个指令会使 CPU 重新计算代码段寄存器，原本的 `0xFFFF0000` 基地址，在这一个指令执行之后，就会变成符合乘 16 计算方式的 0xF0000！
 
-读者可能会想，这不就出问题了吗？32 根地址线的 PC，BIOS 固件明明在最后呀！实际上，为了保持向前兼容性，机器启动的时候会自动**将 ROM 的 BIOS 复制到 RAM 的 BIOS ROM 区域当中**。所以，通过 ljmpw 指令跳转之后，因为已经复制了，在 RAM 当中也有 BIOS 固件代码。所以是不会有问题的。
+读者可能会想，这不就出问题了吗？32 根地址线的 PC，BIOS 固件明明在最后呀！实际上，为了保持向前兼容性，机器启动的时候会自动**将 ROM 的 BIOS 复制到 RAM 的 BIOS ROM 区域当中**。所以，通过 `ljmpw` 指令跳转之后，因为已经复制了，在 RAM 当中也有 BIOS 固件代码。所以是不会有问题的。
 
 **这个复制高地址处的 ROM 到低地址处的过程被称为 Shadow RAM 技术**。然而，在这个过程后，这段内存会被保护起来，无法进行写入。`make_bios_writable` 函数就用于让这段内存可写，从而便于更改一些静态分配的全局变量值。
+
+这里的分析应该是有问题的，并不是自动将 ROM 的 BIOS 复制到 RAM 的 BIOS ROM 区域当中，而就是通过 `make_bios_writable` 来复制的，我们看看代码：
+
+```c
+// Enable shadowing and copy bios.
+static void
+__make_bios_writable_intel(u16 bdf, u32 pam0)
+{
+    // Read in current PAM settings from pci config space
+    union pamdata_u pamdata;
+    pamdata.data32[0] = pci_config_readl(bdf, ALIGN_DOWN(pam0, 4));
+    pamdata.data32[1] = pci_config_readl(bdf, ALIGN_DOWN(pam0, 4) + 4);
+    u8 *pam = &pamdata.data8[pam0 & 0x03];
+
+    // Make ram from 0xc0000-0xf0000 writable
+    int i;
+    for (i=0; i<6; i++)
+        pam[i + 1] = 0x33;
+
+    // Make ram from 0xf0000-0x100000 writable
+    int ram_present = pam[0] & 0x10;
+    pam[0] = 0x30;
+
+    // Write PAM settings back to pci config space
+    pci_config_writel(bdf, ALIGN_DOWN(pam0, 4), pamdata.data32[0]);
+    pci_config_writel(bdf, ALIGN_DOWN(pam0, 4) + 4, pamdata.data32[1]);
+
+    if (!ram_present)
+        // Copy bios.
+        memcpy(VSYMBOL(code32flat_start)
+               , VSYMBOL(code32flat_start) + BIOS_SRC_OFFSET
+               , SYMBOL(code32flat_end) - SYMBOL(code32flat_start));
+}
+```
+
+从代码中清晰的看到，Seabios 通过 `memcpy`  将 `VSYMBOL(code32flat_start) + BIOS_SRC_OFFSET` 的 bios 复制到 `VSYMBOL(code32flat_start)`。而前面的 pam 操作则是对 `0xc0000 ~ 0xfffff` 内存空间的读写操作的重定向定义。
 
 #### 进入 dopost
 
