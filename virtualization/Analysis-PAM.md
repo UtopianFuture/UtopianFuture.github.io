@@ -25,7 +25,7 @@ PAM 对我来说是痛苦面具般的存在了，边写边理解吧。
 在 `i440fx_init` 初始化的时候, 来初始化所有 `PAMMemoryRegion`, 一共 13 个
 
 - 第一个映射: System BIOS Area Memory Segments, 也即映射 `0xf0000 ~ 0xfffff`（这不是 64K 么，为什么文档中说是 32K）
-- 后面的 12 个映射 `0xc0000 ~ 0xeffff`, 每一个映射 0x4000 的大小
+- 后面的 12 个映射 `0xc0000 ~ 0xeffff`, 每一个映射 0x4000 的地址空间
 
 ```c
 /*
@@ -160,9 +160,84 @@ memory-region: memory
 0000000100000000-000000023fffffff (prio 0, i/o): alias ram-above-4g @pc.ram 00000000c0000000-00000001ffffffff
 ```
 
-### Seabiso 处理 PAM
+### Seabios 处理 PAM
 
+Seabios 在 `__make_bios_writable_intel` 中处理 PAM，我们直接看代码：
 
+```c
+// Enable shadowing and copy bios.
+static void
+__make_bios_writable_intel(u16 bdf, u32 pam0)
+{
+    // Read in current PAM settings from pci config space
+    union pamdata_u pamdata;
+    pamdata.data32[0] = pci_config_readl(bdf, ALIGN_DOWN(pam0, 4));
+    pamdata.data32[1] = pci_config_readl(bdf, ALIGN_DOWN(pam0, 4) + 4);
+    u8 *pam = &pamdata.data8[pam0 & 0x03];
+
+    // Make ram from 0xc0000-0xf0000 writable
+    int i;
+    for (i=0; i<6; i++)
+        pam[i + 1] = 0x33;
+
+    // Make ram from 0xf0000-0x100000 writable
+    int ram_present = pam[0] & 0x10;
+    pam[0] = 0x30;
+
+    // Write PAM settings back to pci config space
+    pci_config_writel(bdf, ALIGN_DOWN(pam0, 4), pamdata.data32[0]);
+    pci_config_writel(bdf, ALIGN_DOWN(pam0, 4) + 4, pamdata.data32[1]);
+
+    if (!ram_present)
+        // Copy bios.
+        memcpy(VSYMBOL(code32flat_start)
+               , VSYMBOL(code32flat_start) + BIOS_SRC_OFFSET
+               , SYMBOL(code32flat_end) - SYMBOL(code32flat_start));
+}
+```
+
+从代码中清晰的看到，Seabios 通过 `memcpy`  将 `VSYMBOL(code32flat_start) + BIOS_SRC_OFFSET` 的 bios 复制到 `VSYMBOL(code32flat_start)`。而前面的 pam 操作则是对 `0xc0000 ~ 0xfffff` 内存空间的读写操作的重定向定义。
+
+当 bios 结束之后，即 `mainint` 中主要的操作都执行完毕，这些 PAM 的位置会再次设置上 `make_bios_readonly_intel`，但是 `0xe4000 ~ 0xeffff` 部分会被豁免（为什么，这段地址空间是用来干嘛的）。
+
+```c
+static void
+make_bios_readonly_intel(u16 bdf, u32 pam0)
+{
+    // Flush any pending writes before locking memory.
+    wbinvd();
+
+    // Read in current PAM settings from pci config space
+    union pamdata_u pamdata;
+    pamdata.data32[0] = pci_config_readl(bdf, ALIGN_DOWN(pam0, 4));
+    pamdata.data32[1] = pci_config_readl(bdf, ALIGN_DOWN(pam0, 4) + 4);
+    u8 *pam = &pamdata.data8[pam0 & 0x03];
+
+    // Write protect roms from 0xc0000-0xf0000
+    u32 romlast = BUILD_BIOS_ADDR, rommax = BUILD_BIOS_ADDR;
+    if (CONFIG_WRITABLE_UPPERMEMORY)
+        romlast = rom_get_last();
+    if (CONFIG_MALLOC_UPPERMEMORY)
+        rommax = rom_get_max();
+    int i;
+    for (i=0; i<6; i++) {
+        u32 mem = BUILD_ROM_START + i * 32*1024;
+        if (romlast < mem + 16*1024 || rommax < mem + 32*1024) {
+            if (romlast >= mem && rommax >= mem + 16*1024)
+                pam[i + 1] = 0x31;
+            break;
+        }
+        pam[i + 1] = 0x11;
+    }
+
+    // Write protect 0xf0000-0x100000
+    pam[0] = 0x10;
+
+    // Write PAM settings back to pci config space
+    pci_config_writel(bdf, ALIGN_DOWN(pam0, 4), pamdata.data32[0]);
+    pci_config_writel(bdf, ALIGN_DOWN(pam0, 4) + 4, pamdata.data32[1]);
+}
+```
 
 ### References
 
