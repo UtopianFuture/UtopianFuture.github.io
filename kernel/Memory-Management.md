@@ -2803,11 +2803,27 @@ static vm_fault_t do_fault(struct vm_fault *vmf)
 
 `do_wp_page` 处理非常多且非常复杂的情况，如页面可以分成特殊页面、单身匿名页面、非单身匿名页面、KSM 页面以及文件映射页面等等，这里只了解 COW 的原理，具体实现先不做分析，之后有需要再分析。
 
+### 补充知识点
+
+#### MMU
+
+MMU是 CPU 中的一个硬件单元，通常每个核有一个MMU。MMU由两部分组成：TLB(Translation Lookaside Buffer)和table walk unit。
+
+TLB 很熟悉了，就不再分析。主要介绍一下 table walk unit。
+
+首先对于硬件 page table walk 的理解是有些问题的，即内核中有维护一套进程页表，为什么还要硬件来做呢？两者有何区别？第一个问题很好理解，效率嘛，第二个问题就是我们要分析的。
+
+如果发生 TLB miss，就需要查找当前进程的 page table，接下来就是 table walk unit 的工作。而使用 table walk unit硬件单元来查找page table的方式被称为hardware TLB miss handling，通常被CISC架构的处理器（比如IA-32）所采用。如果在page table中查找不到，出现page fault，那么就会交由软件（操作系统）处理，之后就是我们熟悉的 PF。
+
+好吧，从找到的资料看 page table walk 和我理解的内核的 4/5 级页表转换没有什么不同。但是依旧有一个问题，即 mmu 访问的这些 page table 是不是就是内核访问的 page table，都是存放在内存中的。
+
 ### Reference
 
 [1] 奔跑吧 Linux 内核，卷 1：基础架构
 
 [2] 内核版本：5.15-rc5，commitid: f6274b06e326d8471cdfb52595f989a90f5e888f
+
+[3] https://zhuanlan.zhihu.com/p/65298260
 
 ### 些许感想
 
