@@ -1,5 +1,42 @@
 ## Memory Management
 
+### 目录
+
+- [内存分布](# 内存分布)
+- [数据结构](# 数据结构)
+- [页框管理](# 页框管理)
+  - [内存管理区](# 内存管理区)
+  - [分区页框分配器](# 分区页框分配器)
+  - [管理区分配器](# 管理区分配器)
+    - [伙伴系统算法](# 伙伴系统算法)
+    - [请求和释放页框](# 请求和释放页框)
+- [内存区管理](# 内存区管理)
+  - [创建 slab 描述符](# 创建 slab 描述符)
+  - [slab 分配器的内存布局](# slab 分配器的内存布局)
+  - [配置 slab 描述符](# 配置 slab 描述符)
+  - [分配 slab 对象](# 分配 slab 对象)
+  - [释放 slab 对象](# 释放 slab 对象)
+  - [slab 分配器和伙伴系统的接口函数](# slab 分配器和伙伴系统的接口函数)
+  - [管理区 freelist](# 管理区 freelist)
+  - [kmalloc](# kmalloc)
+- [vmalloc](# vmalloc)
+- [进程地址空间](# 进程地址空间)
+  - [mm_struct 数据结构](# mm_struct 数据结构)
+  - [VMA 数据结构](# VMA 数据结构)
+  - [VMA 相关操作](# VMA 相关操作)
+- [malloc](# malloc)
+- [mmap](# mmap)
+- [缺页异常处理](# 缺页异常处理)
+  - [关键函数 do_user_addr_fault](# 关键函数 do_user_addr_fault)
+  - [关键函数 __handle_mm_fault](# 关键函数 __handle_mm_fault)
+  - [关键函数 handle_pte_fault](# 关键函数 handle_pte_fault)
+  - [匿名页面缺页中断](# 匿名页面缺页中断)
+  - [文件映射缺页中断](# 文件映射缺页中断)
+  - [写时复制（COW）](# 写时复制（COW）)
+- [补充知识点](# 补充知识点)
+- [Reference](# Reference)
+- [些许感想](# 些许感想)
+
 很多文章都说内存管理是内核中最复杂的部分、最重要的部分之一，在来实验室之后跟着师兄做项目、看代码的这段时间里，渐渐感觉自己的知识框架是不完整的，底下少了一部分，后来发现这部分就是内核，所以开始学习内核。其实这也不是第一次接触内核，之前也陆陆续续的看过一部分，包括做 RISC-V 操作系统实验，LoongArch 内核的启动部分，但始终没有花时间去肯内存管理，进程调度和文件管理这几个核心模块。而师兄也说过，内核都看的懂，啥代码你看不懂。
 
 ### 内存分布
@@ -176,7 +213,7 @@ struct zone {
 
 管理区分配器搜索能够满足分配请求的管理区，在每个管理区中，伙伴系统负责分配页框，每 CPU 页框高速缓存用来满足单个页框的分配请求。
 
-![memory-management.1.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/memory-management.1.png?raw=true)
+![zone-menagement.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/zone-menagement.png?raw=true)
 
 #### 管理区分配器
 
@@ -212,9 +249,9 @@ struct zone {
 
 ##### 请求和释放页框
 
-这几个函数之后都需要详细分析。它们是整个内存管理的核心。
+页框的请求和释放是整个内存管理的核心，如 malloc 等函数都需要调用伙伴系统的这些接口来分配内存。
 
-有 6 个函数和宏用来请求页框，这里只分析 `alloc_pages`
+有 6 个函数和宏用来请求页框，这里只分析 `alloc_pages`，
 
 ```c
 struct page *alloc_pages(gfp_t gfp, unsigned order) // gfp 表示如何寻找页框， order 表示请求的页框数
