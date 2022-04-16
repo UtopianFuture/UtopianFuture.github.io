@@ -5,13 +5,20 @@
 - [内存分布](# 内存分布)
 - [数据结构](# 数据结构)
 - [页框管理](# 页框管理)
+  - [page](# page)
   - [内存管理区](# 内存管理区)
+    - [pglist_data](# pglist_data)
+    - [zone](# zone)
+    - [zonelist](# zonelist)
+
   - [分区页框分配器](# 分区页框分配器)
   - [管理区分配器](# 管理区分配器)
     - [伙伴系统算法](# 伙伴系统算法)
     - [请求和释放页框](# 请求和释放页框)
+
 - [内存区管理](# 内存区管理)
   - [创建 slab 描述符](# 创建 slab 描述符)
+    - [kmem_cache](# kmem_cache)
   - [slab 分配器的内存布局](# slab 分配器的内存布局)
   - [配置 slab 描述符](# 配置 slab 描述符)
   - [分配 slab 对象](# 分配 slab 对象)
@@ -53,7 +60,9 @@
 
 ### 页框管理
 
-以页框为最小单位分配内存。从 page  作为页描述符记录每个页框当前的状态。
+内核中以页框（大多数情况为 4K）为最小单位分配内存。page  作为页描述符记录每个页框当前的状态。
+
+##### page
 
 ```c
 struct page {
@@ -203,13 +212,15 @@ struct page {
 所有的页描述符存放在 `mem_map` 数组中，用 `virt_to_page`  宏产生线性地址对应的 page 地址，用 `pfn_to_page` 宏产生页框号对应的 page 地址。
 
 ```c
-#define virt_to_page(kaddr)	pfn_to_page(__pa(kaddr) >> PAGE_SHIFT)
-#define pfn_to_page(pfn)	(mem_map + (pfn))
+#define virt_to_page(kaddr)	pfn_to_page(__pa(kaddr) >> PAGE_SHIFT) // _pa() 宏用来将虚拟地址转换为物理地址
+#define pfn_to_page(pfn)	(mem_map + (pfn)) // 页框号不就是 page 的地址么。好吧，应该不是，所有的页描述符存放在 												  // mem_map 数组中，所以 mem_map 中存放的才是 page 地址
 ```
 
 #### 内存管理区
 
 由于 NUMA 模型的存在，kernel 将物理内存分为几个节点（node），每个节点有一个类型为 `pg_date_t` 的描述符。
+
+##### pglist_data
 
 ```c
 *
@@ -254,6 +265,8 @@ extern struct pglist_data *pgdat_list;
 - ZONE_DMA：低于 16MB 的内存页框。
 - ZONE_NORMAL：高于 16MB 低于 896MB 的内存页框。
 - ZONE_HIGHMEM：高于 896MB 的内存页框。
+
+##### zone
 
 zone 为管理区描述符。
 
@@ -304,6 +317,25 @@ struct zone {
 	char			*name;
 } ____cacheline_maxaligned_in_smp;
 ```
+
+##### zonelist
+
+```c
+struct zonelist {
+	struct zoneref _zonerefs[MAX_ZONES_PER_ZONELIST + 1];
+};
+
+struct zoneref {
+	struct zone *zone;	/* Pointer to actual zone */
+	int zone_idx;		/* zone_idx(zoneref->zone) */
+};
+```
+
+内核使用 zone 来管理内存节点，上文介绍过，一个内存节点可能存在多个 zone，如 `ZONE_DMA,` `ZONE_NORMAL` 等。`zonelist` 是所有可用的 zone，其中排在第一个的是页面分配器最喜欢的。
+
+我们假设系统中只有一个内存节点，有两个 zone，分别是 `ZONE_DMA` 和 `ZONE_NORMAL`，那么 `zonelist` 中的相关数据结构的关系如下：
+
+![ZONELIST.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/ZONELIST.png?raw=true)
 
 #### 分区页框分配器
 
@@ -466,61 +498,9 @@ EXPORT_SYMBOL(alloc_pages);
   - 页面回收修饰符（page reclaim modifier）
   - 行为修饰符（action modifier）
 
-  具体的定义在 gfp.h 中。而要正确使用这么多标志很难，所以定义了一些常用的表示组合——类型标志，如 `GFP_KERNEL`, `GFP_USER` 等，这里就不一一介绍，知道它是干什么的就行了，之后真正要用再查。
+  具体的定义在 gfp.h 中。而要正确使用这么多标志很难，所以定义了一些常用的表示组合——类型标志，如 `GFP_KERNEL`, `GFP_USER` 等，这里就不一一介绍，知道它是干什么的就行了，之后真正要用再查
 
-- `pglist_data`
-
-  该数据结构用来表示一个内存节点的所有资源。
-
-  ```c
-  typedef struct pglist_data {
-  	/*
-  	 * node_zones contains just the zones for THIS node. Not all of the
-  	 * zones may be populated, but it is the full list. It is referenced by
-  	 * this node's node_zonelists as well as other node's node_zonelists.
-  	 */
-  	struct zone node_zones[MAX_NR_ZONES];
-
-  	/*
-  	 * node_zonelists contains references to all zones in all nodes.
-  	 * Generally the first zones will be references to this node's
-  	 * node_zones.
-  	 */
-  	struct zonelist node_zonelists[MAX_ZONELISTS]; // 这两个变量不要搞混了
-
-  	int nr_zones; /* number of populated zones in this node */
-
-      ...
-
-  	unsigned long node_start_pfn;
-  	unsigned long node_present_pages; /* total number of physical pages */
-  	unsigned long node_spanned_pages; /* total size of physical page
-  					     range, including holes */
-  	int node_id;
-  	wait_queue_head_t kswapd_wait;
-  	wait_queue_head_t pfmemalloc_wait;
-  	struct task_struct *kswapd;	/* Protected by
-  					   mem_hotplug_begin/end() */
-  	int kswapd_order; // 这个应该是用来做内存回收的
-  	enum zone_type kswapd_highest_zoneidx;
-
-  	int kswapd_failures;		/* Number of 'reclaimed == 0' runs */
-
-  	...
-
-  	/* Per-node vmstats */
-  	struct per_cpu_nodestat __percpu *per_cpu_nodestats;
-  	atomic_long_t		vm_stat[NR_VM_NODE_STAT_ITEMS];
-  } pg_data_t;
-  ```
-
-  在 NUMA 架构中，整个系统的内存由一个 `pglist_data` 指针 `node_data` 来管理。
-
-  ```c
-  extern struct pglist_data *node_data[];
-  ```
-
-2. `prepare_alloc_pages`
+2. `prepare_alloc_page`
 
    这个函数主要用于初始化在页面分配时用到的参数，这些参数临时存放在 `alloc_context` 中。
 
@@ -564,25 +544,6 @@ EXPORT_SYMBOL(alloc_pages);
    	return true;
    }
    ```
-
-- `zonelist`
-
-  ```c
-  struct zonelist {
-  	struct zoneref _zonerefs[MAX_ZONES_PER_ZONELIST + 1];
-  };
-
-  struct zoneref {
-  	struct zone *zone;	/* Pointer to actual zone */
-  	int zone_idx;		/* zone_idx(zoneref->zone) */
-  };
-  ```
-
-  内核使用 zone 来管理内存节点，上文介绍过，一个内存节点可能存在多个 zone，如 `ZONE_DMA,` `ZONE_NORMAL` 等。`zonelist` 是所有可用的 zone，其中排在第一个的是页面分配器最喜欢的。
-
-  我们假设系统中只有一个内存节点，有两个 zone，分别是 `ZONE_DMA` 和 `ZONE_NORMAL`，那么 `zonelist` 中的相关数据结构的关系如下：
-
-  ![ZONELIST.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/ZONELIST.png?raw=true)
 
 3.  `get_page_from_freelist`
 
@@ -827,8 +788,6 @@ EXPORT_SYMBOL(alloc_pages);
   };
   ```
 
-
-
 有 4 个函数和宏能够释放页框，这里只分析 `__free_pages`。
 
 ```c
@@ -1019,42 +978,44 @@ slab 分配器最终还是使用伙伴系统来分配实际的物理页面，只
 
 #### 创建 slab 描述符
 
-1. `kmem_cache` 是 slab 分配器中的核心数据结构，我们将其称为 slab 描述符。
+`kmem_cache` 是 slab 分配器中的核心数据结构，我们将其称为 slab 描述符。
 
-   ```c
-   struct kmem_cache {
-   	struct kmem_cache_cpu __percpu *cpu_slab; // 共享对象缓冲池
-   	/* Used for retrieving partial slabs, etc. */
-   	slab_flags_t flags; // 对象的分配掩码
-   	unsigned long min_partial;
-   	unsigned int size;	/* The size of an object including metadata */
-   	unsigned int object_size;/* The size of an object without metadata */
-   	struct reciprocal_value reciprocal_size;
-   	unsigned int offset;	/* Free pointer offset */
-   	struct kmem_cache_order_objects oo;
+##### kmem_cache
 
-   	/* Allocation and freeing of slabs */
-   	struct kmem_cache_order_objects max; // 其实就是 slab 描述符中空闲对象的最大最小值
-   	struct kmem_cache_order_objects min;
-   	gfp_t allocflags;	/* gfp flags to use on each alloc */
-   	int refcount;		/* Refcount for slab cache destroy */
-   	void (*ctor)(void *); // 构造函数
-   	unsigned int inuse;		/* Offset to metadata */
-   	unsigned int align;		/* Alignment */
-   	unsigned int red_left_pad;	/* Left redzone padding size */
-   	const char *name;	/* Name (only for display!) */
-   	struct list_head list;	/* List of slab caches */ // 用于把 slab 描述符添加到全局链表 slab_caches 中
+```c
+struct kmem_cache {
+	struct kmem_cache_cpu __percpu *cpu_slab; // 共享对象缓冲池
+	/* Used for retrieving partial slabs, etc. */
+	slab_flags_t flags; // 对象的分配掩码
+	unsigned long min_partial;
+	unsigned int size;	/* The size of an object including metadata */
+	unsigned int object_size;/* The size of an object without metadata */
+	struct reciprocal_value reciprocal_size;
+	unsigned int offset;	/* Free pointer offset */
+	struct kmem_cache_order_objects oo;
 
-       ...
+	/* Allocation and freeing of slabs */
+	struct kmem_cache_order_objects max; // 其实就是 slab 描述符中空闲对象的最大最小值
+	struct kmem_cache_order_objects min;
+	gfp_t allocflags;	/* gfp flags to use on each alloc */
+	int refcount;		/* Refcount for slab cache destroy */
+	void (*ctor)(void *); // 构造函数
+	unsigned int inuse;		/* Offset to metadata */
+	unsigned int align;		/* Alignment */
+	unsigned int red_left_pad;	/* Left redzone padding size */
+	const char *name;	/* Name (only for display!) */
+	struct list_head list;	/* List of slab caches */ // 用于把 slab 描述符添加到全局链表 slab_caches 中
 
-   	unsigned int useroffset;	/* Usercopy region offset */
-   	unsigned int usersize;		/* Usercopy region size */
+    ...
 
-   	struct kmem_cache_node *node[MAX_NUMNODES]; // slab 节点
-   };
-   ```
+	unsigned int useroffset;	/* Usercopy region offset */
+	unsigned int usersize;		/* Usercopy region size */
 
-2. `kmem_cache_create`
+	struct kmem_cache_node *node[MAX_NUMNODES]; // slab 节点
+};
+```
+
+1. `kmem_cache_create`
 
    ` kmem_cache_create` 只是 `kmem_cache_create_usercopy` 的包装，直接看 `kmem_cache_create_usercopy`，
 
@@ -1104,7 +1065,7 @@ slab 分配器最终还是使用伙伴系统来分配实际的物理页面，只
    }
    ```
 
-3. `__kmem_cache_create`
+2. `__kmem_cache_create`
 
    `create_cache` 只是初步初始化一个 slab 描述符，主要的创建过程在 `__kmem_cache_create` 中。
 
