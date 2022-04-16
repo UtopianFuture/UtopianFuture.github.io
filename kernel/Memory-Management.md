@@ -56,37 +56,130 @@
 以页框为最小单位分配内存。从 page  作为页描述符记录每个页框当前的状态。
 
 ```c
-/*
- * Each physical page in the system has a struct page associated with
- * it to keep track of whatever it is we are using the page for at the
- * moment. Note that we have no way to track which tasks are using
- * a page.
- */
 struct page {
-	page_flags_t flags;	// 保存到 node 和 zone 的链接和页框状态
-	atomic_t _count;		/* Usage count */
-	atomic_t _mapcount;		/* Count of ptes mapped in mms,
-					 * to show when page is mapped
-					 * & limit reverse map searches.
-					 */
-	unsigned long private;		/* Mapping-private opaque data:
-					 * usually used for buffer_heads
-					 * if PagePrivate set; used for
-					 * swp_entry_t if PageSwapCache
-					 * When page is free, this indicates
-					 * order in the buddy system.
-					 */
-	struct address_space *mapping;	/* If low bit clear, points to
-					 * inode address_space, or NULL.
-					 * If page mapped as anonymous
-					 * memory, low bit is set, and
-					 * it points to anon_vma object:
-					 * see PAGE_MAPPING_ANON below.
-					 */
-	pgoff_t index;			/* Our offset within mapping. */
-	struct list_head lru;		/* Pageout list, eg. active_list
-					 * protected by zone->lru_lock !
-					 */
+	unsigned long flags; // 保存到 node 和 zone 的链接和页框状态
+	/*
+	 * Five words (20/40 bytes) are available in this union.
+	 * WARNING: bit 0 of the first word is used for PageTail(). That
+	 * means the other users of this union MUST NOT use the bit to
+	 * avoid collision and false-positive PageTail().
+	 */
+	union {
+		struct {	/* Page cache and anonymous pages */
+			struct list_head lru;
+			/* See page-flags.h for PAGE_MAPPING_FLAGS */
+			struct address_space *mapping;
+			pgoff_t index;		/* Our offset within mapping. */
+			/**
+			 * @private: Mapping-private opaque data.
+			 * Usually used for buffer_heads if PagePrivate.
+			 * Used for swp_entry_t if PageSwapCache.
+			 * Indicates order in the buddy system if PageBuddy.
+			 */
+			unsigned long private;
+		};
+		struct {	/* page_pool used by netstack */
+			/**
+			 * @pp_magic: magic value to avoid recycling non
+			 * page_pool allocated pages.
+			 */
+			unsigned long pp_magic;
+			struct page_pool *pp;
+			unsigned long _pp_mapping_pad;
+			unsigned long dma_addr;
+			union {
+				/**
+				 * dma_addr_upper: might require a 64-bit
+				 * value on 32-bit architectures.
+				 */
+				unsigned long dma_addr_upper;
+				/**
+				 * For frag page support, not supported in
+				 * 32-bit architectures with 64-bit DMA.
+				 */
+				atomic_long_t pp_frag_count;
+			};
+		};
+		struct {	/* slab, slob and slub */
+			union {
+				struct list_head slab_list;
+				struct {	/* Partial pages */
+					struct page *next;
+
+					int pages;	/* Nr of pages left */
+					int pobjects;	/* Approximate count */
+
+				};
+			};
+			struct kmem_cache *slab_cache; /* not slob */
+			/* Double-word boundary */
+			void *freelist;		/* first free object */
+			union {
+				void *s_mem;	/* slab: first object */
+				unsigned long counters;		/* SLUB */
+				struct {			/* SLUB */
+					unsigned inuse:16;
+					unsigned objects:15;
+					unsigned frozen:1;
+				};
+			};
+		};
+		struct {	/* Tail pages of compound page */
+			unsigned long compound_head;	/* Bit zero is set */
+
+			/* First tail page only */
+			unsigned char compound_dtor;
+			unsigned char compound_order;
+			atomic_t compound_mapcount;
+			unsigned int compound_nr; /* 1 << compound_order */
+		};
+		struct {	/* Second tail page of compound page */
+			unsigned long _compound_pad_1;	/* compound_head */
+			atomic_t hpage_pinned_refcount;
+			/* For both global and memcg */
+			struct list_head deferred_list;
+		};
+		struct {	/* Page table pages */
+			unsigned long _pt_pad_1;	/* compound_head */
+			pgtable_t pmd_huge_pte; /* protected by page->ptl */
+			unsigned long _pt_pad_2;	/* mapping */
+			union {
+				struct mm_struct *pt_mm; /* x86 pgds only */
+				atomic_t pt_frag_refcount; /* powerpc */
+			};
+
+            ...
+
+		};
+
+        ...
+
+		/** @rcu_head: You can use this to free a page by RCU. */
+		struct rcu_head rcu_head;
+	};
+
+	union {		/* This union is 4 bytes in size. */
+		/*
+		 * If the page can be mapped to userspace, encodes the number
+		 * of times this page is referenced by a page table.
+		 */
+		atomic_t _mapcount;
+
+		/*
+		 * If the page is neither PageSlab nor mappable to userspace,
+		 * the value stored here may help determine what this page
+		 * is used for.  See page-flags.h for a list of page types
+		 * which are currently stored here.
+		 */
+		unsigned int page_type;
+
+		unsigned int active;		/* SLAB */
+		int units;			/* SLOB */
+	};
+
+	/* Usage count. *DO NOT USE DIRECTLY*. See page_ref.h */
+	atomic_t _refcount;
+
 	/*
 	 * On machines where all RAM is mapped into kernel address space,
 	 * we can simply calculate the virtual address. On machines with
@@ -98,10 +191,13 @@ struct page {
 	 * WANT_PAGE_VIRTUAL in asm/page.h
 	 */
 #if defined(WANT_PAGE_VIRTUAL)
-	void *virtual;			/* Kernel virtual address (NULL if
-					   not kmapped, ie. highmem) */
+	void *virtual;			/* Kernel virtual address (NULL if not kmapped, ie. highmem) */
 #endif /* WANT_PAGE_VIRTUAL */
-};
+
+#ifdef LAST_CPUPID_NOT_IN_PAGE_FLAGS
+	int _last_cpupid;
+#endif
+} _struct_page_alignment;
 ```
 
 所有的页描述符存放在 `mem_map` 数组中，用 `virt_to_page`  宏产生线性地址对应的 page 地址，用 `pfn_to_page` 宏产生页框号对应的 page 地址。
@@ -129,7 +225,7 @@ struct page {
  */
 typedef struct pglist_data { // 每个节点分为不同的管理区
 	struct zone node_zones[MAX_NR_ZONES]; // 管理区描述符数组
-	struct zonelist node_zonelists[GFP_ZONETYPES];
+	struct zonelist node_zonelists[GFP_ZONETYPES]; // 所有节点的 zone
 	int nr_zones;
 	struct page *node_mem_map; // 页描述符数组
 	struct bootmem_data *bdata;
@@ -325,7 +421,7 @@ EXPORT_SYMBOL(alloc_pages);
    	alloc_flags |= alloc_flags_nofragment(ac.preferred_zoneref->zone, gfp); // 用于内存碎片化方面的优化
 
    	/* First allocation attempt */
-   	page = get_page_from_freelist(alloc_gfp, order, alloc_flags, &ac); // 从空闲链表中分配内存，并返回第一个 page
+   	page = get_page_from_freelist(alloc_gfp, order, alloc_flags, &ac); // 从空闲链表中分配内存，并返回第一个 																	   // page 的地址
    	if (likely(page))
    		goto out;
 
@@ -338,7 +434,7 @@ EXPORT_SYMBOL(alloc_pages);
    	 */
    	ac.nodemask = nodemask;
 
-   	page = __alloc_pages_slowpath(alloc_gfp, order, &ac); // 若分配不成功，则通过慢路径分配
+   	page = __alloc_pages_slowpath(alloc_gfp, order, &ac); // 若分配不成功，则通过慢路径分配，这个之后再分析
 
    out:
    	if (memcg_kmem_enabled() && (gfp & __GFP_ACCOUNT) && page &&
@@ -370,7 +466,7 @@ EXPORT_SYMBOL(alloc_pages);
   - 页面回收修饰符（page reclaim modifier）
   - 行为修饰符（action modifier）
 
-  具体的定义在 gfp.h 中。而要正确使用这么多标志很难，所以定义了一些常用的表示组合——类型标志，如 `GFP_KERNEL`, `GFP_USER` 等，这里就不一一介绍，知道它是干什么的就行了。
+  具体的定义在 gfp.h 中。而要正确使用这么多标志很难，所以定义了一些常用的表示组合——类型标志，如 `GFP_KERNEL`, `GFP_USER` 等，这里就不一一介绍，知道它是干什么的就行了，之后真正要用再查。
 
 - `pglist_data`
 
@@ -390,7 +486,7 @@ EXPORT_SYMBOL(alloc_pages);
   	 * Generally the first zones will be references to this node's
   	 * node_zones.
   	 */
-  	struct zonelist node_zonelists[MAX_ZONELISTS];
+  	struct zonelist node_zonelists[MAX_ZONELISTS]; // 这两个变量不要搞混了
 
   	int nr_zones; /* number of populated zones in this node */
 
@@ -405,7 +501,7 @@ EXPORT_SYMBOL(alloc_pages);
   	wait_queue_head_t pfmemalloc_wait;
   	struct task_struct *kswapd;	/* Protected by
   					   mem_hotplug_begin/end() */
-  	int kswapd_order;
+  	int kswapd_order; // 这个应该是用来做内存回收的
   	enum zone_type kswapd_highest_zoneidx;
 
   	int kswapd_failures;		/* Number of 'reclaimed == 0' runs */
@@ -482,7 +578,7 @@ EXPORT_SYMBOL(alloc_pages);
   };
   ```
 
-  内核使用 zone 来管理内存节点，上文介绍过，一个内存节点可能存在多个 zone，如 `ZONE_DMA,` `ZONE_NORMAL` 等。zonelist 是所有可用的 zone，其中排在第一个的是页面分配器最喜欢的。
+  内核使用 zone 来管理内存节点，上文介绍过，一个内存节点可能存在多个 zone，如 `ZONE_DMA,` `ZONE_NORMAL` 等。`zonelist` 是所有可用的 zone，其中排在第一个的是页面分配器最喜欢的。
 
   我们假设系统中只有一个内存节点，有两个 zone，分别是 `ZONE_DMA` 和 `ZONE_NORMAL`，那么 `zonelist` 中的相关数据结构的关系如下：
 
@@ -554,7 +650,7 @@ EXPORT_SYMBOL(alloc_pages);
    			}
    		}
 
-   try_this_zone: // 显而易见，从当前 zone 分配内存
+   try_this_zone: // 显而易见，从当前 zone 分配内存（应该就是第一个 zone）
    		page = rmqueue(ac->preferred_zoneref->zone, zone, order,
    				gfp_mask, alloc_flags, ac->migratetype); // 从伙伴系统分配页面，核心函数，后面分析
    		if (page) { // 分配成功后设置必要的属性和检查
