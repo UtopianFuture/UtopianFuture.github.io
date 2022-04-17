@@ -2,48 +2,48 @@
 
 ### 目录
 
-- [内存分布](# 内存分布)
-- [数据结构](# 数据结构)
-- [页框管理](# 页框管理)
-  - [page](# page)
-  - [内存管理区](# 内存管理区)
-    - [pglist_data](# pglist_data)
-    - [zone](# zone)
-    - [zonelist](# zonelist)
+- [内存分布](#内存分布)
+- [数据结构](#数据结构)
+- [页框管理](#页框管理)
+  - [page](#page)
+  - [内存管理区](#内存管理区)
+    - [pglist_data](#pglist_data)
+    - [zone](#zone)
+    - [zonelist](#zonelist)
 
-  - [分区页框分配器](# 分区页框分配器)
-  - [管理区分配器](# 管理区分配器)
-    - [伙伴系统算法](# 伙伴系统算法)
-    - [请求页框](# 请求页框)
-    - [释放页框](# 释放页框)
+  - [分区页框分配器](#分区页框分配器)
+  - [管理区分配器](#管理区分配器)
+    - [伙伴系统算法](#伙伴系统算法)
+    - [请求页框](#请求页框)
+    - [释放页框](#释放页框)
 
-- [内存区管理](# 内存区管理)
-  - [创建 slab 描述符](# 创建 slab 描述符)
-    - [kmem_cache](# kmem_cache)
-  - [slab 分配器的内存布局](# slab 分配器的内存布局)
-  - [配置 slab 描述符](# 配置 slab 描述符)
-  - [分配 slab 对象](# 分配 slab 对象)
-  - [释放 slab 对象](# 释放 slab 对象)
-  - [slab 分配器和伙伴系统的接口函数](# slab 分配器和伙伴系统的接口函数)
-  - [管理区 freelist](# 管理区 freelist)
-  - [kmalloc](# kmalloc)
-- [vmalloc](# vmalloc)
-- [进程地址空间](# 进程地址空间)
-  - [mm_struct 数据结构](# mm_struct 数据结构)
-  - [VMA 数据结构](# VMA 数据结构)
-  - [VMA 相关操作](# VMA 相关操作)
-- [malloc](# malloc)
-- [mmap](# mmap)
-- [缺页异常处理](# 缺页异常处理)
-  - [关键函数 do_user_addr_fault](# 关键函数 do_user_addr_fault)
-  - [关键函数 __handle_mm_fault](# 关键函数 __handle_mm_fault)
-  - [关键函数 handle_pte_fault](# 关键函数 handle_pte_fault)
-  - [匿名页面缺页中断](# 匿名页面缺页中断)
-  - [文件映射缺页中断](# 文件映射缺页中断)
-  - [写时复制（COW）](# 写时复制（COW）)
-- [补充知识点](# 补充知识点)
-- [Reference](# Reference)
-- [些许感想](# 些许感想)
+- [内存区管理](#内存区管理)
+  - [创建slab描述符](#创建slab描述符)
+    - [kmem_cache](#kmem_cache)
+  - [slab分配器的内存布局](#slab分配器的内存布局)
+  - [配置slab描述符](#配置slab描述符)
+  - [分配slab对象](#分配slab对象)
+  - [释放slab对象](#释放slab对象)
+  - [slab分配器和伙伴系统的接口函数](#slab分配器和伙伴系统的接口函数)
+  - [管理区freelist](#管理区freelist)
+  - [kmalloc](#kmalloc)
+- [vmalloc](#vmalloc)
+- [进程地址空间](#进程地址空间)
+  - [mm_struct数据结构](#mm_struct数据结构)
+  - [VMA数据结构](#VMA数据结构)
+  - [VMA相关操作](#VMA相关操作)
+- [malloc](#malloc)
+- [mmap](#mmap)
+- [缺页异常处理](#缺页异常处理)
+  - [关键函数do_user_addr_fault](#关键函数do_user_addr_fault)
+  - [关键函数__handle_mm_fault](#关键函数__handle_mm_fault)
+  - [关键函数handle_pte_fault](#关键函数handle_pte_fault)
+  - [匿名页面缺页中断](#匿名页面缺页中断)
+  - [文件映射缺页中断](#文件映射缺页中断)
+  - [写时复制（COW）](#写时复制（COW）)
+- [补充知识点](#补充知识点)
+- [Reference](#Reference)
+- [些许感想](#些许感想)
 
 很多文章都说内存管理是内核中最复杂的部分、最重要的部分之一，在来实验室之后跟着师兄做项目、看代码的这段时间里，渐渐感觉自己的知识框架是不完整的，底下少了一部分，后来发现这部分就是内核，所以开始学习内核。其实这也不是第一次接触内核，之前也陆陆续续的看过一部分，包括做 RISC-V 操作系统实验，LoongArch 内核的启动部分，但始终没有花时间去肯内存管理，进程调度和文件管理这几个核心模块。而师兄也说过，内核都看的懂，啥代码你看不懂。
 
@@ -58,6 +58,29 @@
 内存管理模块涉及到的结构体之间的关系。
 
 ![memory-management-structure.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/memory-management-structure.png?raw=true)
+
+这里涉及多个结构之间的转换，先记录一下。
+
+```c
+/*
+ * Convert a physical address to a Page Frame Number and back
+ */
+#define	__phys_to_pfn(paddr)	PHYS_PFN(paddr)
+#define	__pfn_to_phys(pfn)	PFN_PHYS(pfn)
+
+#define page_to_pfn __page_to_pfn
+#define pfn_to_page __pfn_to_page
+
+/* memmap is virtually contiguous.  */
+#define __pfn_to_page(pfn)	(vmemmap + (pfn))
+#define __page_to_pfn(page)	(unsigned long)((page) - vmemmap)
+
+#define PFN_ALIGN(x)	(((unsigned long)(x) + (PAGE_SIZE - 1)) & PAGE_MASK)
+#define PFN_UP(x)	(((x) + PAGE_SIZE-1) >> PAGE_SHIFT)
+#define PFN_DOWN(x)	((x) >> PAGE_SHIFT)
+#define PFN_PHYS(x)	((phys_addr_t)(x) << PAGE_SHIFT)
+#define PHYS_PFN(x)	((unsigned long)((x) >> PAGE_SHIFT))
+```
 
 ### 页框管理
 
@@ -546,6 +569,45 @@ EXPORT_SYMBOL(alloc_pages);
    }
    ```
 
+   - `gfp_zone` 该函数用来确定使用哪个 zone 来分配内存，
+
+     ```c
+     static inline enum zone_type gfp_zone(gfp_t flags)
+     {
+     	enum zone_type z;
+     	int bit = (__force int) (flags & GFP_ZONEMASK);
+
+     	z = (GFP_ZONE_TABLE >> (bit * GFP_ZONES_SHIFT)) &
+     					 ((1 << GFP_ZONES_SHIFT) - 1);
+     	VM_BUG_ON((GFP_ZONE_BAD >> bit) & 1);
+     	return z;
+     }
+     ```
+
+     内存管理去修饰符使用 gfp_mask 的低 4 位来表示，
+
+     ```c
+     enum zone_type {
+     #ifdef CONFIG_ZONE_DMA
+     	ZONE_DMA, // 从 ZONE_DMA 中分配内存
+     #endif
+     #ifdef CONFIG_ZONE_DMA32
+     	ZONE_DMA32,
+     #endif
+
+     	ZONE_NORMAL,
+     #ifdef CONFIG_HIGHMEM
+     	ZONE_HIGHMEM, // 优先从 ZONE_HIGHMEM 中分配内存
+     #endif
+
+     	ZONE_MOVABLE, // 页面可以被迁移或者回收，如用于内存规整机制
+     #ifdef CONFIG_ZONE_DEVICE
+     	ZONE_DEVICE,
+     #endif
+     	__MAX_NR_ZONES // 应该是 ZONE 数量
+     };
+     ```
+
 3.  `get_page_from_freelist`
 
    ```c
@@ -660,6 +722,8 @@ EXPORT_SYMBOL(alloc_pages);
    {
    	long free_pages;
 
+       // zone->vm_stat[item] 中存放了该 zone 的各种页面统计数据，包括空闲页面数量，不活跃的匿名页面数量等，
+       // 该函数获取空闲页面的数量
    	free_pages = zone_page_state(z, NR_FREE_PAGES);
 
    	/*
@@ -671,16 +735,77 @@ EXPORT_SYMBOL(alloc_pages);
 
    		fast_free = free_pages;
    		fast_free -= __zone_watermark_unusable_free(z, 0, alloc_flags);
+           // lowmem_reserve 是每个 zone 预留的内存，防止高端 zone 在内存不足时过度使用低端内存，
+           // 相当于一个缓冲区，如果使用到这块内存的话说明该 zone 内存不足，需要做回收操作
    		if (fast_free > mark + z->lowmem_reserve[highest_zoneidx])
    			return true;
    	}
 
+       // 分配多个页的情况
    	if (__zone_watermark_ok(z, order, mark, highest_zoneidx, alloc_flags,
    					free_pages))
    		return true;
 
        ...
 
+   	return false;
+   }
+   ```
+
+5. `__zone_watermark_ok` 这个代码很好理解。
+
+   ```c
+   bool __zone_watermark_ok(struct zone *z, unsigned int order, unsigned long mark,
+   			 int highest_zoneidx, unsigned int alloc_flags,
+   			 long free_pages)
+   {
+   	long min = mark;
+   	int o;
+   	const bool alloc_harder = (alloc_flags & (ALLOC_HARDER|ALLOC_OOM));
+
+   	/* free_pages may go negative - that's OK */
+   	free_pages -= __zone_watermark_unusable_free(z, order, alloc_flags);
+
+       // ALLOC_HIGH 表示什么情况？
+   	if (alloc_flags & ALLOC_HIGH)
+   		min -= min / 2;
+
+   	...
+
+   	/*
+   	 * Check watermarks for an order-0 allocation request. If these
+   	 * are not met, then a high-order request also cannot go ahead
+   	 * even if a suitable page happened to be free.
+   	 */
+   	if (free_pages <= min + z->lowmem_reserve[highest_zoneidx])
+   		return false;
+
+   	/* If this is an order-0 request then the watermark is fine */
+   	if (!order)
+   		return true;
+
+   	/* For a high-order request, check at least one suitable page is free */
+   	for (o = order; o < MAX_ORDER; o++) {
+   		struct free_area *area = &z->free_area[o];
+   		int mt;
+
+           // 没有空闲页
+   		if (!area->nr_free)
+   			continue;
+
+           // 该 order 的块链表中有空闲页，可以分配内存，返回 true
+   		for (mt = 0; mt < MIGRATE_PCPTYPES; mt++) {
+   			if (!free_area_empty(area, mt))
+   				return true;
+   		}
+
+           ...
+
+           // alloc_harder 不知道是干啥的
+           // MIGRATE_HIGHATOMIC 表示可迁移类型页面？
+   		if (alloc_harder && !free_area_empty(area, MIGRATE_HIGHATOMIC))
+   			return true;
+   	}
    	return false;
    }
    ```
@@ -826,7 +951,7 @@ EXPORT_SYMBOL(alloc_pages);
 
 ##### 释放页框
 
-有 4 个函数和宏能够释放页框，这里只分析 `__free_pages`。
+同样有多个函数和宏能够释放页框，这里只分析 `__free_pages`。
 
 ```c
 void __free_pages(struct page *page, unsigned int order)
@@ -871,7 +996,7 @@ static inline void free_the_page(struct page *page, unsigned int order)
 
    	...
 
-   	local_lock_irqsave(&pagesets.lock, flags); // 释放过程中避免相应中断
+   	local_lock_irqsave(&pagesets.lock, flags); // 释放过程中避免响应中断
    	free_unref_page_commit(page, pfn, migratetype, order); // 释放单个物理页面到 PCP 链表中
    	local_unlock_irqrestore(&pagesets.lock, flags);
    }
@@ -1014,7 +1139,7 @@ slab 分配器最终还是使用伙伴系统来分配实际的物理页面，只
 
 ![slab_structure.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/slab_structure.png?raw=true)
 
-#### 创建 slab 描述符
+#### 创建slab描述符
 
 `kmem_cache` 是 slab 分配器中的核心数据结构，我们将其称为 slab 描述符。
 
@@ -1204,7 +1329,7 @@ struct kmem_cache {
    }
    ```
 
-#### slab 分配器的内存布局
+#### slab分配器的内存布局
 
 slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure：
 
@@ -1290,7 +1415,7 @@ slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure
    }
    ```
 
-#### 配置 slab 描述符
+#### 配置slab描述符
 
 确定了 slab 分配器的内存布局后，调用 `setup_cpu_cache` 继续配置 slab 描述符。主要是配置如下两个变量：
 
@@ -1487,7 +1612,7 @@ slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure
 
 至此，slab 描述符完成创建。
 
-#### 分配 slab 对象
+#### 分配slab对象
 
 分配过程对于我这个初学者来说过于复杂，所以先看看图，理理关系，再看具体实现。
 
@@ -1748,7 +1873,7 @@ slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure
 
   着色区让每个 slab 分配器对应不同数量的高速缓存行，着色区的大小为 `colour_next * colour_off`，其中 `colour_next` 时从0 到这个 slab 描述符中计算出来的 colour 最大值，colour_off 为 L1 高速缓存行大小。这样可以**使不同的 slab 分配器上同一个相对位置 slab 对象的起始地址再高速缓存中相互错开（？）**，有利于提高高速缓存行的访问效率。
 
-#### 释放 slab 对象
+#### 释放slab对象
 
 释放 slab 对象的关键函数是 `___cache_free`，
 
@@ -1778,7 +1903,7 @@ void ___cache_free(struct kmem_cache *cachep, void *objp,
 }
 ```
 
-#### slab 分配器和伙伴系统的接口函数
+#### slab分配器和伙伴系统的接口函数
 
 slab 分配器创建 slab 对象时会调用伙伴系统的分配物理页面接口函数去分配 2^cachep->gfporder 个页面，调用的函数是 `kmem_getpages`。
 
@@ -1806,7 +1931,7 @@ static struct page *kmem_getpages(struct kmem_cache *cachep, gfp_t flags,
 }
 ```
 
-#### 管理区 freelist
+#### 管理区freelist
 
 上文提到管理区可以看作一个 freelist 数组，数组的每个成员大小为 1 字节，每个成员管理一个 slab 对象。这里我们看看 freelist 是怎样管理 slab 分配器中的对象的。
 
@@ -2047,7 +2172,7 @@ vmalloc 分配的空间在 [内存分布](# 内存分布) 小节中的图中有�
 
 每个进程都有一套页表，这样每个进程的地址空间就是隔离的。
 
-#### mm_struct 数据结构
+#### mm_struct数据结构
 
 `mm_struct` 是内核管理用户进程的内存区域和其页表映射的数据结构。进程控制块（PCB）中由指向 `mm_struct` 的指针 mm。
 
@@ -2114,7 +2239,7 @@ struct mm_struct {
 };
 ```
 
-#### VMA 数据结构
+#### VMA数据结构
 
 VMA 描述的是进程用 mmap，malloc 等函数分配的地址空间，或者说它描述的是进程地址空间的一个区间。
 
@@ -2175,7 +2300,7 @@ struct vm_area_struct {
 
 这里有个问题，X86 CPU 中不是有 cr3 寄存器指向一级页表么，为什么这里还要设置一个 pgd，难道 cr3 中的数据是从这里来的？而且图虽然清晰，但是很多细节还需要仔细分析，如 VMA 和物理页面建立映射关系等等。
 
-#### VMA 相关操作
+#### VMA相关操作
 
 有个问题，为什么要合并 VMA，合并了那么两个 VMA 的内容进程要怎样区分呢？它们应该是有不同的用途。
 
@@ -2492,7 +2617,7 @@ mmap 机制在内核中的实现和 brk 类似，但其和缺页中断机制结�
     - `do_kern_addr_fault` 内核地址空间引发的中断；
     - `do_user_addr_fault` 用户地址空间引发的中断；
 
-#### 关键函数 do_user_addr_fault
+#### 关键函数do_user_addr_fault
 
 该函数的功能是根据发生异常的 addr 找到对应的 VMA，然后判断 VMA 是否有问题，平时变成地址越界之类的错误应该都是在这里定义的。之后对异常处理的结果进行判断，抛出错误。
 
@@ -2583,7 +2708,7 @@ good_area:
 }
 ```
 
-#### 关键函数 __handle_mm_fault
+#### 关键函数__handle_mm_fault
 
  `handle_mm_fault` 只是 `__handle_mm_fault` 的封装。这个函数的主要功能就是遍历页表。
 
@@ -2630,7 +2755,7 @@ retry_pud:
 
 - 这里 pgd, p4d 等是 5 级页表的名称。五级分页每级命名分别为页全局目录(PGD)、页 4 级目录(P4D)、页上级目录(PUD)、页中间目录(PMD)、页表(PTE)。
 
-#### 关键函数 handle_pte_fault
+#### 关键函数handle_pte_fault
 
 这就就是处理各种 VMA，匿名映射，文件映射，VMA 的属性是否可读可写等等。
 
