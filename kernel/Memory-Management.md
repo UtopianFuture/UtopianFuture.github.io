@@ -14,7 +14,8 @@
   - [分区页框分配器](# 分区页框分配器)
   - [管理区分配器](# 管理区分配器)
     - [伙伴系统算法](# 伙伴系统算法)
-    - [请求和释放页框](# 请求和释放页框)
+    - [请求页框](# 请求页框)
+    - [释放页框](# 释放页框)
 
 - [内存区管理](# 内存区管理)
   - [创建 slab 描述符](# 创建 slab 描述符)
@@ -375,11 +376,11 @@ struct zoneref {
 > - 两个块地址连续；
 > - 两个块必须是同一个大块中分离出来的；
 
-##### 请求和释放页框
+##### 请求页框
 
 页框的请求和释放是整个内存管理的核心，如 malloc 等函数都需要调用伙伴系统的这些接口来分配内存。
 
-有 6 个函数和宏用来请求页框，这里只分析 `alloc_pages`，
+有多个函数和宏用来请求页框，这里只分析 `alloc_pages`，
 
 ```c
 struct page *alloc_pages(gfp_t gfp, unsigned order) // gfp 表示如何寻找页框， order 表示请求的页框数
@@ -659,7 +660,7 @@ EXPORT_SYMBOL(alloc_pages);
    {
    	long free_pages;
 
-   	free_pages = zone_page_state(z, NR_FREE_PAGES); //
+   	free_pages = zone_page_state(z, NR_FREE_PAGES);
 
    	/*
    	 * Fast check for order-0 only. If this fails then the reserves
@@ -729,13 +730,15 @@ EXPORT_SYMBOL(alloc_pages);
    		 * request should skip it.
    		 */
    		if (order > 0 && alloc_flags & ALLOC_HARDER) {
-   			page = __rmqueue_smallest(zone, order, MIGRATE_HIGHATOMIC); // 从 zone->free_area 中分配内存
-               												// 从 order 到 MAX_ORDER - 1 遍历
+               // 从 zone->free_area 中分配内存，从 order 到 MAX_ORDER - 1 遍历
+               // zone->free_area 就是伙伴系统的 11 个块
+   			page = __rmqueue_smallest(zone, order, MIGRATE_HIGHATOMIC);
    			if (page)
    				trace_mm_page_alloc_zone_locked(page, order, migratetype);
    		}
    		if (!page) // __rmqueue_smallest 分配失败
-   			page = __rmqueue(zone, order, migratetype, alloc_flags); // 从 MAX_ORDER - 1 到 order 遍历
+               // 从 MAX_ORDER - 1 到 order 遍历，其还是调用 __rmqueue_smallest
+   			page = __rmqueue(zone, order, migratetype, alloc_flags);
    	} while (page && check_new_pages(page, order)); // 判断分配出来的页面是否合格
    	if (!page)
    		goto failed;
@@ -759,6 +762,33 @@ EXPORT_SYMBOL(alloc_pages);
 
    failed:
    	spin_unlock_irqrestore(&zone->lock, flags);
+   	return NULL;
+   }
+   ```
+
+6. `__rmqueue_smallest`
+
+   ```c
+   static __always_inline
+   struct page *__rmqueue_smallest(struct zone *zone, unsigned int order,
+   						int migratetype)
+   {
+   	unsigned int current_order;
+   	struct free_area *area;
+   	struct page *page;
+
+   	/* Find a page of the appropriate size in the preferred list */
+   	for (current_order = order; current_order < MAX_ORDER; ++current_order) {
+   		area = &(zone->free_area[current_order]);
+   		page = get_page_from_free_area(area, migratetype); // 从该块中获取物理页面
+   		if (!page)
+   			continue;
+   		del_page_from_free_list(page, zone, current_order);
+   		expand(zone, page, order, current_order, migratetype);
+   		set_pcppage_migratetype(page, migratetype);
+   		return page;
+   	}
+
    	return NULL;
    }
    ```
@@ -787,6 +817,14 @@ EXPORT_SYMBOL(alloc_pages);
   	struct list_head lists[NR_PCP_LISTS];
   };
   ```
+
+这里我们总结一下伙伴系统通过快路径分配物理页面的流程。
+
+首先物理页面都是存放在 zone 中的 `free_area` 中，伙伴系统将所有的空闲页框分组为 11 个块链表，每个块链表分别包含大小为 1、2、4、8、16、32、64、128、256、512 和 1024 个连续页框的页框块。内核可以使用多个接口来申请物理页面，这些接口最后都是调用 `__alloc_pages`。`__alloc_pages` 首先会进行分配前的准备工作，比如设置第一个 zone（大部分情况下从第一个 zone 中分配页面），设置分配掩码等等，而后调用 `get_page_from_freelist`。`get_page_from_freelist` 会遍历所有 zone，检查该 zone 的 watermark 是否满足要求，watermark 是伙伴系统用来提高分配效率的机制，每个 zone 都有 3 个 watermark，根据这些 watermark 在适当的时候做页面回收等工作。如果该 zone 的 watermark 满足要求，就调用 `rmqueue` 去分配物理页面。这里又根据需要分配页面的大小采用不同的分配策略。如果 `order == 0`，即只需要分配 1 个页面（内核大部分情况是这样的），那么直接调用 `rmqueue_pcplist` -> `__rmqueue_pcplist` 使用 `per_cpu_pages` 中的每 CPU 页框高速缓存来分配，这样就不需要使用 zone 的锁，提高效率。当然，如果每 CPU 页框高速缓存如果也没有物理页面了，那么还是先需要通过 `rmqueue_bulk` -> `__rmqueue` 来增加页面列表的。如果需要分配多个物理页面，那么就需要通过 `__rmqueue_smallest` 来分配页面。这个分配流程就很简单了，从 `free_area` 的第 `order`  个块链表开始遍历， 知道找到符合条件的块链表。
+
+我觉得整个分配流程到不难，难的是要考虑到各种应用场景，理解如果设置分配掩码，理解如何根据 zone 的 watermark 去进行空间回收。不过这些现在还没有时间去学习，之后有需要再进一步分析。
+
+##### 释放页框
 
 有 4 个函数和宏能够释放页框，这里只分析 `__free_pages`。
 
