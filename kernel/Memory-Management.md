@@ -98,18 +98,24 @@ struct page {
 	 * avoid collision and false-positive PageTail().
 	 */
 	union {
+        // 管理匿名页面/文件映射页面
 		struct {	/* Page cache and anonymous pages */
 			struct list_head lru;
 			/* See page-flags.h for PAGE_MAPPING_FLAGS */
+            // 页面所指向的地址空间
+            // 内核中的地址空间通常有两个不同的地址空间，
+            // 一个用于文件映射页面，如在读取文件时，地址空间用于
+            // 将文件的内容与存储介质区关联起来；
+            // 另一个用于匿名映射（？）
 			struct address_space *mapping;
-			pgoff_t index;		/* Our offset within mapping. */
+			pgoff_t index;		/* Our offset within mapping. */ // 为什么需要有这个？
 			/**
 			 * @private: Mapping-private opaque data.
 			 * Usually used for buffer_heads if PagePrivate.
 			 * Used for swp_entry_t if PageSwapCache.
 			 * Indicates order in the buddy system if PageBuddy.
 			 */
-			unsigned long private;
+			unsigned long private; // 指向私有数据的指针
 		};
 		struct {	/* page_pool used by netstack */
 			/**
@@ -135,7 +141,7 @@ struct page {
 		};
 		struct {	/* slab, slob and slub */
 			union {
-				struct list_head slab_list;
+				struct list_head slab_list; // slab 链表节点
 				struct {	/* Partial pages */
 					struct page *next;
 
@@ -146,7 +152,7 @@ struct page {
 			};
 			struct kmem_cache *slab_cache; /* not slob */
 			/* Double-word boundary */
-			void *freelist;		/* first free object */
+			void *freelist;		/* first free object */ // 管理区
 			union {
 				void *s_mem;	/* slab: first object */
 				unsigned long counters;		/* SLUB */
@@ -172,6 +178,7 @@ struct page {
 			/* For both global and memcg */
 			struct list_head deferred_list;
 		};
+        // 管理页表
 		struct {	/* Page table pages */
 			unsigned long _pt_pad_1;	/* compound_head */
 			pgtable_t pmd_huge_pte; /* protected by page->ptl */
@@ -180,12 +187,11 @@ struct page {
 				struct mm_struct *pt_mm; /* x86 pgds only */
 				atomic_t pt_frag_refcount; /* powerpc */
 			};
-
-            ...
-
+		struct {	/* ZONE_DEVICE pages */
+			/** @pgmap: Points to the hosting device page map. */
+			struct dev_pagemap *pgmap;
+			void *zone_device_data;
 		};
-
-        ...
 
 		/** @rcu_head: You can use this to free a page by RCU. */
 		struct rcu_head rcu_head;
@@ -196,7 +202,7 @@ struct page {
 		 * If the page can be mapped to userspace, encodes the number
 		 * of times this page is referenced by a page table.
 		 */
-		atomic_t _mapcount;
+		atomic_t _mapcount; // 页面被进程映射的个数，即已经映射了多少个用户 PTE
 
 		/*
 		 * If the page is neither PageSlab nor mappable to userspace,
@@ -206,12 +212,12 @@ struct page {
 		 */
 		unsigned int page_type;
 
-		unsigned int active;		/* SLAB */
+		unsigned int active;		/* SLAB */ // slab 分配器中活跃对象的数量
 		int units;			/* SLOB */
 	};
 
 	/* Usage count. *DO NOT USE DIRECTLY*. See page_ref.h */
-	atomic_t _refcount;
+	atomic_t _refcount; // 内核中引用该页面的次数，用于跟踪页面的使用情况
 
 	/*
 	 * On machines where all RAM is mapped into kernel address space,
@@ -1133,11 +1139,21 @@ static inline void free_the_page(struct page *page, unsigned int order)
 
 伙伴系统算法采用页框作为基本内存区，但一个页框一般是 4KB，而程序很多时候都是申请很小的内存，比如几百字节，十几 KB，这时分配一个页会造成很大的浪费，slab 分配器解决的就是对小内存区的请求。
 
+slab 机制是基于对象进行管理的，所谓的对象就是内核中的数据结构（例如：`task_struct`, `file_struct` 等）。相同类型的对象归为一类，每当要申请这样一个对象时，就从对应的 slab 描述符的本地对象缓冲池、共享对象缓冲池或 slab 链表中分配一个这样大小的单元出去，而当要释放时，将其重新保存在该 slab 描述符中，而不是直接返回给伙伴系统，从而避免内部碎片。slab 机制并不丢弃已经分配的对象，而是释放并把它们保存在内存中。slab 分配对象时，会使用最近释放的对象的内存块，因此其驻留在 cpu 高速缓存中的概率会大大提高（soga）。
+
 slab 分配器最终还是使用伙伴系统来分配实际的物理页面，只不过 slab 分配器在这些连续的物理页面上实现了自己的管理机制。
+
+在开始分析 slab 的时候理解出现了偏差，即很多书中说的 slab 其实是一个广义的概念，泛指 slab 机制，其实现有 3 种：适用于小型嵌入式系统的 slob，slab 和适用于大型系统的 slub，我开始认为我们日常使用的内核用的都是 slab，但其实不是，目前大多数内核都是默认使用 slub 实现，slub 是 slab 的优化。那么这里还是继续分析 slab 的实现，因为设计原理都是一样的，然后再看看 slab 和 slub 的实现有何不同。
 
 下面是 slab 系统涉及到的 slab 描述符、slab 节点、本地对象缓冲池、共享对象缓冲池、3 个 slab 链表、n 个 slab 分配器，以及众多 slab 缓存对象之间的关系。先对整个系统有大概的印象再去了解具体实现就比较容易。
 
 ![slab_structure.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/slab_structure.png?raw=true)
+
+简单总结一下各个结构体之间的关系。
+
+首先我们需要了解 slab 描述符，类似于伙伴系统，内核在内存块中按照 2^order 字节（对象大小）来创建多个 slab 描述符，如 16 字节、32 字节、64 字节等，`kmem_cache` 保存了一些必要的信息。slab 描述符拥有众多的 slab 对象，这些对象按照一定的关系保存在本地对象缓冲池，共享对象缓冲池，slab 节点的 3 个链表中。让人感到迷惑的是这个 slab 链表和 slab 分配器有什么关系？其实每个 slab 分配器就是一个或多个物理页，这些物理页按照一个 slab 的大小可以存储多个 slab 对象，通过也有用于管理的管理区（freelist）和提高缓存效率的着色区（colour）。创建好的 slab 分配器会根据其中空闲对象的数量插入 3 个链表之一。
+
+当本地对象缓冲池中空闲对象数量不够，则从共享对象缓冲池中迁移 batchcount 个空闲对象到本地对象缓冲池；当本地和共享对象缓冲池都没有空闲对象，那么从 slab 节点的 slabs_partial 或 slabs_free 链表中迁移空闲对象到本地对象缓冲池；如果以上 3 个地方都没有空闲对象，那么就需要创建新的 slab 分配器，即通过伙伴系统的接口请求物理内存，然后再将新建的 slab 分配器所在的 page 插入到链表中。
 
 #### 创建slab描述符
 
@@ -1178,6 +1194,40 @@ struct kmem_cache {
 };
 ```
 
+##### kmem_cache_node
+
+其主要包含 3 个链表（slab 描述符和 slab 节点之间的关系是怎样的）。
+
+```c
+struct kmem_cache_node {
+  	spinlock_t list_lock;
+
+  #ifdef CONFIG_SLAB
+    // 这里需要理解，slab 分配器其实就是一个 page，上面也分析过，page 结构体中有专门支持 slab 机制的变量
+    // 所谓满的、部分满的、空的 slab 分配器，其实就是该 page 中的空闲对象的数量
+    // 新创建的 slab 分配器都需要插入这 3 个链表之一
+    // 而这 3 个链表又属于某一个 slab 描述的 slab 节点
+    // 所以说一个 slab 描述符有很多的 slab 对象
+  	struct list_head slabs_partial;	/* partial list first, better asm code */ // 部分满的 slab 分配器
+  	struct list_head slabs_full; // 满的 slab 分配器
+  	struct list_head slabs_free; // 全空的 slab 分配器
+  	unsigned long total_slabs;	/* length of all slab lists */
+  	unsigned long free_slabs;	/* length of free slab list only */
+  	unsigned long free_objects; // 表示 3 个链表中所有的空闲对象
+  	unsigned int free_limit;    // 所有 slab 分配器上容许空闲对象的对大数目
+  	unsigned int colour_next;	/* Per-node cache coloring */
+  	struct array_cache *shared;	/* shared per node */
+  	struct alien_cache **alien;	/* on other nodes */
+  	unsigned long next_reap;	/* updated without locking */
+  	int free_touched;		/* updated without locking */
+  #endif
+
+  	atomic_long_t nr_slabs;
+  	atomic_long_t total_objects;
+  	struct list_head full;
+  };
+```
+
 1. `kmem_cache_create`
 
    ` kmem_cache_create` 只是 `kmem_cache_create_usercopy` 的包装，直接看 `kmem_cache_create_usercopy`，
@@ -1204,15 +1254,12 @@ struct kmem_cache {
    	...
 
    	if (!usersize)
-   		s = __kmem_cache_alias(name, size, align, flags, ctor); // 查找是否有现成的 slab 描述符可以用
+           // 遍历 slab_caches 查找是否有现成的 slab 描述符可以用，如果有则将找到的 slab 描述符 refcount++
+   		s = __kmem_cache_alias(name, size, align, flags, ctor);
    	if (s)
    		goto out_unlock;
 
-   	cache_name = kstrdup_const(name, GFP_KERNEL);
-   	if (!cache_name) {
-   		err = -ENOMEM;
-   		goto out_unlock;
-   	}
+   	...
 
    	s = create_cache(cache_name, size, // 创建 slab 描述符
    			 calculate_alignment(flags, align, size),
@@ -1226,6 +1273,62 @@ struct kmem_cache {
    	mutex_unlock(&slab_mutex)
    	return s;
    }
+   ```
+
+   这里有个问题，为什么在 `vmalloc_init` 中会调用该函数，
+
+   ```c
+   void __init vmalloc_init(void)
+   {
+   	struct vmap_area *va;
+   	struct vm_struct *tmp;
+   	int i;
+
+   	/*
+   	 * Create the cache for vmap_area objects.
+   	 */
+       // 这个变量很熟悉，但忘记是干啥的了，猜测应该是 slab 描述符信息需要
+       // 保存在 vmalloc 区域，这里是初始化该区域
+   	vmap_area_cachep = KMEM_CACHE(vmap_area, SLAB_PANIC);
+
+   	...
+
+   	/* Import existing vmlist entries. */
+   	for (tmp = vmlist; tmp; tmp = tmp->next) {
+   		va = kmem_cache_zalloc(vmap_area_cachep, GFP_NOWAIT);
+   		if (WARN_ON_ONCE(!va))
+   			continue;
+
+   		va->va_start = (unsigned long)tmp->addr;
+   		va->va_end = va->va_start + tmp->size;
+   		va->vm = tmp;
+   		insert_vmap_area(va, &vmap_area_root, &vmap_area_list);
+   	}
+
+   	/*
+   	 * Now we can initialize a free vmap space.
+   	 */
+   	vmap_init_free_space();
+   	vmap_initialized = true;
+   }
+   ```
+
+   ```
+   #0  kmem_cache_create_usercopy (name=name@entry=0xffffffff825bc870 "vmap_area", size=size@entry=64,
+       align=align@entry=8, flags=flags@entry=262144, useroffset=useroffset@entry=0, usersize=usersize@entry=0,
+       ctor=0x0 <fixed_percpu_data>) at mm/slab_common.c:315
+   #1  0xffffffff8128bbd6 in kmem_cache_create (name=name@entry=0xffffffff825bc870 "vmap_area", size=size@entry=64,
+       align=align@entry=8, flags=flags@entry=262144, ctor=ctor@entry=0x0 <fixed_percpu_data>)
+       at mm/slab_common.c:422
+   #2  0xffffffff831f500a in vmalloc_init () at mm/vmalloc.c:2336
+   #3  0xffffffff831ba69c in mm_init () at init/main.c:854
+   #4  start_kernel () at init/main.c:988
+   #5  0xffffffff831b95a0 in x86_64_start_reservations (
+       real_mode_data=real_mode_data@entry=0x2e3a920 <error: Cannot access memory at address 0x2e3a920>)
+       at arch/x86/kernel/head64.c:525
+   #6  0xffffffff831b962d in x86_64_start_kernel (
+       real_mode_data=0x2e3a920 <error: Cannot access memory at address 0x2e3a920>) at arch/x86/kernel/head64.c:506
+   #7  0xffffffff81000107 in secondary_startup_64 () at arch/x86/kernel/head_64.S:283
    ```
 
 2. `__kmem_cache_create`
@@ -1260,7 +1363,7 @@ struct kmem_cache {
    	 * 4) Store it.
    	 */
    	cachep->align = ralign;
-   	cachep->colour_off = cache_line_size(); // 着色区的大小为 l1 cache 的行
+   	cachep->colour_off = cache_line_size(); // 着色区的大小为 l1 cache 的行大小
    	/* Offset must be a multiple of the alignment. */
    	if (cachep->colour_off < cachep->align)
    		cachep->colour_off = cachep->align;
@@ -1289,7 +1392,7 @@ struct kmem_cache {
    		goto done;
    	}
 
-   	if (set_off_slab_cache(cachep, size, flags)) { // 这里对 3 中布局不做详细分析
+   	if (set_off_slab_cache(cachep, size, flags)) { // 这里对 3 种布局不做详细分析
    		flags |= CFLGS_OFF_SLAB;
    		goto done;
    	}
@@ -1352,10 +1455,12 @@ slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure
    	size_t left_over = 0;
    	int gfporder;
 
+       // 找到合适的 gfporder，这就解决了第一个问题
    	for (gfporder = 0; gfporder <= KMALLOC_MAX_ORDER; gfporder++) { // 从 0 开始计算最合适（最小）的 gfporder
    		unsigned int num;
    		size_t remainder;
 
+           // 2^gfporder / size，这就解决了第二个问题
    		num = cache_estimate(gfporder, size, flags, &remainder); // 计算该 gfporder 下能容纳多少个 slab 对象
    		if (!num) // 不能容纳对象，显然不行
    			continue;
@@ -1411,16 +1516,38 @@ slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure
    		if (left_over * 8 <= (PAGE_SIZE << gfporder)) // 剩余空间不能太大
    			break;
    	}
+       // 剩下的空间用于着色
+       // cachep->colour = left / cachep->colour_off;
    	return left_over;
    }
    ```
 
+   上面只是确定了 slab 分配器的内存布局，但是还没有确定内容。
+
 #### 配置slab描述符
 
-确定了 slab 分配器的内存布局后，调用 `setup_cpu_cache` 继续配置 slab 描述符。主要是配置如下两个变量：
+确定了 slab 分配器的内存布局后，调用 `setup_cpu_cache` 继续配置 slab 描述符。主要是配置如下两个变量（这两个变量有什么用呢？）：
 
 - limit：空闲对象的最大数量，根据对象的大小计算。
+
+  ```c
+  if (cachep->size > 131072)
+  		limit = 1;
+  	else if (cachep->size > PAGE_SIZE)
+  		limit = 8;
+  	else if (cachep->size > 1024)
+  		limit = 24;
+  	else if (cachep->size > 256)
+  		limit = 54;
+  	else
+  		limit = 120;
+  ```
+
 - batchcount：表示本地对象缓冲池和共享对象缓冲池之间填充对象的数量，通常是 limit 的一半。
+
+  ```c
+  batchcount = (limit + 1) / 2;
+  ```
 
 之后再调用 `do_tune_cpucache` 配置对象缓冲池。
 
@@ -1454,14 +1581,14 @@ slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure
    	if (!prev)
    		goto setup_node;
 
-   	for_each_online_cpu(cpu) { // 当 slab 描述符之前有本地对象缓冲池时，遍历在线的 cpu，清空本地缓冲池
+   	for_each_online_cpu(cpu) { // 当 slab 描述符之前有本地对象缓冲池时，遍历在线的 cpu，清空本地缓冲池（？）
    		LIST_HEAD(list);
    		int node;
    		struct kmem_cache_node *n;
    		struct array_cache *ac = per_cpu_ptr(prev, cpu);
 
-   		node = cpu_to_mem(cpu);
-   		n = get_node(cachep, node);
+   		node = cpu_to_mem(cpu); // numa 中的内存节点，uma 应该返回定值
+   		n = get_node(cachep, node); // slab 节点，kmem_cache_node
    		spin_lock_irq(&n->list_lock);
    		free_block(cachep, ac->entry, ac->avail, node, &list); // 清空本地缓冲池
    		spin_unlock_irq(&n->list_lock);
@@ -1490,7 +1617,7 @@ slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure
      };
      ```
 
-2. 初始化本地对象缓冲池
+2. 初始化本地对象缓冲池（没懂）
 
    ```c
    static struct array_cache __percpu *alloc_kmem_cache_cpus(
@@ -1498,10 +1625,10 @@ slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure
    {
    	int cpu;
    	size_t size;
-   	struct array_cache __percpu *cpu_cache;
+   	struct array_cache __percpu *cpu_cache; // 对象缓冲池
 
    	size = sizeof(void *) * entries + sizeof(struct array_cache);
-   	cpu_cache = __alloc_percpu(size, sizeof(void *)); // 分配
+   	cpu_cache = __alloc_percpu(size, sizeof(void *)); // 分配，好复杂
 
    	if (!cpu_cache)
    		return NULL;
@@ -1517,98 +1644,75 @@ slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure
 
 3. `setup_kmem_cache_nodes` -> `setup_kmem_cache_node`
 
+	遍历系统中所有的内存节点以初始化和内存节点相关的 slab 信息。
+
 	```c
 	static int setup_kmem_cache_node(struct kmem_cache *cachep,
-				int node, gfp_t gfp, bool force_change)
+					int node, gfp_t gfp, bool force_change)
 	{
-	int ret = -ENOMEM;
-	struct kmem_cache_node *n;
-	struct array_cache *old_shared = NULL;
-	struct array_cache *new_shared = NULL;
+		int ret = -ENOMEM;
+		struct kmem_cache_node *n;
+		struct array_cache *old_shared = NULL;
+		struct array_cache *new_shared = NULL;
 	struct alien_cache **new_alien = NULL;
-	LIST_HEAD(list);
+		LIST_HEAD(list);
 
-	if (use_alien_caches) {
-		new_alien = alloc_alien_cache(node, cachep->limit, gfp);
-		if (!new_alien)
+		if (use_alien_caches) {
+			new_alien = alloc_alien_cache(node, cachep->limit, gfp);
+			if (!new_alien)
 			goto fail;
-	}
+		}
 
-	if (cachep->shared) {
-		new_shared = alloc_arraycache(node,
-			cachep->shared * cachep->batchcount, 0xbaadf00d, gfp);
-		if (!new_shared)
+		if (cachep->shared) {
+			new_shared = alloc_arraycache(node,
+				cachep->shared * cachep->batchcount, 0xbaadf00d, gfp);
+			if (!new_shared)
 			goto fail;
-	}
+		}
 
-	ret = init_cache_node(cachep, node, gfp); // 分配 kmem_cache_node 节点
+		ret = init_cache_node(cachep, node, gfp);
 	if (ret)
-		goto fail;
+			goto fail;
 
-	n = get_node(cachep, node);
-	spin_lock_irq(&n->list_lock);
-	if (n->shared && force_change) {
-		free_block(cachep, n->shared->entry,
-				n->shared->avail, node, &list);
+		n = get_node(cachep, node);
+		spin_lock_irq(&n->list_lock);
+		if (n->shared && force_change) {
+			free_block(cachep, n->shared->entry,
+					n->shared->avail, node, &list);
 		n->shared->avail = 0;
-	}
+		}
 
-	if (!n->shared || force_change) {
-		old_shared = n->shared;
-		n->shared = new_shared;
+		if (!n->shared || force_change) {
+			old_shared = n->shared;
+			n->shared = new_shared;
 		new_shared = NULL;
-	}
+		}
 
-	if (!n->alien) {
-		n->alien = new_alien;
+		if (!n->alien) {
+			n->alien = new_alien;
 		new_alien = NULL;
-	}
+		}
 
 	spin_unlock_irq(&n->list_lock);
-	slabs_destroy(cachep, &list);
+		slabs_destroy(cachep, &list);
 
-	/*
-	 * To protect lockless access to n->shared during irq disabled context.
-	 * If n->shared isn't NULL in irq disabled context, accessing to it is
-	 * guaranteed to be valid until irq is re-enabled, because it will be
-	 * freed after synchronize_rcu().
-	 */
+		/*
+		 * To protect lockless access to n->shared during irq disabled context.
+		 * If n->shared isn't NULL in irq disabled context, accessing to it is
+		 * guaranteed to be valid until irq is re-enabled, because it will be
+		 * freed after synchronize_rcu().
+		 */
 	if (old_shared && force_change)
-		synchronize_rcu();
+			synchronize_rcu();
+
+	fail:
+	kfree(old_shared);
+		kfree(new_shared);
+	free_alien_cache(new_alien);
 
 	return ret;
 	}
-	```
-
-	- slab 节点
-
-	  `kmem_cache_node` 主要包含 3 个链表。
-
-	  ```c
-     struct kmem_cache_node {
-       	spinlock_t list_lock;
-
-       #ifdef CONFIG_SLAB
-       	struct list_head slabs_partial;	/* partial list first, better asm code */
-       	struct list_head slabs_full;
-       	struct list_head slabs_free;
-       	unsigned long total_slabs;	/* length of all slab lists */
-       	unsigned long free_slabs;	/* length of free slab list only */
-       	unsigned long free_objects; // 表示 3 个链表中所有的空闲对象
-       	unsigned int free_limit;    // 所有 slab 分配器上容许空闲对象的对大数目
-       	unsigned int colour_next;	/* Per-node cache coloring */
-       	struct array_cache *shared;	/* shared per node */
-       	struct alien_cache **alien;	/* on other nodes */
-       	unsigned long next_reap;	/* updated without locking */
-       	int free_touched;		/* updated without locking */
-       #endif
-
-       	atomic_long_t nr_slabs;
-       	atomic_long_t total_objects;
-       	struct list_head full;
-       };
-     ```
-
+   ```
 
 至此，slab 描述符完成创建。
 
@@ -1694,18 +1798,22 @@ slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure
    	/* See if we can refill from the shared array */
    	if (shared && transfer_objects(ac, shared, batchcount)) { // 共享对象缓冲池不为空，
    		shared->touched = 1; // 尝试迁移 batchcount 个空闲对象到本地对象缓冲池 ac 中
-   		goto alloc_done;
+   		goto alloc_done; // 前面有说过 batchcount 表示本地对象缓冲池和共享对象缓冲池之间填充对象的数量
    	}
 
    	while (batchcount > 0) {
    		/* Get slab alloc is to come from. */
-   		page = get_first_slab(n, false); // 检查 slabs_partial 和 slabs_free 链表
+           // 共享对象缓冲池中没有空闲对象，检查 slabs_partial 和 slabs_free 链表
+   		page = get_first_slab(n, false);
    		if (!page)
    			goto must_grow;
 
    		check_spinlock_acquired(cachep);
 
+           // 从 slab 分配器中迁移 batchcount 个空闲对象到本地对象缓冲池
    		batchcount = alloc_block(cachep, ac, page, batchcount);
+           // 将该 slab 分配器的的 slab_list 加入到 slabs_partial 或 slabs_free 链表（？）
+           // 不是本来就是从 slabs_partial 和 slabs_free 链表找到的 page 么？
    		fixup_slab_list(cachep, n, page, &list);
    	}
 
@@ -1753,7 +1861,7 @@ slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure
      		struct array_cache *ac, struct page *page, int batchcount)
      {
          // cachep->num 应该是描述符中空闲对象的阀值，但问题是我在 kmem_cache 中
-         // 每找到这个成员啊！
+         // 没找到这个成员啊！
      	while (page->active < cachep->num && batchcount--) {
      		STATS_INC_ALLOCED(cachep);
      		STATS_INC_ACTIVE(cachep);
@@ -1795,7 +1903,7 @@ slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure
 
      ```c
      void *s_mem;	/* slab: first object */
-     struct kmem_cache *slab_cache; // 指向这个 slab 分配器所属的 slab 描述符？
+     struct kmem_cache *slab_cache; // 指向这个 slab 分配器所属的 slab 描述符。page 在 3 个链表中
      unsigned int active； // 表示 slab 分配器中活跃对象的数目。所谓活跃对象就是指对象已经被迁移到对象缓冲池中
          				 // 当其为0 时，表示这个 slab 分配器已经没有活跃对象，可以被销毁。
      void *freelist; // 管理区
@@ -1871,7 +1979,7 @@ slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure
 
 - 为什么要有着色区？
 
-  着色区让每个 slab 分配器对应不同数量的高速缓存行，着色区的大小为 `colour_next * colour_off`，其中 `colour_next` 时从0 到这个 slab 描述符中计算出来的 colour 最大值，colour_off 为 L1 高速缓存行大小。这样可以**使不同的 slab 分配器上同一个相对位置 slab 对象的起始地址再高速缓存中相互错开（？）**，有利于提高高速缓存行的访问效率。
+  着色区让每个 slab 分配器对应不同数量的高速缓存行，着色区的大小为 `colour_next * colour_off`，其中 `colour_next` 是从 0 到这个 slab 描述符中计算出来的 colour 最大值，colour_off 为 L1 高速缓存行大小。这样可以**使不同的 slab 分配器上同一个相对位置 slab 对象的起始地址在高速缓存中相互错开（？）**，有利于提高 cache 的访问效率。这篇文章解释的很[清楚](https://codeantenna.com/a/MTCbuWKjCr)。
 
 #### 释放slab对象
 
@@ -1905,7 +2013,7 @@ void ___cache_free(struct kmem_cache *cachep, void *objp,
 
 #### slab分配器和伙伴系统的接口函数
 
-slab 分配器创建 slab 对象时会调用伙伴系统的分配物理页面接口函数去分配 2^cachep->gfporder 个页面，调用的函数是 `kmem_getpages`。
+slab 分配器创建 slab 对象时会调用伙伴系统的分配物理页面接口函数去分配 `2^cachep->gfporder` 个页面，调用的函数是 `kmem_getpages`。
 
 ```c
 static struct page *kmem_getpages(struct kmem_cache *cachep, gfp_t flags,
@@ -1935,7 +2043,7 @@ static struct page *kmem_getpages(struct kmem_cache *cachep, gfp_t flags,
 
 上文提到管理区可以看作一个 freelist 数组，数组的每个成员大小为 1 字节，每个成员管理一个 slab 对象。这里我们看看 freelist 是怎样管理 slab 分配器中的对象的。
 
-在 [分配 slab 对象](# 分配 slab 对象)中介绍到 `cache_alloc_refill` 会判断本地/共享对象缓冲池中是否有空闲对象，如果没有的话就需要调用 `cache_grow_begin` 创建一个新的 slab 分配器。而在 `cache_init_objs` 中会把管理区中的 freelist 数组按顺序标号。
+在 [分配 slab 对象](#分配slab对象)中介绍到 `cache_alloc_refill` 会判断本地/共享对象缓冲池中是否有空闲对象，如果没有的话就需要调用 `cache_grow_begin` 创建一个新的 slab 分配器。而在 `cache_init_objs` 中会把管理区中的 `freelist` 数组按顺序标号。
 
 ![freelist_init_state.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/freelist_init_state.png?raw=true)
 
@@ -1970,7 +2078,7 @@ static void cache_init_objs(struct kmem_cache *cachep,
 
 #### kmalloc
 
-`kmalloc` 的核心实现就是 slab 机制。类似于伙伴系统，在内存块中按照 2^order 字节来创建多个 slab 描述符，如 16 字节、32 字节、64 字节等，同时系统会创建 `kmalloc-16`, `kmalloc-32`, `kmalloc-64` 等描述符，在系统启动时通过 `create_kmalloc_caches` 函数完成。例如要分配 30 字节的小块内存，可以用 `kmalloc(30, GFP_KERNEL)` 来实现，之后系统会从 kmalloc-32 slab 描述符中分配一个对象。
+`kmalloc` 的核心实现就是 slab 机制。类似于伙伴系统，在内存块中按照 2^order 字节来创建多个 slab 描述符，如 16 字节、32 字节、64 字节等，同时系统会创建 `kmalloc-16`, `kmalloc-32`, `kmalloc-64` 等描述符，在系统启动时通过 `create_kmalloc_caches` 函数完成。例如要分配 30 字节的小块内存，可以用 `kmalloc(30, GFP_KERNEL)` 来实现，之后系统会从 `kmalloc-32 slab` 描述符中分配一个对象。
 
 ```c
 static __always_inline void *kmalloc(size_t size, gfp_t flags)
@@ -2043,7 +2151,7 @@ static __always_inline unsigned int __kmalloc_index(size_t size,
 
 这部分只是大概了解 vmalloc 是干什么的和其分配流程，但其详细的实现还不懂。
 
-上面介绍了 `kmalloc` 使用 slab 分配器分配小块的、连续的物理内存，因为 slab 分配器在创建的时候也需要使用伙伴系统分配物理内存页面的接口，所以 slab 分配器建立在一个物理地址连续的大块内存之上。那如果在内核中不需要连续的物理地址，而仅仅需要虚拟地址连续的内存块该如何处理？这就是 `vmalloc` 的工作。
+上面介绍了 `kmalloc` 使用 slab 分配器分配小块的、连续的物理内存，因为 slab 分配器在创建的时候也需要使用伙伴系统分配物理内存页面的接口，所以 slab 分配器建立在一个物理地址连续的大块内存之上。那如果在内核中不需要连续的物理地址，而**仅仅需要虚拟地址连续的内存块**该如何处理？这就是 `vmalloc` 的工作。
 
 vmalloc 有不同的给外界提供了不同的接口，如 `__vmalloc`, `vmalloc` 等，但它们都是 `__vmalloc_node` 的封装，然后再调用`__vmalloc_node_range`。
 
@@ -3060,11 +3168,81 @@ static vm_fault_t do_fault(struct vm_fault *vmf)
 
 `do_wp_page` 处理非常多且非常复杂的情况，如页面可以分成特殊页面、单身匿名页面、非单身匿名页面、KSM 页面以及文件映射页面等等，这里只了解 COW 的原理，具体实现先不做分析，之后有需要再分析。
 
+### RMAP
+
+因为目前的项目没有用到这个机制的地方，加上精力有限，故只了解其原理、主要数据结构和执行流程，具体的实现不做分析。
+
+一个物理页面可以被多个进程的虚拟内存通过 PTE 映射。有的页面需要迁移，有的页面长时间不用需要交换到磁盘，在交换之前，必须找出哪些进程使用这个页面，然后解除这些映射的用户 PTE。
+
+在 2.4 版本的内核中，为了确定某个页面是否被某个进程映射，必须遍历每个进程的页表，因此效率很低，在 2.5 版本的内核中，使用了反向映射（Reverse Mapping）。
+
+RMAP 的主要目的是从物理页面的 page 数据结构中找到有哪些用户进程的 PTE，这样就可以快速解除所有的 PTE 并回收这个页面。
+
+##### anon_vma
+
+这个数据结构和 VMA 有相似之处啊。
+
+```c
+struct anon_vma {
+	struct anon_vma *root;		/* Root of this anon_vma tree */
+	struct rw_semaphore rwsem;	/* W: modification, R: walking the list */ // 互斥信号
+	/*
+	 * The refcount is taken on an anon_vma when there is no
+	 * guarantee that the vma of page tables will exist for
+	 * the duration of the operation. A caller that takes
+	 * the reference is responsible for clearing up the
+	 * anon_vma if they are the last user on release
+	 */
+	atomic_t refcount; // 引用计数
+
+	/*
+	 * Count of child anon_vmas and VMAs which points to this anon_vma.
+	 *
+	 * This counter is used for making decision about reusing anon_vma
+	 * instead of forking new one. See comments in function anon_vma_clone.
+	 */
+	unsigned degree;
+
+	struct anon_vma *parent;	/* Parent of this anon_vma */
+
+	/*
+	 * NOTE: the LSB of the rb_root.rb_node is set by
+	 * mm_take_all_locks() _after_ taking the above lock. So the
+	 * rb_root must only be read/written after taking the above lock
+	 * to be sure to see a valid next pointer. The LSB bit itself
+	 * is serialized by a system wide lock only visible to
+	 * mm_take_all_locks() (mm_all_locks_mutex).
+	 */
+
+	/* Interval tree of private "related" vmas */
+	struct rb_root_cached rb_root; // 所有的 va 构成一颗红黑树
+};
+```
+
+##### anon_vma_chain
+
+其可以连接父子进程的 `anon_vma` 数据结构。
+
+```c
+struct anon_vma_chain {
+	struct vm_area_struct *vma; // 可以指向父进程的 VMA，也可以指向子进程的 VMA
+	struct anon_vma *anon_vma; // 可以指向父进程的 anon_vma，也可以指向子进程的 anon_vma
+	struct list_head same_vma;   /* locked by mmap_lock & page_table_lock */
+	struct rb_node rb;			/* locked by anon_vma->rwsem */ // 红黑树
+	unsigned long rb_subtree_last;
+#ifdef CONFIG_DEBUG_VM_RB
+	unsigned long cached_vma_start, cached_vma_last;
+#endif
+};
+```
+
+
+
 ### 补充知识点
 
 #### MMU
 
-MMU是 CPU 中的一个硬件单元，通常每个核有一个MMU。MMU由两部分组成：TLB(Translation Lookaside Buffer)和table walk unit。
+MMU是 CPU 中的一个硬件单元，通常每个核有一个 MMU。MMU由两部分组成：TLB(Translation Lookaside Buffer)和 table walk unit。
 
 TLB 很熟悉了，就不再分析。主要介绍一下 table walk unit。
 
