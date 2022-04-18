@@ -49,7 +49,7 @@
 
 ### 内存分布
 
-64 位 linux 内核的内存分布
+64 位 arm linux 内核的内存分布
 
 ![linux-address-space.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/linux-address-space.png?raw=true)
 
@@ -293,8 +293,14 @@ extern struct pglist_data *pgdat_list;
 由于实际的计算机体系结构的限制（ISA 总线只能寻址 16 MB 和 32 位计算机只能寻址 4G），每个节点的物理内存又分为 3 个管理区。
 
 - ZONE_DMA：低于 16MB 的内存页框。
+
 - ZONE_NORMAL：高于 16MB 低于 896MB 的内存页框。
+
+  如果 Linux 物理内存小于 1G 的空间，通常将线性地址空间和物理空间一一映射，这样可以提供访问速度。
+
 - ZONE_HIGHMEM：高于 896MB 的内存页框。
+
+  高端内存的基本思想：借用一段虚拟地址空间，建立临时地址映射（页表），使用完之后就释放，以此达到这段地址空间可以循环使用，访问所有的物理内存。
 
 ##### zone
 
@@ -530,7 +536,7 @@ EXPORT_SYMBOL(alloc_pages);
 
   具体的定义在 gfp.h 中。而要正确使用这么多标志很难，所以定义了一些常用的表示组合——类型标志，如 `GFP_KERNEL`, `GFP_USER` 等，这里就不一一介绍，知道它是干什么的就行了，之后真正要用再查
 
-2. `prepare_alloc_page`
+2. `prepare_alloc_pages`
 
    这个函数主要用于初始化在页面分配时用到的参数，这些参数临时存放在 `alloc_context` 中。
 
@@ -2151,7 +2157,48 @@ static __always_inline unsigned int __kmalloc_index(size_t size,
 
 这部分只是大概了解 vmalloc 是干什么的和其分配流程，但其详细的实现还不懂。
 
-上面介绍了 `kmalloc` 使用 slab 分配器分配小块的、连续的物理内存，因为 slab 分配器在创建的时候也需要使用伙伴系统分配物理内存页面的接口，所以 slab 分配器建立在一个物理地址连续的大块内存之上。那如果在内核中不需要连续的物理地址，而**仅仅需要虚拟地址连续的内存块**该如何处理？这就是 `vmalloc` 的工作。
+上面介绍了 `kmalloc` 使用 slab 分配器分配小块的、连续的物理内存，因为 slab 分配器在创建的时候也需要使用伙伴系统分配物理内存页面的接口，所以 **slab 分配器建立在一个物理地址连续的大块内存之上**（理解这点很重要）。那如果在内核中不需要连续的物理地址，而**仅仅需要虚拟地址连续的内存块**该如何处理？这就是 `vmalloc` 的工作。
+
+vmalloc 映射区的**映射方式与用户空间完全相同**，内核可以通过调用 vmalloc 函数在内核地址空间的 vmalloc 区域获得内存。这个函数的功能相当于用户空间的 malloc 函数，所提供的虚拟地址空间是连续的， 但不保证物理地址是连续的。
+
+还是先看看 vmalloc 相关的数据结构，内核中用 `vm_struct` 来表示一块 vmalloc 分配的区域。
+
+```c
+struct vm_struct {
+	struct vm_struct	*next;
+	void			*addr;
+	unsigned long		size;
+	unsigned long		flags;
+	struct page		**pages;
+#ifdef CONFIG_HAVE_ARCH_HUGE_VMALLOC
+	unsigned int		page_order;
+#endif
+	unsigned int		nr_pages;
+	phys_addr_t		phys_addr;
+	const void		*caller;
+};
+
+// vm_struct 和 vmap_area 分别用来干嘛
+// 从代码来看 vmap_area 就是表示一块 vmalloc 的起始和结束地址，以及所有块组成的链表和红黑树
+struct vmap_area {
+	unsigned long va_start;
+	unsigned long va_end;
+
+	struct rb_node rb_node;         /* address sorted rbtree */ // 传统做法
+	struct list_head list;          /* address sorted list */
+
+	/*
+	 * The following two variables can be packed, because
+	 * a vmap_area object can be either:
+	 *    1) in "free" tree (root is vmap_area_root)
+	 *    2) or "busy" tree (root is free_vmap_area_root)
+	 */
+	union {
+		unsigned long subtree_max_size; /* in "free" tree */
+		struct vm_struct *vm;           /* in "busy" tree */
+	};
+};
+```
 
 vmalloc 有不同的给外界提供了不同的接口，如 `__vmalloc`, `vmalloc` 等，但它们都是 `__vmalloc_node` 的封装，然后再调用`__vmalloc_node_range`。
 
@@ -2164,7 +2211,7 @@ void *__vmalloc_node(unsigned long size, unsigned long align,
 }
 ```
 
-vmalloc 分配的空间在 [内存分布](# 内存分布) 小节中的图中有清晰的说明。
+vmalloc 分配的空间在 [内存分布](# 内存分布) 小节中的图中有清晰的说明（不同架构的内存布局是不一样的，因为这篇文章的时间跨度较大，参考多本书籍，所以混合了 arm 内核、Loongarch 内核和 x86 内核的源码，这是个问题，之后要想想怎么解决。在 64 位 x86 内核中，该区域为 `0xffffc90000000000 ~ 0xffffe8ffffffffff`）。
 
 1. vmalloc 的核心功能都是在 `__vmalloc_node_range` 函数中实现的。
 
@@ -3259,6 +3306,8 @@ TLB 很熟悉了，就不再分析。主要介绍一下 table walk unit。
 [2] 内核版本：5.15-rc5，commitid: f6274b06e326d8471cdfb52595f989a90f5e888f
 
 [3] https://zhuanlan.zhihu.com/p/65298260
+
+[4] https://biscuitos.github.io/blog/MMU-Linux4x-VMALLOC/
 
 ### 些许感想
 
