@@ -2315,6 +2315,24 @@ vmalloc 分配的空间在 [内存分布](# 内存分布) 小节中的图中有�
      - 从 `VMALLOC_START` 开始查找每个已存在的 vmalloc 区域的缝隙能够容纳目前申请的大小。如果已有的 vmalloc 区域的缝隙不能容纳，那么从最后一块 vmalloc 区域的结束地址开辟一个新的 vmalloc 区域。
      - 找到新的区域缝隙后，调用 `insert_vmap_area` 将其注册到红黑树。
 
+这里有个疑问，为什么 vmalloc 最后申请空间也要调用到 slab 分配器？
+
+```c
+#0  slab_alloc_node (orig_size=64, addr=18446744071581699837, node=<optimized out>, gfpflags=3264,
+    s=0xffff88810004f600) at mm/slub.c:3120
+#1  kmem_cache_alloc_node (s=0xffff88810004f600, gfpflags=gfpflags@entry=3264, node=node@entry=-1)
+    at mm/slub.c:3242
+#2  0xffffffff812b8efd in alloc_vmap_area (size=size@entry=20480, align=align@entry=16384,
+    vstart=vstart@entry=18446683600570023936, vend=vend@entry=18446718784942112767, node=node@entry=-1,
+    gfp_mask=3264, gfp_mask@entry=3520) at mm/vmalloc.c:1531
+#3  0xffffffff812b982a in __get_vm_area_node (size=20480, size@entry=16384, align=align@entry=16384,
+    flags=flags@entry=34, start=18446683600570023936, end=18446718784942112767, node=node@entry=-1,
+    gfp_mask=3520, caller=0xffffffff810a20ad <kernel_clone+157>, shift=12) at mm/vmalloc.c:2423
+#4  0xffffffff812bc784 in __vmalloc_node_range (size=size@entry=16384, align=align@entry=16384,
+    start=<optimized out>, end=<optimized out>, gfp_mask=gfp_mask@entry=3520, prot=..., vm_flags=0, node=-1,
+    caller=0xffffffff810a20ad <kernel_clone+157>) at mm/vmalloc.c:3010
+```
+
 ### 进程地址空间
 
 还是先看看进程的地址空间布局
@@ -2477,9 +2495,42 @@ struct vm_area_struct {
 
 ### malloc
 
-malloc 函数是标准 C 库封装的一个核心函数，C 标准库最终会调用内核的 brk 系统调用。brk 系统调用展开后变成 `__do_sys_brk`。
+malloc 函数是标准 C 库封装的一个核心函数，C 标准库最终会调用内核的 brk 系统调用。brk 系统调用展开后变成 `__do_sys_brk`。《奔跑吧内核》关于 brk 系统调用和 malloc 函数的解释很形象。
+
+> 我们习惯使用的是 malloc 函数，而不太熟悉 brk 系统调用，这是因为很少直接使用 brk 系统调用。如果把 malloc 函数想象成零售商，那么 brk 就是代理商，malloc 为用户进程维护一个本地小仓库，当进程需要使用更多内存时，就向这个小仓库要货；当小仓库存量不足时，就通过代理商 brk 向内核批发。
 
 1. brk 系统调用
+
+   系统调用的定义是通过 `SYSCALL_DEFINEx` 宏来实现的，其中 `x` 表示参数个数，这个宏的定义如下：
+
+   ```c
+   #define SYSCALL_DEFINE1(name, ...) SYSCALL_DEFINEx(1, _##name, __VA_ARGS__)
+   #define SYSCALL_DEFINE2(name, ...) SYSCALL_DEFINEx(2, _##name, __VA_ARGS__)
+   #define SYSCALL_DEFINE3(name, ...) SYSCALL_DEFINEx(3, _##name, __VA_ARGS__)
+   #define SYSCALL_DEFINE4(name, ...) SYSCALL_DEFINEx(4, _##name, __VA_ARGS__)
+   #define SYSCALL_DEFINE5(name, ...) SYSCALL_DEFINEx(5, _##name, __VA_ARGS__)
+   #define SYSCALL_DEFINE6(name, ...) SYSCALL_DEFINEx(6, _##name, __VA_ARGS__)
+
+   #define SYSCALL_DEFINE_MAXARGS	6
+
+   #define SYSCALL_DEFINEx(x, sname, ...)				\
+   	SYSCALL_METADATA(sname, x, __VA_ARGS__)			\
+   	__SYSCALL_DEFINEx(x, sname, __VA_ARGS__)
+   ```
+
+   所有的系统调用展开后的地址都会保存在系统调用表 sys_call_table 中。
+
+   brk 系统调用最后展开成 `__do_sys_brk`，
+
+   ```
+   #0  __do_sys_brk (brk=0) at mm/mmap.c:207
+   #1  __se_sys_brk (brk=0) at mm/mmap.c:194
+   #2  __x64_sys_brk (regs=<optimized out>) at mm/mmap.c:194
+   #3  0xffffffff81c0711b in do_syscall_x64 (nr=<optimized out>, regs=0xffffc90000dd7f58)
+       at arch/x86/entry/common.c:50
+   #4  do_syscall_64 (regs=0xffffc90000dd7f58, nr=<optimized out>) at arch/x86/entry/common.c:80
+   #5  0xffffffff81e0007c in entry_SYSCALL_64 () at arch/x86/entry/entry_64.S:113
+   ```
 
    ```c
    SYSCALL_DEFINE1(brk, unsigned long, brk)
@@ -2504,7 +2555,7 @@ malloc 函数是标准 C 库封装的一个核心函数，C 标准库最终会�
 
    	newbrk = PAGE_ALIGN(brk); // 结合上面的图就很容易理解，新的 brk 上界
    	oldbrk = PAGE_ALIGN(mm->brk); // 原来的上界
-   	if (oldbrk == newbrk) { // 分配过程没有问题，但是还没有分配物理空间
+   	if (oldbrk == newbrk) { // 新分配的上界和原来的上界一样，直接分配成功
    		mm->brk = brk;
    		goto success;
    	}
@@ -2534,7 +2585,8 @@ malloc 函数是标准 C 库封装的一个核心函数，C 标准库最终会�
 
    	/* Check against existing mmap mappings. */
    	next = find_vma(mm, oldbrk);
-   	if (next && newbrk + PAGE_SIZE > vm_start_gap(next)) // 以旧边界地址开始的地址空间已经在使用，不需要再寻找（？）
+       // 以旧边界地址开始的地址空间已经在使用，不需要再寻找（？）
+   	if (next && newbrk + PAGE_SIZE > vm_start_gap(next))
    		goto out;
 
    	/* Ok, looks good - let it rip. */
@@ -2560,6 +2612,8 @@ malloc 函数是标准 C 库封装的一个核心函数，C 标准库最终会�
    ```
 
 2. `do_brk_flags`
+
+   该函数会调用 `vm_area_alloc` 来创建一个新的 VMA。
 
    ```c
    static int do_brk_flags(unsigned long addr, unsigned long len, unsigned long flags, struct list_head *uf)
@@ -2627,7 +2681,25 @@ malloc 函数是标准 C 库封装的一个核心函数，C 标准库最终会�
    }
    ```
 
-3. `mm_populate` 为该进程分配物理内存。通常用户进程很少使用 `VM_LOCKED` 分配掩码，所以 brk 系统调用不会马上为这个进程分配物理内存，而是一直延迟到用户进程需要访问这些虚拟页面并发生缺页中断时彩绘分配物理内存，并和虚拟地址建立映射关系。
+   这个有个疑问，`vm_area_alloc` 创建新的 VMA 为什么还会调用到 slab 分配器？
+
+   ```
+   #0  slab_alloc_node (orig_size=200, addr=18446744071579497582, node=-1, gfpflags=3264, s=0xffff8881001d5600)  at mm/slub.c:3120
+   #1  slab_alloc (orig_size=200, addr=18446744071579497582, gfpflags=3264, s=0xffff8881001d5600) at mm/slub.c:3214
+   #2  kmem_cache_alloc (s=0xffff8881001d5600, gfpflags=gfpflags@entry=3264) at mm/slub.c:3219
+   #3  0xffffffff8109f46e in vm_area_alloc (mm=mm@entry=0xffff888100292640) at kernel/fork.c:349
+   #4  0xffffffff812ab044 in do_brk_flags (addr=addr@entry=94026372730880, len=len@entry=135168,
+       flags=<optimized out>, flags@entry=0, uf=uf@entry=0xffffc9000056bef0) at mm/mmap.c:3067
+   #5  0xffffffff812ab6cc in __do_sys_brk (brk=94026372866048) at mm/mmap.c:271
+   #6  __se_sys_brk (brk=94026372866048) at mm/mmap.c:194
+   #7  __x64_sys_brk (regs=<optimized out>) at mm/mmap.c:194
+   #8  0xffffffff81c0711b in do_syscall_x64 (nr=<optimized out>, regs=0xffffc9000056bf58)
+       at arch/x86/entry/common.c:50
+   #9  do_syscall_64 (regs=0xffffc9000056bf58, nr=<optimized out>) at arch/x86/entry/common.c:80
+   #10 0xffffffff81e0007c in entry_SYSCALL_64 () at arch/x86/entry/entry_64.S:113
+   ```
+
+3. `mm_populate` 为该进程分配物理内存。通常用户进程很少使用 `VM_LOCKED` 分配掩码（果然很少用，设置断点都跑不到，那就分析代码看怎样建立映射吧），所以 brk 系统调用不会马上为这个进程分配物理内存，而是一直延迟到用户进程需要访问这些虚拟页面并发生缺页中断时才会分配物理内存，并和虚拟地址建立映射关系。
 
    ```c
    int __mm_populate(unsigned long start, unsigned long len, int ignore_errors)
@@ -2711,7 +2783,7 @@ malloc 函数是标准 C 库封装的一个核心函数，C 标准库最终会�
    		...
 
    		page = follow_page_mask(vma, start, foll_flags, &ctx); // 判断 VMA 中的虚页是否已经分配了物理内存
-           													// 其中涉及了页表遍历等操作，之后再分析吧
+           													   // 其中涉及了页表遍历等操作，之后再分析吧
    		if (!page) { // 没有分配
    			ret = faultin_page(vma, start, &foll_flags, locked); // 人为的触发缺页异常，后面详细分析
 
@@ -2745,6 +2817,8 @@ malloc 函数是标准 C 库封装的一个核心函数，C 标准库最终会�
    ```
 
 5. `follow_page_mask` 主要用于遍历页表并返回物理页面的 page 数据结构，这个应该比较复杂，但也是核心函数，之后再分析。这里有个问题，就是遍历页表不是由 MMU 做的，为什么这里还要用软件遍历？
+
+简单总结一下 malloc 的操作流程。标准 C 库函数 malloc 最后使用的系统调用是 brk，传入的参数只有 brk 的结束地址，用这个地址和`mm -> brk` 比较，确定是释放内存还是分配内存。而需要分配内存的大小为 `newbrk-oldbrk`，这里 `newbrk` 就是传入的参数，`oldbrk` 是` mm -> brk`。brk 系统调用申请的内存空间貌似都是 `0x21000`。同时根据传入的 brk 在 VMA 的红黑树中寻找是否存在已经分配的内存块，如果有的话那么就不需要从新分配，否则就调用 `do_brk_flags` 分配新的 VMA，然后进行初始化，更新该进程的 `mm`。这样来看就是创建一个 VMA嘛，物理空间都是发生 #PF 才分配的。
 
 ### mmap
 
@@ -3305,6 +3379,12 @@ TLB 很熟悉了，就不再分析。主要介绍一下 table walk unit。
 如果发生 TLB miss，就需要查找当前进程的 page table，接下来就是 table walk unit 的工作。而使用 table walk unit硬件单元来查找page table的方式被称为hardware TLB miss handling，通常被CISC架构的处理器（比如IA-32）所采用。如果在page table中查找不到，出现page fault，那么就会交由软件（操作系统）处理，之后就是我们熟悉的 PF。
 
 好吧，从找到的资料看 page table walk 和我理解的内核的 4/5 级页表转换没有什么不同。但是依旧有一个问题，即 mmu 访问的这些 page table 是不是就是内核访问的 page table，都是存放在内存中的。
+
+### 疑问
+
+1. `vm_area_alloc` 创建新的 VMA 为什么还会调用到 slab 分配器？
+2. vmalloc 中的`vm_struct` 和 `vmap_area` 分别用来干嘛？
+3. 为什么 vmalloc 最后申请空间也要调用到 slab 分配器？（这样看来 `slab_alloc_node` 才是真核心啊）？
 
 ### Reference
 
