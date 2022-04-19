@@ -610,3 +610,9 @@ The important variables used by implicit rules are:
 #define PMD_SHIFT
 #define PAGE_SHIFT
 ```
+
+### 主缺页和次缺页
+
+缺页中断可分为主缺页中断（Major Page Fault）和次缺页中断（Minor Page Fault），要从磁盘读取数据而产生的中断是主缺页中断；从内存中而不是直接从硬盘中读取数据而产生的中断是次缺页中断。
+
+需要访存时内核先在 cache 中寻找数据，如果 cache miss，产生次缺页中断从内存中找，如果还没有发现的话就产生主缺页中断从硬盘读取。
