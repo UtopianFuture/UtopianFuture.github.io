@@ -2845,17 +2845,17 @@ mmap 机制在内核中的实现和 brk 类似，但其和缺页中断机制结�
 
 ![page_fault](/home/guanshun/gitlab/UFuture.github.io/image/page_fault.png)
 
-从触发缺页异常到 CPU 根据中断号跳转到对应的处理函数这个过程在之前做项目时已经跟踪过，就不在分析，这里主要分析 `handle_mm_fault` 相关的处理函数。
+从触发缺页异常到 CPU 根据中断号跳转到对应的处理函数这个过程在之前做项目时已经跟踪过，就不再分析，这里主要分析 `handle_mm_fault` 相关的处理函数。
 
 - `DEFINE_IDTENTRY_RAW_ERRORCODE(exc_page_fault)`
-  - `unsigned long address = read_cr2();` // 在 X86 架构中，cr2 寄存器保存着访存时引发 #PF 异常的线性地址，cr3 寄存器提供整个也转化结构表的基地址。
+  - `unsigned long address = read_cr2();` 在 X86 架构中，cr2 寄存器保存着访存时引发 #PF 异常的线性地址，cr3 寄存器提供页表的基地址。
   - `handle_page_fault`
     - `do_kern_addr_fault` 内核地址空间引发的中断；
     - `do_user_addr_fault` 用户地址空间引发的中断；
 
 #### 关键函数do_user_addr_fault
 
-该函数的功能是根据发生异常的 addr 找到对应的 VMA，然后判断 VMA 是否有问题，平时变成地址越界之类的错误应该都是在这里定义的。之后对异常处理的结果进行判断，抛出错误。
+该函数的功能是根据发生异常的 addr 找到对应的 VMA，然后判断 VMA 是否有问题，平时编程地址越界之类的错误应该都是在这里定义的。之后对异常处理的结果进行判断，抛出错误。
 
 ```c
 static inline void do_user_addr_fault(struct pt_regs *regs,
@@ -2985,7 +2985,7 @@ retry_pud:
 	}
 
 	return handle_pte_fault(&vmf); // 最后处理 PTE，为什么要通过 PTE 才能确定后面的一系列操作（上图），
-								   // 而其他的页表不能呢？
+								   // 而其他的页表不能呢？通过 PTE 才能确定物理页地址
 }
 ```
 
@@ -2993,9 +2993,9 @@ retry_pud:
 
 #### 关键函数handle_pte_fault
 
-这就就是处理各种 VMA，匿名映射，文件映射，VMA 的属性是否可读可写等等。
+这个函数主要处理各种 VMA，匿名映射，文件映射，VMA 的属性是否可读可写等等。
 
-好多种情况啊！真滴复杂。
+好多种情况啊！真滴复杂。目前先只分析匿名页面、文件映射和写时复制的缺页中断，其他类型目前的项目有不到，暂时不分析。
 
 ```c
 static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
@@ -3027,7 +3027,7 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 	}
 
 	if (!vmf->pte) { // pte 为空
-		if (vma_is_anonymous(vmf->vma)) // 判断是否为匿名映射
+		if (vma_is_anonymous(vmf->vma)) // 判断是否为匿名映射，当 vma->vm_ops 没有实现方法集时，即为匿名映射
 			return do_anonymous_page(vmf); // 后面分析
 		else
 			return do_fault(vmf); // 不是匿名映射，是文件映射。后面分析
@@ -3039,7 +3039,7 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 	if (pte_protnone(vmf->orig_pte) && vma_is_accessible(vmf->vma)) // 页面被设置为 NUMA 调度页面（？）
 		return do_numa_page(vmf);
 
-	vmf->ptl = pte_lockptr(vmf->vma->vm_mm, vmf->pmd);
+	vmf->ptl = pte_lockptr(vmf->vma->vm_mm, vmf->pmd); // 获取进程的内存描述符 mm 中定义的一个自旋锁
 	spin_lock(vmf->ptl);
 	entry = vmf->orig_pte;
 	if (unlikely(!pte_same(*vmf->pte, entry))) { // 判断这段时间内 PTE 是否修改了，若修改了，说明出现了异常情况
@@ -3053,7 +3053,7 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 	}
 	entry = pte_mkyoung(entry);
 	if (ptep_set_access_flags(vmf->vma, vmf->address, vmf->pte, entry,
-				vmf->flags & FAULT_FLAG_WRITE)) { // 判断 PTE 是否发生变化，如果发生变化就需要敬爱嗯新的内容
+				vmf->flags & FAULT_FLAG_WRITE)) { // 判断 PTE 是否发生变化，如果发生变化就需要将新的内容
 		update_mmu_cache(vmf->vma, vmf->address, vmf->pte); // 写入 PTE 中，并刷新对应的 TLB 和 cache
 	} else {
 		/* Skip spurious TLB flush for retried page fault */
@@ -3076,7 +3076,7 @@ unlock:
 
 #### 匿名页面缺页中断
 
-`do_anonymous_page` 匿名页面缺页的处理。没有关联对应文件的映射称为匿名映射。
+`do_anonymous_page` 匿名页面缺页的处理。**没有关联对应文件的映射称为匿名映射**。
 
 ```c
 static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
@@ -3090,14 +3090,20 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 	if (vma->vm_flags & VM_SHARED) // 防止共享的 VMA 进入匿名页面的中断处理
 		return VM_FAULT_SIGBUS;
 
-	...
+	if (pte_alloc(vma->vm_mm, vmf->pmd)) // 分配一个 PTE 并将其设置到对应的 PMD 页表项中
+		return VM_FAULT_OOM;
+
+	/* See comment in handle_pte_fault() */
+	if (unlikely(pmd_trans_unstable(vmf->pmd)))
+		return 0;
 
 	/* Use the zero-page for reads */
+    // 为什么要这样设置？
 	if (!(vmf->flags & FAULT_FLAG_WRITE) && // 该匿名页面只有只读属性
 			!mm_forbids_zeropage(vma->vm_mm)) {
-		entry = pte_mkspecial(pfn_pte(my_zero_pfn(vmf->address),
-						vma->vm_page_prot)); // 将 PTE 设置为指向系统零页
-		vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd,
+		entry = pte_mkspecial(pfn_pte(my_zero_pfn(vmf->address), // 将 PTE 设置为指向系统零页
+						vma->vm_page_prot));// pte_mkspecial 设置 PTE 中的 PTE_SPECIAL
+		vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd, // 重新获取 PTE 确保正确的写入了
 				vmf->address, &vmf->ptl);
 		if (!pte_none(*vmf->pte)) {
 			update_mmu_tlb(vma, vmf->address, vmf->pte);
@@ -3155,9 +3161,30 @@ oom:
 }
 ```
 
+- `alloc_zeroed_user_highpage_movable` 的执行流程如下：
+
+  ```c
+  #define alloc_zeroed_user_highpage_movable(vma, vaddr) \
+  	alloc_page_vma(GFP_HIGHUSER_MOVABLE | __GFP_ZERO, vma, vaddr)
+
+  #define alloc_page_vma(gfp_mask, vma, addr)			\
+  	alloc_pages_vma(gfp_mask, 0, vma, addr, numa_node_id(), false)
+
+  // alloc_pages_vma - Allocate a page for a VMA.
+  struct page *alloc_pages_vma(gfp_t gfp, int order, struct vm_area_struct *vma,
+  		unsigned long addr, int node, bool hugepage)
+  {
+  	...
+  	page = __alloc_pages(gfp, order, preferred_nid, nmask);
+  	...
+  }
+  ```
+
+  即最后调用伙伴系统的 `__alloc_pages`，这是上文分析过的。
+
 #### 文件映射缺页中断
 
-内核用 `do_fault` 来处理文件映射的缺页中断。
+内核用 `do_fault` 来处理文件映射的缺页中断。这个中断处理不仅仅是下面几个函数简单的处理 PTE，寻找物理页面那么简单，之后需要进一步分析。
 
 ```c
 static vm_fault_t do_fault(struct vm_fault *vmf)
@@ -3198,14 +3225,18 @@ static vm_fault_t do_fault(struct vm_fault *vmf)
    	struct vm_area_struct *vma = vmf->vma;
    	vm_fault_t ret = 0;
 
-   	// map_pages 函数可以在缺页异常地址附近提前建立尽可能多的和页面高速缓存的映射，这样可以减少发生缺页异常的次数
-       // 但其只是建立映射，而没有建立页面高速缓存（这个页面高速缓存时不是就是 cache），
+   	// map_pages 函数可以在缺页异常地址附近提前建立尽可能多的和页面高速缓存的映射，这样可以减少发生缺页异常的次数，
+       // 但其只是建立映射，而没有建立页面高速缓存（这个页面高速缓存是不是就是 cache），
+       // 下面的 __do_fault 才是分配物理页面。
        // 那这个做法是不是就是之前学过的根据空间局部性原理将发生异常的地址周围的数据也加载到 cache 中，
        // 减少缺页次数。应该就是这个意思。
        // fault_around_bytes 是全局变量，默认为 16 个页面
    	if (vma->vm_ops->map_pages && fault_around_bytes >> PAGE_SHIFT > 1) {
    		if (likely(!userfaultfd_minor(vmf->vma))) {
-   			ret = do_fault_around(vmf); // 这个函数就是调用 map_pages 建立映射的
+               // do_fault_around 以当前缺页异常地址为中心，尽量取 16 个页面对齐的地址，
+               // 通过调用 map_pages 为这些页面建立 PTE 映射，当然这个函数需要完成寻找物理地址的工作
+               // map_pages 对应的回调函数很多，这里只举一个例子：filemap_map_pages，后面分析
+   			ret = do_fault_around(vmf);
    			if (ret)
    				return ret;
    		}
@@ -3215,13 +3246,118 @@ static vm_fault_t do_fault(struct vm_fault *vmf)
    	if (unlikely(ret & (VM_FAULT_ERROR | VM_FAULT_NOPAGE | VM_FAULT_RETRY)))
    		return ret;
 
-   	ret |= finish_fault(vmf); // 取回缺页异常对应的物理页面，调用 dodo_set_pte 建立物理页面和虚拟地址的映射关系
+   	ret |= finish_fault(vmf); // 取回缺页异常对应的物理页面，调用 do_set_pte 建立物理页面和虚拟地址的映射关系
    	unlock_page(vmf->page);
    	if (unlikely(ret & (VM_FAULT_ERROR | VM_FAULT_NOPAGE | VM_FAULT_RETRY)))
    		put_page(vmf->page);
    	return ret;
    }
    ```
+
+   - `__do_fault` 分配对应的物理内存（考虑到上面的 map_pages，这里应该会分配多个物理页面）
+
+     ```c
+     static vm_fault_t __do_fault(struct vm_fault *vmf)
+     {
+     	struct vm_area_struct *vma = vmf->vma;
+     	vm_fault_t ret;
+
+     	/*
+     	 * Preallocate pte before we take page_lock because this might lead to
+     	 * deadlocks for memcg reclaim which waits for pages under writeback:
+     	 *				lock_page(A)
+     	 *				SetPageWriteback(A)
+     	 *				unlock_page(A)
+     	 * lock_page(B)
+     	 *				lock_page(B)
+     	 * pte_alloc_one
+     	 *   shrink_page_list
+     	 *     wait_on_page_writeback(A)
+     	 *				SetPageWriteback(B)
+     	 *				unlock_page(B)
+     	 *				# flush A, B to clear the writeback
+     	 */
+     	if (pmd_none(*vmf->pmd) && !vmf->prealloc_pte) {
+     		vmf->prealloc_pte = pte_alloc_one(vma->vm_mm);
+     		if (!vmf->prealloc_pte)
+     			return VM_FAULT_OOM;
+     		smp_wmb(); /* See comment in __pte_alloc() */
+     	}
+
+     	ret = vma->vm_ops->fault(vmf);
+     	if (unlikely(ret & (VM_FAULT_ERROR | VM_FAULT_NOPAGE | VM_FAULT_RETRY |
+     			    VM_FAULT_DONE_COW)))
+     		return ret;
+
+     	...
+
+     	return ret;
+     }
+     ```
+
+   - `filemap_map_pages` 感觉寻址这块还可以继续分析，而且对理解系统很有帮助。
+
+     ```c
+     vm_fault_t filemap_map_pages(struct vm_fault *vmf,
+     			     pgoff_t start_pgoff, pgoff_t end_pgoff)
+     {
+     	struct vm_area_struct *vma = vmf->vma;
+     	struct file *file = vma->vm_file; // 该 vma 对应的 file
+     	struct address_space *mapping = file->f_mapping;
+     	pgoff_t last_pgoff = start_pgoff;
+     	unsigned long addr;
+     	XA_STATE(xas, &mapping->i_pages, start_pgoff);
+     	struct page *head, *page;
+     	unsigned int mmap_miss = READ_ONCE(file->f_ra.mmap_miss);
+     	vm_fault_t ret = 0;
+
+     	rcu_read_lock();
+     	head = first_map_page(mapping, &xas, end_pgoff); // 该 file 映射到内存的第一个 page 地址？
+     	if (!head)
+     		goto out;
+
+     	if (filemap_map_pmd(vmf, head)) {
+     		ret = VM_FAULT_NOPAGE;
+     		goto out;
+     	}
+
+     	addr = vma->vm_start + ((start_pgoff - vma->vm_pgoff) << PAGE_SHIFT); // 虚拟地址
+     	vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd, addr, &vmf->ptl);
+     	do {
+     		page = find_subpage(head, xas.xa_index); // 找到对应的 page
+     		if (PageHWPoison(page))
+     			goto unlock;
+
+     		if (mmap_miss > 0)
+     			mmap_miss--;
+
+     		addr += (xas.xa_index - last_pgoff) << PAGE_SHIFT; // 加上该 page 的偏移量
+     		vmf->pte += xas.xa_index - last_pgoff; // pte 也要更新为该 page 对应的
+     		last_pgoff = xas.xa_index;
+
+     		if (!pte_none(*vmf->pte))
+     			goto unlock;
+
+     		/* We're about to handle the fault */
+     		if (vmf->address == addr)
+     			ret = VM_FAULT_NOPAGE;
+
+     		do_set_pte(vmf, page, addr); // 建立映射
+     		/* no need to invalidate: a not-present page won't be cached */
+     		update_mmu_cache(vma, addr, vmf->pte);
+     		unlock_page(head);
+     		continue;
+     unlock:
+     		unlock_page(head);
+     		put_page(head);
+     	} while ((head = next_map_page(mapping, &xas, end_pgoff)) != NULL);
+     	pte_unmap_unlock(vmf->pte, vmf->ptl);
+     out:
+     	rcu_read_unlock();
+     	WRITE_ONCE(file->f_ra.mmap_miss, mmap_miss);
+     	return ret;
+     }
+     ```
 
 2. `do_cow_fault`
 
@@ -3292,7 +3428,7 @@ static vm_fault_t do_fault(struct vm_fault *vmf)
 
 #### 写时复制（COW）
 
-当进程试图修改只有只读属性的页面时，CPU 触发异常，在 `do_wp_page` 中尝试处理异常，通常的做法是分配一个新的页面并且复制据页面内容到新的页面中，这个新分配的页面具有可写属性。
+当进程试图修改只有只读属性的页面时，CPU 触发异常，在 `do_wp_page` 中尝试处理异常，通常的做法是**分配一个新的页面并且复制据页面内容到新的页面中，这个新分配的页面具有可写属性**。
 
 `do_wp_page` 处理非常多且非常复杂的情况，如页面可以分成特殊页面、单身匿名页面、非单身匿名页面、KSM 页面以及文件映射页面等等，这里只了解 COW 的原理，具体实现先不做分析，之后有需要再分析。
 
@@ -3383,10 +3519,16 @@ TLB 很熟悉了，就不再分析。主要介绍一下 table walk unit。
 ### 疑问
 
 1. `vm_area_alloc` 创建新的 VMA 为什么还会调用到 slab 分配器？
+
 2. vmalloc 中的`vm_struct` 和 `vmap_area` 分别用来干嘛？
+
 3. 为什么 vmalloc 最后申请空间也要调用到 slab 分配器？（这样看来 `slab_alloc_node` 才是真核心啊）？
 
-### Reference
+4. 在处理匿名页面缺页异常时，为什么当需要分配的页面是只读属性时会将创建的 PTE 指向系统零页？
+
+   因为这是匿名映射，没有指定对应的文件，所有没有内容，当进程再对该页进行写操作时，触发匿名页面的写操作异常，这时再通过 `alloc_zeroed_user_highpage_movable` 调用伙伴系统的接口分配新的页面。
+
+5. 以 `filemap_map_pages` 为切入点，应该就可以进一步分析文件管理部分的内容，这个之后再分析。Reference
 
 [1] 奔跑吧 Linux 内核，卷 1：基础架构
 
