@@ -585,6 +585,177 @@ ivt_init(void)
 
 首先，`ivt_init` 将所有中断初始化到一个空处理函数（相当于只有一条 return 语句）。将所有硬中断也都初始化到一个默认处理函数。然后是一些默认的中断处理程序。比如经典的 VGA 服务 `INT 10H`，经典的磁盘服务 `INT 13H` 等等。对于每一项的实现，这里不多介绍。
 
+#### 实模式下发起中断
+
+因为历史原因，操作系统需要兼容之前的处理器，所以当系统刚刚启动的时候，CPU 是处于实模式的，这个时候和原来的模式是兼容的，只不过这个过程很短暂，很快切入到了保护模式而已。
+
+之前分析内核时一直认为内核的入口是 `start_kernel`，其实这只是保护模式的入口，内核刚刚启动时也是处于实模式，`arch/x86/boot` 中的代码就是实模式的代码，我们可以看看主要执行流程：
+
+```c
+void main(void)
+{
+	/* First, copy the boot header into the "zeropage" */
+	copy_boot_params();
+
+	/* Initialize the early-boot console */
+	console_init();
+	if (cmdline_find_option_bool("debug"))
+		puts("early console in setup code\n");
+
+	/* End of heap check */
+	init_heap();
+
+	/* Make sure we have all the proper CPU support */
+	if (validate_cpu()) {
+		puts("Unable to boot - please use a kernel appropriate "
+		     "for your CPU.\n");
+		die();
+	}
+
+	/* Tell the BIOS what CPU mode we intend to run in. */
+	set_bios_mode();
+
+	/* Detect memory layout */
+	detect_memory();
+
+	/* Set keyboard repeat rate (why?) and query the lock flags */
+	keyboard_init();
+
+	/* Query Intel SpeedStep (IST) information */
+	query_ist();
+
+	/* Query APM information */
+#if defined(CONFIG_APM) || defined(CONFIG_APM_MODULE)
+	query_apm_bios();
+#endif
+
+	/* Query EDD information */
+#if defined(CONFIG_EDD) || defined(CONFIG_EDD_MODULE)
+	query_edd();
+#endif
+
+	/* Set the video mode */
+	// set_videio();
+
+	/* Do the last things and invoke protected mode */
+	go_to_protected_mode();
+}
+```
+
+这里做一些初始化的工作， 如 `detect_memory` 就是通过 `int 0x15` 号中断获取 e820 的内存信息，然后 `go_to_protected_mode` 再进入保护模式。
+
+之前我一直认为 IVT 是定义在内核中的，但其实不是，就是上文分析的定义在 Seabios 中，IVT 和 IDT 的中断向量是不一样的，即每个中断号对应的处理函数不同，这点不要搞混了。
+
+在实模式下同样通过 `intcall` 来发起中断，这里我们分析一下 `int 0x15` 号中断。在此之前我只知道内核通过 e820 来获取 bios 探测到的内存信息，但具体过程不理解。这里详细分析一下。
+
+物理内存在硬件上可能连续也可能不连续，连续的物理内存就是一整块的区域，而不连续的两块内存中间存在的空间称为内存空洞，或者称为 Hole。 这些 Hole 要么是系统预留给某些特定的硬件设备使用，要么没有真实的物理内存。 由于物理内存的布局关系，物理内存会被分作很多区块，BIOS 在启动过程中探测到这些 物理内存区域之后，使用 Entry 为单位维护内存区块， Entry 的结构布局如下:
+
+```
+Offset  Size    Description
+00h     QWORD   base address
+08h     QWORD   length in bytes
+10h     DWORD   type of address range
+```
+
+Entry 结构中，”Base address” 字段表示一个物理内存区域的起始物理地址，其长度 是一个 64 bit 的数据； “length” 字段表示一个物理内存区域的长度，其长度是一个 64 bit 的数据；“type” 字段表示物理内存区域的类型，其长度是一个 32 bit 的数据。BIOS 支持识别的物理内存类型如下表：
+
+```
+Values for System Memory Map address type:
+01h    memory, available to OS
+02h    reserved, not available (e.g. system ROM, memory-mapped device)
+03h    ACPI Reclaim Memory (usable by OS after reading ACPI tables)
+04h    ACPI NVS Memory (OS is required to save this memory between NVS sessions)
+other  not defined yet -- treat as Reserved
+```
+
+在 BIOS 识别物理内存类型中，01 代表可用的物理内存；02 代表预留空间，这些空间可能为系统的 ROM/IOMEM 预留；03 表示 ACPI 可回收内存。下面就是内核请求内存布局的实现，`boot_params` 是一个全局变量，表示所有从 bios 中获取的信息，`e820entry` 就是上文的 Entry 结构。
+
+```c
+static int detect_memory_e820(void)
+{
+	int count = 0;
+	struct biosregs ireg, oreg;
+	struct e820entry *desc = boot_params.e820_map;
+	static struct e820entry buf; /* static so it is zeroed */
+
+	initregs(&ireg);
+	ireg.ax  = 0xe820;
+	ireg.cx  = sizeof buf;
+	ireg.edx = SMAP;
+	ireg.di  = (size_t)&buf;
+
+	/*
+	 * Note: at least one BIOS is known which assumes that the
+	 * buffer pointed to by one e820 call is the same one as
+	 * the previous call, and only changes modified fields.  Therefore,
+	 * we use a temporary buffer and copy the results entry by entry.
+	 *
+	 * This routine deliberately does not try to account for
+	 * ACPI 3+ extended attributes.  This is because there are
+	 * BIOSes in the field which report zero for the valid bit for
+	 * all ranges, and we don't currently make any use of the
+	 * other attribute bits.  Revisit this if we see the extended
+	 * attribute bits deployed in a meaningful way in the future.
+	 */
+
+	do {
+		intcall(0x15, &ireg, &oreg);
+		ireg.ebx = oreg.ebx; /* for next iteration... */
+
+		/* BIOSes which terminate the chain with CF = 1 as opposed
+		   to %ebx = 0 don't always report the SMAP signature on
+		   the final, failing, probe. */
+		if (oreg.eflags & X86_EFLAGS_CF)
+			break;
+
+		/* Some BIOSes stop returning SMAP in the middle of
+		   the search loop.  We don't know exactly how the BIOS
+		   screwed up the map at that point, we might have a
+		   partial map, the full map, or complete garbage, so
+		   just return failure. */
+		if (oreg.eax != SMAP) {
+			count = 0;
+			break;
+		}
+
+		*desc++ = buf;
+		count++;
+	} while (ireg.ebx && count < ARRAY_SIZE(boot_params.e820_map));
+
+	return boot_params.e820_entries = count;
+}
+```
+
+ e820 系统调用(`int 0x15`)如下:
+
+```
+AX  = E820h
+INT 0x15
+EAX = 0000E820h
+EDX = 534D4150h ('SMAP')
+EBX = continuation value or 00000000h to start at beginning of map
+ECX = size of buffer for result, in bytes (should be >= 20 bytes)
+ES:DI -> buffer for result
+```
+
+调用 e820 之前，**需要将 0xe820 储存到 AX 寄存器**（中断号结合 EAX 寄存器确定是哪个处理函数，`int 0x80` 号系统调用页是这样的），并将标识码 “SMAP” 存储到 EDX 寄存器里面，接着将存储内存区域信息的地址存储到 DI 寄存器，并且将存储内存区域 的长度存储到 CX 寄存器内。由于 BIOS 能够探测到多个内存区域，因此 EBX 用于指定读取第几条内存区域信息。
+
+准备好上面的寄存器之后，执行 BIOS 调用。调用完毕之后 EFLAGS 寄存器的 **CF 标志位用于指示本次调用的成功状态**，如果 CF 标志位置位，那么此次调用失败; 反之如果 CF 标志位清零，那么此次调用成功。接着再检查 EAX 的值是否为 “SMAP”, 如果不是也代表 此次调用失败。以上两个检测都通过的话，那么 BIOS 会将一条内存信息存储在 ES:DI 指向的地址上，即之前设置缓存的位置。由于 BIOS 中存在多条内存区域的信息，因此 BIOS 会将下一条内存区域的信息存储在 EBX 寄存器里，因此可以使用循环将所有的内存 区域信息都读出来。
+
+```c
+static void
+handle_15e8(struct bregs *regs)
+{
+    switch (regs->al) {
+    case 0x01: handle_15e801(regs); break;
+    case 0x20: handle_15e820(regs); break;
+    default:   handle_15e8XX(regs); break;
+    }
+}
+```
+
+Seabios 支持多种内存格式。
+
 #### 初始化 BIOS 数据区域 BDA
 
 BDA（BIOS Data Area），是存放计算机当前一些状态的位置。在 SeaBIOS 中，其定义如下：
@@ -944,4 +1115,4 @@ call_boot_entry(struct segoff_s bootsegip, u8 bootdrv)
 
 ### 注意
 
-本文并非原创，原文在[这里](https://www.cnblogs.com/gnuemacs/p/14287120.html)，直接复制过来是为了方便自己阅读同时做些笔记。
+本文并非原创，原文在[这里](https://www.cnblogs.com/gnuemacs/p/14287120.html)，直接复制过来是为了方便自己阅读同时根据自己的需求做些补充。
