@@ -638,3 +638,30 @@ __SYSCALL(10, sys_mprotect)
 __SYSCALL(11, sys_munmap)
 __SYSCALL(12, sys_brk)
 ```
+
+### Kernel Panic
+
+起内核时经常会遇到这个问题：**Kernel Panic (not syncing): attempted to kill init!**
+
+这是什么意思？
+
+这个问题分为 3 个部分：
+
+- **Kernel panic**:
+  A "kernel panic" is an unrecoverable error condition in, or detected by, the Linux kernel. It represents a situation where Linux literally finds it *impossible* to continue running, and stops dead in its tracks. *(There is also a so-called "Oops" facility for recoverable errors.)* Linux prints messages on the console and halts. Very often, the root cause of the problem will be indicated by some of these immediately-preceding messages.
+
+- **not syncing**:
+  This part of the message indicates that the kernel was not in the middle of writing data to disk at the time the failure occurred. This is a supplemental piece of information that is not directly related to the panic message itself.
+
+- **attempted to kill init**:
+  This is the situation that Linux actually detected, and this message is somewhat misleading. It actually means that "Process #1" either terminated or, just as likely, failed to start.
+
+
+解释起来就是尝试杀死 `init` 进程。关于 `init` 进程的介绍可以看[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/kernel_init.md)。
+
+**So, what can I do?**
+In spite of the message referring to *"kill* **init**," the most likely reason is that **the process failed to start**. Process #1 is an ordinary user process, running as root, and so it has the same basic requirements as any other process. Messages will usually be found in the log, immediately preceding the panic, which tell you more about exactly what went wrong.
+
+For instance, a disk-driver that is needed to access the hard drive might have failed to load, because of a recent update to Linux that somehow went wrong. A menu of installed kernel versions usually appears briefly when you start the machine: try booting from the previous version of the Linux kernel.
+
+Another distinct possibility is that **the file system has become corrupt**. In this case, you may need to try to boot the machine into a "recovery mode" *(depending on your distro),* or boot from a DVD or memory-stick. For instance, the startup menu on the installation disk for most Linux distros contains a "recovery" option which will attempt to check for and fix errors on the boot drive. Boot the system from that DVD and select this option. Any unexplained mis-behavior of a disk drive is also a strong indication that the drive may very soon need to be replaced.
