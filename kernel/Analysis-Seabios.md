@@ -2,7 +2,7 @@
 
 ### 执行过程
 
-![image-20211206160622013](/home/guanshun/.config/Typora/typora-user-images/image-20211206160622013.png)
+![seabios.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/seabios.png?raw=true)
 
 SeaBIOS 是一个 16bit 的 x86 BIOS 的开源实现，常用于 QEMU 等仿真器中使用。本文将结合[SeaBIOS Execution and code flow](https://www.seabios.org/Execution_and_code_flow)和[SeaBIOS 的源码](https://github.com/coreboot/seabios/)对 SeaBIOS 的全过程进行简单分析。需要注意，本文不是深入的分析，对于一些比较复杂和繁琐的部分直接跳过了。
 
