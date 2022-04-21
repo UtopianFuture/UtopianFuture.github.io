@@ -616,3 +616,25 @@ The important variables used by implicit rules are:
 缺页中断可分为主缺页中断（Major Page Fault）和次缺页中断（Minor Page Fault），要从磁盘读取数据而产生的中断是主缺页中断；从内存中而不是直接从硬盘中读取数据而产生的中断是次缺页中断。
 
 需要访存时内核先在 cache 中寻找数据，如果 cache miss，产生次缺页中断从内存中找，如果还没有发现的话就产生主缺页中断从硬盘读取。
+
+### 系统调用
+
+在内核中 `int 0x80` 表示系统调用，这是上层应用程序与内核进行交互通信的唯一接口。通过检查寄存器 `%eax` 中的值，内核会收到用户程序想要进行哪个系统调用的通知。
+
+下面是部分系统调用（arch/x86/include/generated/asm/syscalls_64.h）：
+
+```c
+__SYSCALL(0, sys_read)
+__SYSCALL(1, sys_write)
+__SYSCALL(2, sys_open)
+__SYSCALL(3, sys_close)
+__SYSCALL(4, sys_newstat)
+__SYSCALL(5, sys_newfstat)
+__SYSCALL(6, sys_newlstat)
+__SYSCALL(7, sys_poll)
+__SYSCALL(8, sys_lseek)
+__SYSCALL(9, sys_mmap)
+__SYSCALL(10, sys_mprotect)
+__SYSCALL(11, sys_munmap)
+__SYSCALL(12, sys_brk)
+```
