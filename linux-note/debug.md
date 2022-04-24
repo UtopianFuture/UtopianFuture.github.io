@@ -134,24 +134,48 @@
 
 18. 有时候输出信息太长，屏放不下，下面介绍两种将gdb的输出信息存到文件的方法。
 
-
     （1）临时向文件输出些信息
 
     比如要用info functions输出所有函数，结果往往有一大坨，所以可以将之输出到文件。
-    (gdb) set logging file <file name>
 
+    ```
+    (gdb) set logging file <file name>
     (gdb) set logging on
     (gdb) info functions
-
     (gdb) set logging off
-
+    ```
 
     （2）在整个gdb会话期间都重定向输出
 
+    ```
     gdb |tee newfile
+    ```
 
-19. 当寄存器等于某个值是停下来：
+    例如：
+
+    ```
+    gdb-11.2 --args ./qemu-system-i386 \
+    -m 8192 \
+    -smp 1 \
+    -kernel ~/gitlab/qemu/linux-debug/bzImage \
+    -append "console=ttyS0" \
+    -initrd ~/gitlab/qemu/linux-debug/vmlinux \
+    -nographic |tee ~/tmp/tlb_flush.md
+    ```
+
+19. 当寄存器等于某个值时停下来：
 
     ```
     watch $eax == 0x0000ffaa
     ```
+
+20. 自定义命令
+
+    ```
+    define cb
+    c
+    bt
+    end
+    ```
+
+    将这些命令写入 ~/.gdbinit 脚本，之后该用户下的 gdb 每次执行时都能够使用这个自定义命令。
