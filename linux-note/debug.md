@@ -179,3 +179,22 @@
     ```
 
     将这些命令写入 ~/.gdbinit 脚本，之后该用户下的 gdb 每次执行时都能够使用这个自定义命令。
+
+21. 执行 gdb 命令 n 次
+
+    ```
+    python [gdb.execute('next') for x in range(10)]
+    ```
+
+    但是有些 gdb 在编译的时候没有 `--enable-python`，所以需要重新编译，在[官网](https://ftp.gnu.org/gnu/gdb/)下载源码，
+
+    ```
+    ./configure --enable-languages=c,c++ --prefix=/usr --enable-shared --enable-plugin --program-suffix=-4.8.0 --with-python
+    make -jn
+    ```
+
+    例如我想执行上面的自定义命令 N 多次，
+
+    ```
+    (gdb) python [gdb.execute('cb') for x in range(1000000)]
+    ```
