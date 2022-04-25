@@ -110,9 +110,9 @@ struct page {
             // 内核中的地址空间通常有两个不同的地址空间，
             // 一个用于文件映射页面，如在读取文件时，地址空间用于
             // 将文件的内容与存储介质区关联起来；
-            // 另一个用于匿名映射（？）
+            // 另一个用于匿名映射
 			struct address_space *mapping;
-			pgoff_t index;		/* Our offset within mapping. */ // 为什么需要有这个？
+			pgoff_t index;		/* Our offset within mapping. */ // 为什么需要有这个？文件偏移量么？
 			/**
 			 * @private: Mapping-private opaque data.
 			 * Usually used for buffer_heads if PagePrivate.
@@ -3121,7 +3121,7 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 
 	/* Allocate our own private page. */
     // 处理 VMA 属性为可写的情况
-	if (unlikely(anon_vma_prepare(vma)))
+	if (unlikely(anon_vma_prepare(vma))) // RMAP 初始化
 		goto oom;
 	page = alloc_zeroed_user_highpage_movable(vma, vmf->address); // 分配物理页面，会调用到 alloc_pages_vma
 	if (!page) // page 就是分配的物理页面
@@ -3438,17 +3438,15 @@ static vm_fault_t do_fault(struct vm_fault *vmf)
 
 ### RMAP
 
-因为目前的项目没有用到这个机制的地方，加上精力有限，故只了解其原理、主要数据结构和执行流程，具体的实现不做分析。
-
 一个物理页面可以被多个进程的虚拟内存通过 PTE 映射。有的页面需要迁移，有的页面长时间不用需要交换到磁盘，在交换之前，必须找出哪些进程使用这个页面，然后解除这些映射的用户 PTE。
 
 在 2.4 版本的内核中，为了确定某个页面是否被某个进程映射，必须遍历每个进程的页表，因此效率很低，在 2.5 版本的内核中，使用了反向映射（Reverse Mapping）。
 
-RMAP 的主要目的是从物理页面的 page 数据结构中找到有哪些用户进程的 PTE，这样就可以快速解除所有的 PTE 并回收这个页面。
+RMAP 的主要目的是**从物理页面的 page 数据结构中找到有哪些用户进程的 PTE**，这样就可以快速解除所有的 PTE 并回收这个页面。
 
 ##### anon_vma
 
-这个数据结构和 VMA 有相似之处啊。
+其主要用于连接物理页面的 page 数据结构和 VMA，这个数据结构和 VMA 有相似之处啊。
 
 ```c
 struct anon_vma {
@@ -3473,17 +3471,8 @@ struct anon_vma {
 
 	struct anon_vma *parent;	/* Parent of this anon_vma */
 
-	/*
-	 * NOTE: the LSB of the rb_root.rb_node is set by
-	 * mm_take_all_locks() _after_ taking the above lock. So the
-	 * rb_root must only be read/written after taking the above lock
-	 * to be sure to see a valid next pointer. The LSB bit itself
-	 * is serialized by a system wide lock only visible to
-	 * mm_take_all_locks() (mm_all_locks_mutex).
-	 */
-
 	/* Interval tree of private "related" vmas */
-	struct rb_root_cached rb_root; // 所有的 va 构成一颗红黑树
+	struct rb_root_cached rb_root;
 };
 ```
 
@@ -3495,7 +3484,7 @@ struct anon_vma {
 struct anon_vma_chain {
 	struct vm_area_struct *vma; // 可以指向父进程的 VMA，也可以指向子进程的 VMA
 	struct anon_vma *anon_vma; // 可以指向父进程的 anon_vma，也可以指向子进程的 anon_vma
-	struct list_head same_vma;   /* locked by mmap_lock & page_table_lock */
+	struct list_head same_vma;   /* locked by mmap_lock & page_table_lock */ // 链表
 	struct rb_node rb;			/* locked by anon_vma->rwsem */ // 红黑树
 	unsigned long rb_subtree_last;
 #ifdef CONFIG_DEBUG_VM_RB
@@ -3504,21 +3493,400 @@ struct anon_vma_chain {
 };
 ```
 
+光从两个数据结构还是看不出到底是怎样从物理页面的 page 数据结构中找到有哪些用户进程的 PTE 映射到该 page。先看看流程图以对 RMAP 机制有个整体的了解。
 
+![RMAP.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/RMAP.png?raw=true)
 
-### 补充知识点
+每个进程的每个 VMA 都有一个 `anon_vma` 结构，即（`AVp` 和 `AVc`），VMA 相关的物理页面 `page->mapping` 都指向 `anon_vma`，av 中的 `rb_root` 指向一颗红黑树，之后 avc 都会插入到该树中（直接看 `anon_vma_chain_link` 代码会更清晰）。同时还有一个 avc 结构，每个 VMA 对应一个 avc，avc 中的 VMA 指向该 VMA，`anon_vma` 指向该 VMA 的 av，然后所有的 avc 组成一个单链表，每个 VMA 中都能访问该链表。然后有一个枢纽 avc，这个 avc 会插入到父进程的 av 红黑树中和子进程的 avc 链表中，但是其 VMA 变量指向的是子进程的 VMA。所有的子进程都有一个 avc 枢纽。
 
-#### MMU
+当需要找到某个 page 对应的所有 VMA 时，只需要通过 `page->mapping` 找到父进程的 av 结构，然后扫描 av 指向的 av 红黑树。而子进程的的 VMA 通过插入到父进程的枢纽 avc 也可以遍历到。这里是每个 VMA 都有对应的 av，所以不要遍历所有的 VMA。
 
-MMU是 CPU 中的一个硬件单元，通常每个核有一个 MMU。MMU由两部分组成：TLB(Translation Lookaside Buffer)和 table walk unit。
+#### 父进程产生匿名页面
 
-TLB 很熟悉了，就不再分析。主要介绍一下 table walk unit。
+在上文分析[匿名页面缺页中断](#匿名页面缺页中断)的关键函数 `do_anonymous_page` 中涉及到 RMAP 的两个重要函数：`anon_vma_prepare` 和 `page_add_new_anon_rmap`，下面来详细分析一下这两个函数。
 
-首先对于硬件 page table walk 的理解是有些问题的，即内核中有维护一套进程页表，为什么还要硬件来做呢？两者有何区别？第一个问题很好理解，效率嘛，第二个问题就是我们要分析的。
+```c
+static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
+{
+	...
 
-如果发生 TLB miss，就需要查找当前进程的 page table，接下来就是 table walk unit 的工作。而使用 table walk unit硬件单元来查找page table的方式被称为hardware TLB miss handling，通常被CISC架构的处理器（比如IA-32）所采用。如果在page table中查找不到，出现page fault，那么就会交由软件（操作系统）处理，之后就是我们熟悉的 PF。
+	/* Allocate our own private page. */
+    // 处理 VMA 属性为可写的情况
+	if (unlikely(anon_vma_prepare(vma))) // RMAP 初始化
+		goto oom;
+	page = alloc_zeroed_user_highpage_movable(vma, vmf->address); // 分配物理页面，会调用到 alloc_pages_vma
+	if (!page) // page 就是分配的物理页面
+		goto oom;
 
-好吧，从找到的资料看 page table walk 和我理解的内核的 4/5 级页表转换没有什么不同。但是依旧有一个问题，即 mmu 访问的这些 page table 是不是就是内核访问的 page table，都是存放在内存中的。
+	...
+
+	entry = mk_pte(page, vma->vm_page_prot); // 基于分配的物理页面设置新的 PTE
+	entry = pte_sw_mkyoung(entry);
+	if (vma->vm_flags & VM_WRITE)
+		entry = pte_mkwrite(pte_mkdirty(entry));
+
+	vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd, vmf->address,
+			&vmf->ptl); // 获取刚刚分配的 PTE
+	if (!pte_none(*vmf->pte)) { // 失败了，出错了
+		update_mmu_cache(vma, vmf->address, vmf->pte);
+		goto release;
+	}
+
+	...
+
+	inc_mm_counter_fast(vma->vm_mm, MM_ANONPAGES); // 增加进程匿名页面的数目
+	page_add_new_anon_rmap(page, vma, vmf->address, false); // 添加到 RMAP 系统中（？）
+	lru_cache_add_inactive_or_unevictable(page, vma); // 将匿名页面添加到 LRU 链表中
+
+    ...
+}
+```
+
+1. `anon_vma_prepare` -> `__anon_vma_prepare`
+
+   这个函数功能很简单，就是为 VMA 分配一个 `anon_vma`，同时创建一个新的 `anon_vma_chain_alloc`。
+
+   ```c
+   int __anon_vma_prepare(struct vm_area_struct *vma)
+   {
+   	struct mm_struct *mm = vma->vm_mm;
+   	struct anon_vma *anon_vma, *allocated;
+   	struct anon_vma_chain *avc;
+
+   	might_sleep();
+
+   	avc = anon_vma_chain_alloc(GFP_KERNEL); // 通过 slab 分配机制分配 avc
+   	if (!avc)
+   		goto out_enomem;
+
+   	anon_vma = find_mergeable_anon_vma(vma); // 寻找是否有可以复用的 av
+   	allocated = NULL;
+   	if (!anon_vma) { // 没有的话分配一个新的 av
+   		anon_vma = anon_vma_alloc(); // 同样通过 slab 机制分配 av
+   		if (unlikely(!anon_vma))
+   			goto out_enomem_free_avc;
+   		allocated = anon_vma;
+   	}
+
+   	anon_vma_lock_write(anon_vma);
+   	/* page_table_lock to protect against threads */
+   	spin_lock(&mm->page_table_lock); // 自旋锁
+   	if (likely(!vma->anon_vma)) {
+   		vma->anon_vma = anon_vma;
+   		anon_vma_chain_link(vma, avc, anon_vma); // 看下面的代码
+   		/* vma reference or self-parent link for new root */
+   		anon_vma->degree++;
+   		allocated = NULL;
+   		avc = NULL;
+   	}
+   	spin_unlock(&mm->page_table_lock);
+   	anon_vma_unlock_write(anon_vma);
+
+   	...
+   }
+   ```
+
+   - `anon_vma_chain_link`
+
+     ```c
+     static void anon_vma_chain_link(struct vm_area_struct *vma,
+     				struct anon_vma_chain *avc,
+     				struct anon_vma *anon_vma)
+     {
+     	avc->vma = vma;
+     	avc->anon_vma = anon_vma;
+     	list_add(&avc->same_vma, &vma->anon_vma_chain); // 将 avc 添加到 vma 的 vac 链表中
+     	anon_vma_interval_tree_insert(avc, &anon_vma->rb_root); // 将 avc 插入到 av 内部的红黑树中
+     }
+     ```
+
+2. `page_add_new_anon_rmap`
+
+   注意，到这里已经通过 `alloc_zeroed_user_highpage_movable` 为该匿名页面缺页中断分配了物理页面 page。
+
+   ```c
+   void page_add_new_anon_rmap(struct page *page,
+   	struct vm_area_struct *vma, unsigned long address, bool compound) // address 为发生缺页中断的 vaddr
+   {
+   	__SetPageSwapBacked(page); // 设置 page 的 PG_swapbacked 为，表示这个页面可以交换到磁盘
+       /* increment count (starts at -1) */
+   	atomic_set(&page->_mapcount, 0); // _mapcount 初始化为 -1，这里设置为 1，因为已经开始使用该页了
+
+       ...
+
+   	__mod_lruvec_page_state(page, NR_ANON_MAPPED, nr); // 增加 page 所在的 zone 的匿名页面计数
+   	__page_set_anon_rmap(page, vma, address, 1); // 设置这个页面为匿名映射
+   }
+   ```
+
+   - `__page_set_anon_rmap`
+
+     ```c
+     static void __page_set_anon_rmap(struct page *page,
+     	struct vm_area_struct *vma, unsigned long address, int exclusive)
+     {
+     	struct anon_vma *anon_vma = vma->anon_vma;
+
+     	...
+
+         // anon_vma 指针的值加上 PAGE_MAPPING_ANON 后将指针的值赋给 page->mapping
+         // 前面分析 page 数据结构的时候提到 mapping 表示页面所指向的地址空间
+         // 内核中的地址空间通常有两个不同的地址空间，一个用于文件映射页面，如在读取文件时，
+         // 地址空间用于将文件的内容与存储介质区关联起来；另一个用于匿名映射
+         // mapping 的低 2 位用于判断指向匿名映射或 KSM 页面的地址空间（？），
+         // 如果 mapping 成员中的第 0 位不为 0，
+         // 那么 mapping 成员指向匿名页面的地址空间数据结构 anon_vma（好吧，没懂）
+     	anon_vma = (void *) anon_vma + PAGE_MAPPING_ANON;
+     	WRITE_ONCE(page->mapping, hi (struct address_space *) anon_vma);
+         // 计算 address 在 vma 的第几个 page，然后将其设置到 page->index，
+         // 这个成员变量之前提到过，但也不懂
+     	page->index = linear_page_index(vma, address);
+     }
+     ```
+
+#### 根据父进程创建子进程
+
+父进程通过 fork 系统调用创建子进程时，子进程会复制父进程的 VMA 数据结构，并且会复制父进程的 PTE 内容到子进程的页表中，以实现父子进程共享页表。多个子进程的虚拟页面会映射到同一个物理页面，同时，多个不相干的进程的虚拟页面也可以通过 KSM 机制映射到同一个物理页面。
+
+`SYSCALL_DEFINE0(fork)` -> `kernel_clone` -> `copy_process`（这个函数好复杂） -> `copy_mm` -> `dup_mm` -> `dup_mmap`
+
+`dup_mmap` 可以极大的加深对进程地址空间管理的理解，但是其也很复杂，这里只分析 RMAP 相关的部分。
+
+```c
+static __latent_entropy int dup_mmap(struct mm_struct *mm,
+					struct mm_struct *oldmm)
+{
+	struct vm_area_struct *mpnt, *tmp, *prev, **pprev;
+	struct rb_node **rb_link, *rb_parent;
+	int retval;
+	unsigned long charge;
+	LIST_HEAD(uf);
+
+	...
+    // 遍历父进程所有的 VMA
+	for (mpnt = oldmm->mmap; mpnt; mpnt = mpnt->vm_next) {
+
+        ....
+
+        // 复制父进程 VMA 到 tmp
+		tmp = vm_area_dup(mpnt);
+		tmp->vm_mm = mm;
+
+        // 为子进程创建相应的 anon_vma 数据结构
+        anon_vma_fork(tmp, mpnt);
+
+        // 把 tmp 添加到子进程的红黑树中
+        __vma_link_rb(mm, tmp, rb_link, rb_parent);
+
+        // 复制父进程的 PTE 到子进程页表中
+        copy_page_range(mm, oldmm, mpnt);
+	}
+
+    ...
+}
+```
+
+1. `anon_vma_fork`
+
+   将子进程的 VMA 绑定到 `anon_vma` 中。
+
+   ```c
+   int anon_vma_fork(struct vm_area_struct *vma, struct vm_area_struct *pvma) // 子进程 VMA，父进程 VMA
+   {
+   	struct anon_vma_chain *avc;
+   	struct anon_vma *anon_vma;
+   	int error;
+
+   	/* Don't bother if the parent process has no anon_vma here. */
+   	if (!pvma->anon_vma)
+   		return 0;
+
+   	/* Drop inherited anon_vma, we'll reuse existing or allocate new. */
+   	vma->anon_vma = NULL; // 因为复制了父进程的 VMA，所以这个 anon_vma 应该是父进程的
+
+   	/*
+   	 * First, attach the new VMA to the parent VMA's anon_vmas,
+   	 * so rmap can find non-COWed pages in child processes.
+   	 */
+   	error = anon_vma_clone(vma, pvma); // 将子进程的 VMA 绑定到父进程的 VMA 对应的 anon_vma 中
+   	if (error)
+   		return error;
+
+   	/* An existing anon_vma has been reused, all done then. */
+   	if (vma->anon_vma) // 绑定完成，如果没有成功，那么就和创建父进程的 av 是一样的
+   		return 0;
+
+   	/* Then add our own anon_vma. */
+   	anon_vma = anon_vma_alloc();
+   	if (!anon_vma)
+   		goto out_error;
+   	avc = anon_vma_chain_alloc(GFP_KERNEL);
+   	if (!avc)
+   		goto out_error_free_anon_vma;
+
+   	/*
+   	 * The root anon_vma's rwsem is the lock actually used when we
+   	 * lock any of the anon_vmas in this anon_vma tree.
+   	 */
+   	anon_vma->root = pvma->anon_vma->root;
+   	anon_vma->parent = pvma->anon_vma;
+   	/*
+   	 * With refcounts, an anon_vma can stay around longer than the
+   	 * process it belongs to. The root anon_vma needs to be pinned until
+   	 * this anon_vma is freed, because the lock lives in the root.
+   	 */
+   	get_anon_vma(anon_vma->root);
+   	/* Mark this anon_vma as the one where our new (COWed) pages go. */
+   	vma->anon_vma = anon_vma; // 组装子进程的 av
+   	anon_vma_lock_write(anon_vma);
+       // 将 avc 挂入子进程的 vma->avc 链表和红黑树中
+   	anon_vma_chain_link(vma, avc, anon_vma); // 这个过程和父进程是一样的
+   	anon_vma->parent->degree++;
+   	anon_vma_unlock_write(anon_vma);
+
+   	return 0;
+
+   	...
+   }
+   ```
+
+2. `anon_vma_clone`
+
+   ```c
+   int anon_vma_clone(struct vm_area_struct *dst, struct vm_area_struct *src) // 子进程、父进程
+   {
+   	struct anon_vma_chain *avc, *pavc;
+   	struct anon_vma *root = NULL;
+
+       // 遍历父进程 VMA 中的 avc 链表寻找 avc 实例，即在上面 __anon_vma_prepare 中创建的 avc
+   	list_for_each_entry_reverse(pavc, &src->anon_vma_chain, same_vma) {
+   		struct anon_vma *anon_vma;
+
+           // 创建一个新的 avc，这里称为 avc 枢纽
+   		avc = anon_vma_chain_alloc(GFP_NOWAIT | __GFP_NOWARN);
+
+           ...
+
+   		anon_vma = pavc->anon_vma;
+   		root = lock_anon_vma_root(root, anon_vma);
+           // 将 avc 枢纽挂入子进程 VMA 的 avc 链表中，
+           // 同时将 avc 枢纽添加到父进程 anon_vma->rb_root 红黑树中，
+           // 使子进程和父进程的 VMA 之间有一个纽带 avc
+   		anon_vma_chain_link(dst, avc, anon_vma);
+
+   		/*
+   		 * Reuse existing anon_vma if its degree lower than two,
+   		 * that means it has no vma and only one anon_vma child.
+   		 *
+   		 * Do not chose parent anon_vma, otherwise first child
+   		 * will always reuse it. Root anon_vma is never reused:
+   		 * it has self-parent reference and at least one child.
+   		 */
+   		if (!dst->anon_vma && src->anon_vma &&
+   		    anon_vma != src->anon_vma && anon_vma->degree < 2)
+   			dst->anon_vma = anon_vma;
+   	}
+   	if (dst->anon_vma)
+   		dst->anon_vma->degree++;
+   	unlock_anon_vma_root(root);
+   	return 0;
+
+    enomem_failure:
+   	/*
+   	 * dst->anon_vma is dropped here otherwise its degree can be incorrectly
+   	 * decremented in unlink_anon_vmas().
+   	 * We can safely do this because callers of anon_vma_clone() don't care
+   	 * about dst->anon_vma if anon_vma_clone() failed.
+   	 */
+   	dst->anon_vma = NULL;
+   	unlink_anon_vmas(dst);
+   	return -ENOMEM;
+   }
+   ```
+
+#### RMAP 的应用
+
+RMAP 的典型应用场景如下：
+
+- kswapd 内核线程为了回收页面，需要断开所有映射到该匿名页面的用户 PTE。
+- 页面迁移时，需要断开所有映射到匿名页面的用户 PTE。
+
+RMAP 的核心函数是 `try_to_unmap`，内核中其他模块会调用此函数来断开一个 page 的所有引用。
+
+```c
+void try_to_unmap(struct page *page, enum ttu_flags flags)
+{
+	struct rmap_walk_control rwc = { // 统一管理 unmap 操作
+		.rmap_one = try_to_unmap_one, // 断开某个 VMA 上映射的 PTE
+		.arg = (void *)flags,
+		.done = page_not_mapped, // 判断一个 page 是否成功断开
+		.anon_lock = page_lock_anon_vma_read,
+	};
+
+	if (flags & TTU_RMAP_LOCKED)
+		rmap_walk_locked(page, &rwc);
+	else
+		rmap_walk(page, &rwc); // 这两个函数都是调用 rmap_walk_anon 和 rmap_walk_file
+}
+```
+
+内核中有 3 种页面需要做 unmap 操作，即 KSM 页面、匿名页面和文件映射页面，这一点 `rmap_walk` 很清晰。
+
+```c
+void rmap_walk(struct page *page, struct rmap_walk_control *rwc)
+{
+	if (unlikely(PageKsm(page)))
+		rmap_walk_ksm(page, rwc);
+	else if (PageAnon(page)) // 判断该 page 是否为匿名页面，就是通过上文讲的 mapping 的最后一位来判断
+		rmap_walk_anon(page, rwc, false);
+	else
+		rmap_walk_file(page, rwc, false);
+}
+```
+
+这里只分析 `rmap_walk_anon`，即匿名页面怎样断开所有的 PTE，
+
+```c
+static void rmap_walk_anon(struct page *page, struct rmap_walk_control *rwc,
+		bool locked)
+{
+	struct anon_vma *anon_vma;
+	pgoff_t pgoff_start, pgoff_end;
+	struct anon_vma_chain *avc;
+
+	if (locked) {
+		anon_vma = page_anon_vma(page); // page->mapping
+		/* anon_vma disappear under us? */
+		VM_BUG_ON_PAGE(!anon_vma, page);
+	} else {
+		anon_vma = rmap_walk_anon_lock(page, rwc);
+	if (!anon_vma)
+		return;
+
+	pgoff_start = page_to_pgoff(page);
+	pgoff_end = pgoff_start + thp_nr_pages(page) - 1;
+    // 遍历 anon_vma->rb_root 中的 avc，从 avc 中可以得到对应的 vma
+	anon_vma_interval_tree_foreach(avc, &anon_vma->rb_root,
+			pgoff_start, pgoff_end) {
+		struct vm_area_struct *vma = avc->vma;
+		unsigned long address = vma_address(page, vma);
+
+		VM_BUG_ON_VMA(address == -EFAULT, vma);
+		cond_resched();
+
+		if (rwc->invalid_vma && rwc->invalid_vma(vma, rwc->arg))
+			continue;
+
+		if (!rwc->rmap_one(page, vma, address, rwc->arg)) // 解除用户 PTE，在这里回调函数为 try_to_unmap_one
+			break;
+		if (rwc->done && rwc->done(page))
+			break;
+	}
+
+	if (!locked)
+		anon_vma_unlock_read(anon_vma);
+}
+```
 
 ### 疑问
 
@@ -3532,7 +3900,9 @@ TLB 很熟悉了，就不再分析。主要介绍一下 table walk unit。
 
    因为这是匿名映射，没有指定对应的文件，所有没有内容，当进程再对该页进行写操作时，触发匿名页面的写操作异常，这时再通过 `alloc_zeroed_user_highpage_movable` 调用伙伴系统的接口分配新的页面。
 
-5. 以 `filemap_map_pages` 为切入点，应该就可以进一步分析文件管理部分的内容，这个之后再分析。Reference
+5. 以 `filemap_map_pages` 为切入点，应该就可以进一步分析文件管理部分的内容，这个之后再分析。
+
+### Reference
 
 [1] 奔跑吧 Linux 内核，卷 1：基础架构
 
