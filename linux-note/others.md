@@ -669,3 +669,15 @@ Another distinct possibility is that **the file system has become corrupt**. In 
 ### 系统态和用户态
 
 You can tell if you're in user-mode or kernel-mode from the privilege level set **in the code-segment register (CS)**. Every instruction loaded into the CPU from the memory pointed to by the RIP(EIP) will read from the segment described in the global descriptor table (GDT) by the **current code-segment descriptor**. **The lower two-bits of the code segment descriptor will determine the current privilege level that the code is executing at**. When a syscall is made, which is typically done through a software interrupt, the CPU will check the current privilege-level, and if it's in user-mode, will exchange the current code-segment descriptor for a kernel-level one as determined by the syscall's software interrupt gate descriptor, as well as **make a stack-switch and save the current flags, the user-level CS value and RIP value on this new kernel-level stack**. When the syscall is complete, the user-mode CS value, flags, and instruction pointer (EIP or RIP) value are restored from the kernel-stack, and a stack-switch is made back to the current executing processes' stack.
+
+### MMU
+
+MMU是 CPU 中的一个硬件单元，通常每个核有一个 MMU。MMU由两部分组成：TLB(Translation Lookaside Buffer)和 table walk unit。
+
+TLB 很熟悉了，就不再分析。主要介绍一下 table walk unit。
+
+首先对于硬件 page table walk 的理解是有些问题的，即内核中有维护一套进程页表，为什么还要硬件来做呢？两者有何区别？第一个问题很好理解，效率嘛，第二个问题就是我们要分析的。
+
+如果发生 TLB miss，就需要查找当前进程的 page table，接下来就是 table walk unit 的工作。而使用 table walk unit硬件单元来查找page table的方式被称为hardware TLB miss handling，通常被CISC架构的处理器（比如IA-32）所采用。如果在page table中查找不到，出现page fault，那么就会交由软件（操作系统）处理，之后就是我们熟悉的 PF。
+
+好吧，从找到的资料看 page table walk 和我理解的内核的 4/5 级页表转换没有什么不同。但是依旧有一个问题，即 mmu 访问的这些 page table 是不是就是内核访问的 page table，都是存放在内存中的。
