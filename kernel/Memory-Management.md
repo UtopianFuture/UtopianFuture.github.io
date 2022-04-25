@@ -20,7 +20,6 @@
     - [伙伴系统算法](#伙伴系统算法)
     - [请求页框](#请求页框)
     - [释放页框](#释放页框)
-
 - [内存区管理](#内存区管理)
   - [创建slab描述符](#创建slab描述符)
     - [kmem_cache](#kmem_cache)
@@ -45,7 +44,13 @@
   - [匿名页面缺页中断](#匿名页面缺页中断)
   - [文件映射缺页中断](#文件映射缺页中断)
   - [写时复制（COW）](#写时复制（COW）)
-- [补充知识点](#补充知识点)
+- [RMAP](#RMAP)
+  - [anon_vma](#anon_vma)
+  - [anon_vma_chain](#anon_vma_chain)
+  - [父进程产生匿名页面](#父进程产生匿名页面)
+  - [根据父进程创建子进程](#根据父进程创建子进程)
+  - [RMAP 的应用](#RMAP 的应用)
+
 - [Reference](#Reference)
 - [些许感想](#些许感想)
 
@@ -3887,6 +3892,313 @@ static void rmap_walk_anon(struct page *page, struct rmap_walk_control *rwc,
 		anon_vma_unlock_read(anon_vma);
 }
 ```
+
+### 页面回收
+
+好吧，这块真看不懂，关键函数一个套一个，战略搁置！！！
+
+内核中的页交换算法主要使用 LRU 链表算法和第二次机会（second chance）法。
+
+#### LRU 链表法
+
+#### 第二次机会法
+
+#### 触发页面回收
+
+内核中触发页面回收的机制大致有 3 个。
+
+- 直接页面回收机制。在内核态中调用 `__alloc_pages` 分配物理页面时，由于系统内存短缺，不能满足分配需求，此时内核会直接陷入到页面回收机制，尝试回收内存。这种情况下执行页面回收的是请求内存的进程本身，为同步回收，因此调用者进程的执行会被阻塞。
+- 周期性回收内存机制。这是内核线程 kswapd 的工作。当调用 `__alloc_pages` 时发现当前 watermark 不能满足分配请求，那么唤醒 kswapd 线程来异步回收内存。
+- slab 收割机（slab shrinker）机制。这是用来回收 slab 对象的（slab 对象的回收难道不是 slab 描述符的计数器为 0 则回收么）。当内存短缺时，直接页面回收机制和周期性回收内存机制都会调用 slab shrinker 来回收 slab 对象。
+
+整个回收机制如下图，这些函数每一个展开都无比复杂，
+
+![page_reclaim](/home/guanshun/gitlab/UFuture.github.io/image/page_reclaim.png)
+
+#### kswapd内核线程
+
+内核线程 kswapd 负责在内存不足时回收页面。kswapd 内核线程在初始化时会为系统中每个内存节点创建一个 "kswapd%d" 的内核线程。从调用栈可以看出 kswapd 是通过 1 号内核线程 `kernel_init` 创建的。
+
+```
+#0  kswapd_run (nid=0) at mm/vmscan.c:4435
+#1  0xffffffff831f2e3b in kswapd_init () at mm/vmscan.c:4470
+#2  0xffffffff81003928 in do_one_initcall (fn=0xffffffff831f2df7 <kswapd_init>) at init/main.c:1303
+#3  0xffffffff831babeb in do_initcall_level (command_line=0xffff888100052cf0 "console", level=6)
+    at init/main.c:1376
+#4  do_initcalls () at init/main.c:1392
+#5  do_basic_setup () at init/main.c:1411
+#6  kernel_init_freeable () at init/main.c:1614
+#7  0xffffffff81c0b31a in kernel_init (unused=<optimized out>) at init/main.c:1505
+#8  0xffffffff81004572 in ret_from_fork () at arch/x86/entry/entry_64.S:295
+```
+
+而 `kswapd` 就是回收函数，其在创建后会睡眠并让出 CPU 控制权，之后需要唤醒它。
+
+```c
+void kswapd_run(int nid)
+{
+	pg_data_t *pgdat = NODE_DATA(nid); // 表示该内存节点的内存布局，上面有分析
+
+	if (pgdat->kswapd)
+		return;
+
+	pgdat->kswapd = kthread_run(kswapd, pgdat, "kswapd%d", nid);
+	if (IS_ERR(pgdat->kswapd)) {
+		/* failure at boot is fatal */
+		BUG_ON(system_state < SYSTEM_RUNNING);
+		pr_err("Failed to start kswapd on node %d\n", nid);
+		pgdat->kswapd = NULL;
+	}
+}
+```
+
+在[上面](#请求页框)分析的物理页面分配关键函数 `rmqueue` 中会检查 `ZONE_BOOSTED_WATERMARK` 标志位，通过这个标志位判断是否需要唤醒 kswapd 内核线程来进行页面回收。
+
+```c
+/*
+ * Allocate a page from the given zone. Use pcplists for order-0 allocations.
+ */
+static inline struct page *rmqueue(struct zone *preferred_zone,
+			struct zone *zone, unsigned int order,
+			gfp_t gfp_flags, unsigned int alloc_flags,
+			int migratetype)
+{
+	...
+
+	/* Separate test+clear to avoid unnecessary atomics */
+	if (test_bit(ZONE_BOOSTED_WATERMARK, &zone->flags)) {
+		clear_bit(ZONE_BOOSTED_WATERMARK, &zone->flags);
+		wakeup_kswapd(zone, 0, 0, zone_idx(zone)); // 判断是否需要唤醒 kswapd 线程回收内存
+	}
+
+	...
+}
+```
+
+接下来分析 `kswapd` 函数，
+
+```c
+static int kswapd(void *p) // 这个参数为内存节点描述符 pg_data_t
+{
+	unsigned int alloc_order, reclaim_order;
+	unsigned int highest_zoneidx = MAX_NR_ZONES - 1;
+	pg_data_t *pgdat = (pg_data_t *)p;
+	struct task_struct *tsk = current;
+	const struct cpumask *cpumask = cpumask_of_node(pgdat->node_id);
+
+	if (!cpumask_empty(cpumask))
+		set_cpus_allowed_ptr(tsk, cpumask);
+
+	/*
+	 * Tell the memory management that we're a "memory allocator",
+	 * and that if we need more memory we should get access to it
+	 * regardless (see "__alloc_pages()"). "kswapd" should
+	 * never get caught in the normal page freeing logic.
+	 *
+	 * (Kswapd normally doesn't need memory anyway, but sometimes
+	 * you need a small amount of memory in order to be able to
+	 * page out something else, and this flag essentially protects
+	 * us from recursively trying to free more memory as we're
+	 * trying to free the first piece of memory in the first place).
+	 */
+    // 设置 kswapd 进程描述符的标志位
+	tsk->flags |= PF_MEMALLOC | PF_SWAPWRITE | PF_KSWAPD;
+	set_freezable();
+
+	WRITE_ONCE(pgdat->kswapd_order, 0); // 指定需要回收的页面数量
+	WRITE_ONCE(pgdat->kswapd_highest_zoneidx, MAX_NR_ZONES); // 可以扫描和回收的最高 zone
+	for ( ; ; ) {
+		bool ret;
+
+		alloc_order = reclaim_order = READ_ONCE(pgdat->kswapd_order);
+		highest_zoneidx = kswapd_highest_zoneidx(pgdat,
+							highest_zoneidx);
+
+kswapd_try_sleep:
+		kswapd_try_to_sleep(pgdat, alloc_order, reclaim_order,
+					highest_zoneidx); // kswapd 进入睡眠
+
+		/* Read the new order and highest_zoneidx */
+		alloc_order = READ_ONCE(pgdat->kswapd_order);
+		highest_zoneidx = kswapd_highest_zoneidx(pgdat,
+							highest_zoneidx);
+		WRITE_ONCE(pgdat->kswapd_order, 0);
+		WRITE_ONCE(pgdat->kswapd_highest_zoneidx, MAX_NR_ZONES);
+
+		ret = try_to_freeze();
+
+        ...
+
+		trace_mm_vmscan_kswapd_wake(pgdat->node_id, highest_zoneidx,
+						alloc_order);
+		reclaim_order = balance_pgdat(pgdat, alloc_order, // 哦！这才是真正的页面回收
+						highest_zoneidx);
+		if (reclaim_order < alloc_order)
+			goto kswapd_try_sleep;
+	}
+
+	tsk->flags &= ~(PF_MEMALLOC | PF_SWAPWRITE | PF_KSWAPD);
+
+	return 0;
+}
+```
+
+##### 关键函数balance_pgdat
+
+这是一个巨长的函数，涉及了很多东西，我目前无法完全理解，所以只是按照书上总结出一个回收框架。关于这个函数的作用，注释写的很清楚。
+
+```c
+/*
+ * For kswapd, balance_pgdat() will reclaim pages across a node from zones
+ * that are eligible for use by the caller until at least one zone is
+ * balanced.
+ *
+ * Returns the order kswapd finished reclaiming at.
+ *
+ * kswapd scans the zones in the highmem->normal->dma direction.  It skips
+ * zones which have free_pages > high_wmark_pages(zone), but once a zone is
+ * found to have free_pages <= high_wmark_pages(zone), any page in that zone
+ * or lower is eligible for reclaim until at least one usable zone is
+ * balanced.
+ */
+static int balance_pgdat(pg_data_t *pgdat, int order, int highest_zoneidx)
+{
+	int i;
+	unsigned long nr_soft_reclaimed;
+	unsigned long nr_soft_scanned;
+	unsigned long pflags;
+	unsigned long nr_boost_reclaim;
+	unsigned long zone_boosts[MAX_NR_ZONES] = { 0, };
+	bool boosted;
+	struct zone *zone;
+	struct scan_control sc = { // 页面回收的参数
+		.gfp_mask = GFP_KERNEL,
+		.order = order,
+		.may_unmap = 1,
+	};
+
+	...
+
+	/*
+	 * Account for the reclaim boost. Note that the zone boost is left in
+	 * place so that parallel allocations that are near the watermark will
+	 * stall or direct reclaim until kswapd is finished.
+	 */
+	nr_boost_reclaim = 0; // 优化外碎片化的机制
+	for (i = 0; i <= highest_zoneidx; i++) {
+		zone = pgdat->node_zones + i;
+		if (!managed_zone(zone))
+			continue;
+
+		nr_boost_reclaim += zone->watermark_boost;
+		zone_boosts[i] = zone->watermark_boost;
+	}
+	boosted = nr_boost_reclaim;
+
+restart:
+	set_reclaim_active(pgdat, highest_zoneidx);
+	sc.priority = DEF_PRIORITY; // 页面扫描的优先级，优先级越小，扫描的页面就越多
+	do {
+		unsigned long nr_reclaimed = sc.nr_reclaimed;
+		bool raise_priority = true;
+		bool balanced;
+		bool ret;
+
+		sc.reclaim_idx = highest_zoneidx;
+
+		...
+
+		/*
+		 * If the pgdat is imbalanced then ignore boosting and preserve
+		 * the watermarks for a later time and restart. Note that the
+		 * zone watermarks will be still reset at the end of balancing
+		 * on the grounds that the normal reclaim should be enough to
+		 * re-evaluate if boosting is required when kswapd next wakes.
+		 */
+        // 检查这个内存节点是否有合格的 zone
+        // 所谓合格的 zone，就是其 watermask 高于 WMARK_HIGH
+        // 并且可以分配出 2^order 个连续的物理页面
+		balanced = pgdat_balanced(pgdat, sc.order, highest_zoneidx);
+		if (!balanced && nr_boost_reclaim) {
+			nr_boost_reclaim = 0;
+			goto restart; // 重新扫描
+		}
+
+		/*
+		 * If boosting is not active then only reclaim if there are no
+		 * eligible zones. Note that sc.reclaim_idx is not used as
+		 * buffer_heads_over_limit may have adjusted it.
+		 */
+		if (!nr_boost_reclaim && balanced) // 符合条件（？）
+			goto out;
+
+		...
+
+		/*
+		 * Do some background aging of the anon list, to give
+		 * pages a chance to be referenced before reclaiming. All
+		 * pages are rotated regardless of classzone as this is
+		 * about consistent aging.
+		 */
+		age_active_anon(pgdat, &sc); // 对匿名页面的活跃 LRU 链表进行老化（？）
+
+		/*
+		 * There should be no need to raise the scanning priority if
+		 * enough pages are already being scanned that that high
+		 * watermark would be met at 100% efficiency.
+		 */
+        // 页面回收的核心函数
+		if (kswapd_shrink_node(pgdat, &sc))
+			raise_priority = false;
+
+		...
+
+		if (raise_priority || !nr_reclaimed) // 不断加大扫描粒度
+			sc.priority--;
+	} while (sc.priority >= 1);
+
+out:
+	clear_reclaim_active(pgdat, highest_zoneidx);
+
+	/* If reclaim was boosted, account for the reclaim done in this pass */
+	if (boosted) {
+		unsigned long flags;
+
+		for (i = 0; i <= highest_zoneidx; i++) {
+			if (!zone_boosts[i])
+				continue;
+
+			/* Increments are under the zone lock */
+			zone = pgdat->node_zones + i;
+			spin_lock_irqsave(&zone->lock, flags);
+			zone->watermark_boost -= min(zone->watermark_boost, zone_boosts[i]);
+			spin_unlock_irqrestore(&zone->lock, flags);
+		}
+
+		/*
+		 * As there is now likely space, wakeup kcompact to defragment
+		 * pageblocks.
+		 */
+		wakeup_kcompactd(pgdat, pageblock_order, highest_zoneidx); // 外碎片化优化，通过这个函数来做
+	}
+
+    ...
+
+	/*
+	 * Return the order kswapd stopped reclaiming at as
+	 * prepare_kswapd_sleep() takes it into account. If another caller
+	 * entered the allocator slow path while kswapd was awake, order will
+	 * remain at the higher level.
+	 */
+	return sc.order; // 返回回收的页面数
+}
+```
+
+##### 关键函数shrink_node
+
+`balance_pgdat` -> `kswapd_shrink_node` -> `shrink_node`
+
+该函数用于扫描内存节点中所有可回收的页面。
 
 ### 疑问
 
