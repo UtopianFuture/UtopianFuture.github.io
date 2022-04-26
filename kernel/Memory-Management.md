@@ -4409,6 +4409,137 @@ out:
 
 ![page_migrate.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/page_migrate.png?raw=true)
 
+### 内存规整
+
+#### 基本原理
+
+内存规整是为了解决内核碎片化出现的一个功能，当物理设备需要大段的连续的物理内存，而内核无法满足，则会发生内核错误，因此需要将多个小空闲内存块重新整理以凑出大块连续的物理内存。
+
+内存规整的核心思想是将内存页面按照可移动、可回收、不可移动等特性进行分类。可移动页面通常指用户态进程分配的内存，移动这些页面仅仅需要修改页表映射关系；可回收页面指不可移动但可释放的页面。其运行流程总结起来很好理解（但是实现又是另一回事:joy:）。有两个方向的扫描者：一个从 zone 的头部向 zone 的尾部方向扫描，查找哪些页面是可移动的；另一个从 zone 的尾部向 zone 的头部方向扫描，查找哪些页面是空闲页面。当这两个扫描者在 zone 中间相遇或已经满足分配大块内存的需求（能分配处所需要的大块内存并且满足最低的水位要求）时，就可以退出扫描。
+
+![memory_compact.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/memory_compact.png?raw=true)
+
+内核中触发内存规整有 3 个途径：
+
+- 手动触发。通过写 1 到 /proc/sys/vm/compact_memory 节点，会手动触发内存规整，内核会扫描所有的内存节点上的 zone，对每个 zone 做一次内存规整。
+- kcompactd 内核线程。和页面回收 kswapd 内核线程一样，每个内存节点都会创建一个 `kcompactd%d` 内核线程（何时唤醒？）。
+- 直接内存规整。当伙伴系统发现 zone 的 watermask 无法满足页面分配时，会进入慢路径。在慢路径中，除了唤醒 kswapd 内核线程，还会调用 `__alloc_pages_direct_compact` 尝试整理出大块内存。
+
+#### kcompactd内核线程
+
+整个过程和 kswapd 内核线程类似，创建、睡眠、唤醒。
+
+```
+#0  kcompactd_run (nid=nid@entry=0) at mm/compaction.c:2979
+#1  0xffffffff831f4d5b in kcompactd_init () at mm/compaction.c:3046
+#2  0xffffffff81003928 in do_one_initcall (fn=0xffffffff831f4ce7 <kcompactd_init>) at init/main.c:1303
+#3  0xffffffff831babeb in do_initcall_level (command_line=0xffff888100052cf0 "console", level=4)
+    at init/main.c:1376
+#4  do_initcalls () at init/main.c:1392
+#5  do_basic_setup () at init/main.c:1411
+#6  kernel_init_freeable () at init/main.c:1614
+#7  0xffffffff81c0b31a in kernel_init (unused=<optimized out>) at init/main.c:1505
+#8  0xffffffff81004572 in ret_from_fork () at arch/x86/entry/entry_64.S:295
+```
+
+```c
+int kcompactd_run(int nid)
+{
+	pg_data_t *pgdat = NODE_DATA(nid);
+	int ret = 0;
+
+	if (pgdat->kcompactd)
+		return 0;
+
+	pgdat->kcompactd = kthread_run(kcompactd, pgdat, "kcompactd%d", nid);
+	if (IS_ERR(pgdat->kcompactd)) {
+		pr_err("Failed to start kcompactd on node %d\n", nid);
+		ret = PTR_ERR(pgdat->kcompactd);
+		pgdat->kcompactd = NULL;
+	}
+	return ret;
+}
+```
+
+先看看 kcompactd 内核线程的实现，
+
+```c
+static int kcompactd(void *p)
+{
+	pg_data_t *pgdat = (pg_data_t *)p;
+	struct task_struct *tsk = current;
+	long default_timeout = msecs_to_jiffies(HPAGE_FRAG_CHECK_INTERVAL_MSEC);
+	long timeout = default_timeout;
+
+	const struct cpumask *cpumask = cpumask_of_node(pgdat->node_id);
+
+	if (!cpumask_empty(cpumask))
+		set_cpus_allowed_ptr(tsk, cpumask);
+
+	set_freezable();
+
+	pgdat->kcompactd_max_order = 0;
+	pgdat->kcompactd_highest_zoneidx = pgdat->nr_zones - 1;
+
+	while (!kthread_should_stop()) {
+		unsigned long pflags;
+
+		/*
+		 * Avoid the unnecessary wakeup for proactive compaction
+		 * when it is disabled.
+		 */
+		if (!sysctl_compaction_proactiveness)
+			timeout = MAX_SCHEDULE_TIMEOUT;
+		trace_mm_compaction_kcompactd_sleep(pgdat->node_id);
+		if (wait_event_freezable_timeout(pgdat->kcompactd_wait,
+			kcompactd_work_requested(pgdat), timeout) &&
+			!pgdat->proactive_compact_trigger) {
+
+			psi_memstall_enter(&pflags);
+			kcompactd_do_work(pgdat);
+			psi_memstall_leave(&pflags);
+			/*
+			 * Reset the timeout value. The defer timeout from
+			 * proactive compaction is lost here but that is fine
+			 * as the condition of the zone changing substantionally
+			 * then carrying on with the previous defer interval is
+			 * not useful.
+			 */
+			timeout = default_timeout;
+			continue;
+		}
+
+		/*
+		 * Start the proactive work with default timeout. Based
+		 * on the fragmentation score, this timeout is updated.
+		 */
+		timeout = default_timeout;
+		if (should_proactive_compact_node(pgdat)) {
+			unsigned int prev_score, score;
+
+			prev_score = fragmentation_score_node(pgdat);
+			proactive_compact_node(pgdat);
+			score = fragmentation_score_node(pgdat);
+			/*
+			 * Defer proactive compaction if the fragmentation
+			 * score did not go down i.e. no progress made.
+			 */
+			if (unlikely(score >= prev_score))
+				timeout =
+				   default_timeout << COMPACT_MAX_DEFER_SHIFT;
+		}
+		if (unlikely(pgdat->proactive_compact_trigger))
+			pgdat->proactive_compact_trigger = false;
+	}
+
+	return 0;
+}
+```
+
+#### 关键函数compact_zone
+
+`compact_zone` 就是完成上面描述的扫描 zone （不过最新的内核不再以 zone 为扫描单元，而是以内存节点）的任务，找出可以迁移的页面和空闲页面，最终整理出大块内存。
+
 ### 疑问
 
 1. `vm_area_alloc` 创建新的 VMA 为什么还会调用到 slab 分配器？
