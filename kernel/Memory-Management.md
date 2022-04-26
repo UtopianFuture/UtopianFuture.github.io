@@ -49,7 +49,17 @@
   - [anon_vma_chain](#anon_vma_chain)
   - [父进程产生匿名页面](#父进程产生匿名页面)
   - [根据父进程创建子进程](#根据父进程创建子进程)
-  - [RMAP 的应用](#RMAP 的应用)
+  - [RMA的应用](#RMAP的应用)
+- [页面回收](#页面回收)
+  - [LRU链表法](#LRU链表法)
+  - [第二次机会法](#第二次机会法)
+  - [触发页面回收](#触发页面回收)
+  - [kswapd内核线程](#kswapd内核线程)
+    - [关键函数balance_pgdat](#关键函数balance_pgdat)
+    - [关键函数shrink_node](#关键函数shrink_node)
+- [页面迁移](#页面迁移)
+  - [关键函数__unmap_and_move](#关键函数__unmap_and_move)
+  - [关键函数move_to_new_page](#关键函数move_to_new_page)
 
 - [Reference](#Reference)
 - [些许感想](#些许感想)
@@ -3149,12 +3159,13 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 	...
 
 	inc_mm_counter_fast(vma->vm_mm, MM_ANONPAGES); // 增加进程匿名页面的数目
-	page_add_new_anon_rmap(page, vma, vmf->address, false); // 添加到 RMAP 系统中（？）
+	page_add_new_anon_rmap(page, vma, vmf->address, false); // 添加到 RMAP 系统中，后面有介绍
 	lru_cache_add_inactive_or_unevictable(page, vma); // 将匿名页面添加到 LRU 链表中
 setpte:
-	set_pte_at(vma->vm_mm, vmf->address, vmf->pte, entry); // 设置到硬件页表中。这就很好理解了，
-    							   					// 正常的 page table walk 是硬件来做的。但是当发生异常，
-    							  				    // 就需要软件遍历、构造、写入到硬件，之后硬件就可以正常使用了
+    // 设置到硬件页表中。这就很好理解了，
+    // 正常的 page table walk 是硬件来做的。但是当发生异常，
+    // 就需要软件遍历、构造、写入到硬件，之后硬件就可以正常使用了
+	set_pte_at(vma->vm_mm, vmf->address, vmf->pte, entry);
 	/* No need to invalidate - it was non-present before */
 	update_mmu_cache(vma, vmf->address, vmf->pte);
 unlock:
@@ -3809,7 +3820,7 @@ static __latent_entropy int dup_mmap(struct mm_struct *mm,
    }
    ```
 
-#### RMAP 的应用
+#### RMAP的应用
 
 RMAP 的典型应用场景如下：
 
@@ -3899,7 +3910,7 @@ static void rmap_walk_anon(struct page *page, struct rmap_walk_control *rwc,
 
 内核中的页交换算法主要使用 LRU 链表算法和第二次机会（second chance）法。
 
-#### LRU 链表法
+#### LRU链表法
 
 #### 第二次机会法
 
@@ -4200,6 +4211,204 @@ out:
 
 该函数用于扫描内存节点中所有可回收的页面。
 
+### 页面迁移
+
+内核为页面迁移提供了一个系统调用，
+
+```c
+__SYSCALL(256, sys_migrate_pages)
+```
+
+这个系统调用最初是为了在 NUMA 系统中迁移一个进程的所有页面到指定内存节点上，但目前其他模块也可以使用页面迁移机制，如内存规整和内存热拔插等。因此，页面迁移机制支持两大类的内存页面：
+
+- 传统 LRU 页面，如匿名页面和文件映射页面（看来 LRU 链表还是要了解啊）
+- 非 LRU 页面，如 zsmalloc 或 virtio-ballon 页面（这是内核引入的新特性）
+
+#### 关键函数__unmap_and_move
+
+`migrate_pages` -> `unmap_and_move` -> `__unmap_and_move`
+
+和前面类似，`migrate_pages` 是外部封装函数，主体是一个循环，迁移 `from` 链表中的每一个页，对各种迁移结果进行处理；`unmap_and_move` 会调用 `get_new_page` 分配一个新的页面，然后也处理各种迁移结果。
+
+```c
+static int __unmap_and_move(struct page *page, struct page *newpage,
+				int force, enum migrate_mode mode) // from, to
+{
+	int rc = -EAGAIN;
+	bool page_was_mapped = false;
+	struct anon_vma *anon_vma = NULL;
+	bool is_lru = !__PageMovable(page);
+
+	if (!trylock_page(page)) { // 尝试为需要迁移的 page 加锁
+		if (!force || mode == MIGRATE_ASYNC)
+			goto out;
+
+		if (current->flags & PF_MEMALLOC)
+			goto out;
+
+		lock_page(page); // 若加锁失败，除了上面两种情况，需要等待其他进程释放锁
+	}
+
+	if (PageWriteback(page)) { // 处理写回页面
+		/*
+		 * Only in the case of a full synchronous migration is it
+		 * necessary to wait for PageWriteback. In the async case,
+		 * the retry loop is too short and in the sync-light case,
+		 * the overhead of stalling is too much
+		 */
+		switch (mode) {
+		case MIGRATE_SYNC:
+		case MIGRATE_SYNC_NO_COPY:
+			break;
+		default:
+			rc = -EBUSY;
+			goto out_unlock;
+		}
+		if (!force)
+			goto out_unlock;
+		wait_on_page_writeback(page);
+	}
+
+	if (PageAnon(page) && !PageKsm(page)) // 处理匿名和 KSM 页面
+		anon_vma = page_get_anon_vma(page);
+
+	...
+
+    if (unlikely(!is_lru)) { // 第 2 中情况，非 LRU 页面
+		rc = move_to_new_page(newpage, page, mode); // 调用驱动注册的 migratepage 函数来进行迁移
+		goto out_unlock_both;
+	}
+
+	/*
+	 * Corner case handling:
+	 * 1. When a new swap-cache page is read into, it is added to the LRU
+	 * and treated as swapcache but it has no rmap yet.
+	 * Calling try_to_unmap() against a page->mapping==NULL page will
+	 * trigger a BUG.  So handle it here.
+	 * 2. An orphaned page (see truncate_cleanup_page) might have
+	 * fs-private metadata. The page can be picked up due to memory
+	 * offlining.  Everywhere else except page reclaim, the page is
+	 * invisible to the vm, so the page can not be migrated.  So try to
+	 * free the metadata, so the page can be freed.
+	 */
+	if (!page->mapping) { // 上面的注释很清楚
+		VM_BUG_ON_PAGE(PageAnon(page), page);
+		if (page_has_private(page)) {
+			try_to_free_buffers(page);
+			goto out_unlock_both;
+		}
+	} else if (page_mapped(page)) { // 判断 _mapcount 是否大于等于 0
+		/* Establish migration ptes */
+		VM_BUG_ON_PAGE(PageAnon(page) && !PageKsm(page) && !anon_vma,
+				page);
+		try_to_migrate(page, 0); // 应该是和 move_to_new_page 一样完成迁移，但是它会先调用 rmap_walk 解除 PTE
+		page_was_mapped = true;
+	}
+
+	if (!page_mapped(page)) // 该 page 不存在 PTE，可以直接迁移
+		rc = move_to_new_page(newpage, page, mode);
+
+	if (page_was_mapped) // 删除迁移完的页面的 PTE
+		remove_migration_ptes(page,
+			rc == MIGRATEPAGE_SUCCESS ? newpage : page, false);
+
+	...
+
+	return rc;
+}
+```
+
+#### 关键函数move_to_new_page
+
+`move_to_new_page` 用于迁移旧页面到新页面，当然，这个函数还不是最终完成迁移的，不同情况对应不同的迁移函数，不过到这里就打住吧，再深入我怕人没了，之后有能力有需求再分析。
+
+```c
+static int move_to_new_page(struct page *newpage, struct page *page,
+				enum migrate_mode mode)
+{
+	struct address_space *mapping;
+	int rc = -EAGAIN;
+	bool is_lru = !__PageMovable(page);
+
+    // page 数据结构中有 mapping 成员变量
+    // 对于匿名页面并且分配了交换缓存，那么 mapping 指向交换缓存
+    // 对于匿名页面但没有分配交换缓存，那么 mapping 指向 anon_vma，这是前面分析过的
+    // 对于文件映射页面，那么 mapping 会指向文件映射对应的地址空间
+    // 这在缺页异常处理中寻找文件映射 page 对应的物理地址时遇到过
+	mapping = page_mapping(page);
+
+    // 处理过程很清晰，LRU 页面和非 LRU 页面
+	if (likely(is_lru)) {
+		if (!mapping) // 匿名页面但没有分配交换缓存
+            // 额，这里貌似更加核心？不想深入了，简直是个无底洞！！！
+			rc = migrate_page(mapping, newpage, page, mode);
+		else if (mapping->a_ops->migratepage)
+			/*
+			 * Most pages have a mapping and most filesystems
+			 * provide a migratepage callback. Anonymous pages
+			 * are part of swap space which also has its own
+			 * migratepage callback. This is the most common path
+			 * for page migration.
+			 */
+			rc = mapping->a_ops->migratepage(mapping, newpage,
+							page, mode);
+		else
+			rc = fallback_migrate_page(mapping, newpage, // 文件映射页面（？）
+							page, mode);
+	} else { // 非 LRU 页面
+		/*
+		 * In case of non-lru page, it could be released after
+		 * isolation step. In that case, we shouldn't try migration.
+		 */
+		VM_BUG_ON_PAGE(!PageIsolated(page), page);
+		if (!PageMovable(page)) { // 好吧，又是特殊情况，这些应该都是遇到 bug 后加的补丁吧！
+			rc = MIGRATEPAGE_SUCCESS;
+			__ClearPageIsolated(page);
+			goto out;
+		}
+
+		rc = mapping->a_ops->migratepage(mapping, newpage,
+						page, mode);
+		WARN_ON_ONCE(rc == MIGRATEPAGE_SUCCESS &&
+			!PageIsolated(page));
+	}
+
+	/*
+	 * When successful, old pagecache page->mapping must be cleared before
+	 * page is freed; but stats require that PageAnon be left as PageAnon.
+	 */
+	if (rc == MIGRATEPAGE_SUCCESS) {
+		if (__PageMovable(page)) { // 用于分辨 page 是传统 LRU 页面还是非 LRU 页面
+			VM_BUG_ON_PAGE(!PageIsolated(page), page);
+
+			/*
+			 * We clear PG_movable under page_lock so any compactor
+			 * cannot try to migrate this page.
+			 */
+			__ClearPageIsolated(page);
+		}
+
+		/*
+		 * Anonymous and movable page->mapping will be cleared by
+		 * free_pages_prepare so don't reset it here for keeping
+		 * the type to work PageAnon, for example.
+		 */
+		if (!PageMappingFlags(page))
+			page->mapping = NULL;
+
+		if (likely(!is_zone_device_page(newpage)))
+			flush_dcache_page(newpage);
+
+	}
+out:
+	return rc;
+}
+```
+
+总结一下，页面迁移的本质是将一系列的 page 迁移到新的 page，那么这其中自然会涉及到物理页的分配、断开旧页面的 PTE、复制旧物理页的内容到新页面、设置新的 PTE，最后释放旧的物理页，这其中根据页面的属性又有不同的处理方式，跟着这个思路走就可以理解页面迁移（大致应该是这样，不过我还没有对细节了如指掌，时间啊！）。
+
+![page_migrate.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/page_migrate.png?raw=true)
+
 ### 疑问
 
 1. `vm_area_alloc` 创建新的 VMA 为什么还会调用到 slab 分配器？
@@ -4214,6 +4423,8 @@ out:
 
 5. 以 `filemap_map_pages` 为切入点，应该就可以进一步分析文件管理部分的内容，这个之后再分析。
 
+5. 页面回收为何如此复杂？
+
 ### Reference
 
 [1] 奔跑吧 Linux 内核，卷 1：基础架构
@@ -4226,4 +4437,5 @@ out:
 
 ### 些许感想
 
-内存管理的学习是循序渐进的，开始可能只能将书中的内容稍加精简记录下来，随着看的内容越多，难免对前面的内容产生疑惑，这时再回过头去理解，同时补充自己的笔记。这样多来几次也就理解、记住了。所以最开始“抄”的过程对于我来说无法跳过。
+1. 内存管理的学习是循序渐进的，开始可能只能将书中的内容稍加精简记录下来，随着看的内容越多，难免对前面的内容产生疑惑，这时再回过头去理解，同时补充自己的笔记。这样多来几次也就理解、记住了。所以最开始“抄”的过程对于我来说无法跳过。
+2. 内存管理实在的复杂，要对这一模块进行优化势必要对其完全理解，不然跑着跑着一个 bug 都摸不到头脑，就像我现在调试 TLB 一样，不过要做到这一点何其困难。
