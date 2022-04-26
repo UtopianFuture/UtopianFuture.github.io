@@ -14,6 +14,7 @@
     - [pglist_data](#pglist_data)
     - [zone](#zone)
     - [zonelist](#zonelist)
+    - [free_area](#free_area)
 
   - [分区页框分配器](#分区页框分配器)
   - [管理区分配器](#管理区分配器)
@@ -60,6 +61,11 @@
 - [页面迁移](#页面迁移)
   - [关键函数__unmap_and_move](#关键函数__unmap_and_move)
   - [关键函数move_to_new_page](#关键函数move_to_new_page)
+- [内存规整](#内存规整)
+  - [基本原理](#基本原理)
+  - [kcompactd内核线程](#kcompactd内核线程)
+  - [关键函数compact_zone](#关键函数compact_zone)
+
 
 - [Reference](#Reference)
 - [些许感想](#些许感想)
@@ -386,6 +392,17 @@ struct zoneref {
 };
 ```
 
+##### free_area
+
+```c
+struct free_area {
+    // 伙伴系统的每个块都分为多个链表，每个链表存储一个类型的内存块
+    // 这样做是为了页面迁移方便，属于反碎片化的优化。后面有分析
+	struct list_head	free_list[MIGRATE_TYPES];
+	unsigned long		nr_free;
+};
+```
+
 内核使用 zone 来管理内存节点，上文介绍过，一个内存节点可能存在多个 zone，如 `ZONE_DMA,` `ZONE_NORMAL` 等。`zonelist` 是所有可用的 zone，其中排在第一个的是页面分配器最喜欢的。
 
 我们假设系统中只有一个内存节点，有两个 zone，分别是 `ZONE_DMA` 和 `ZONE_NORMAL`，那么 `zonelist` 中的相关数据结构的关系如下：
@@ -672,7 +689,7 @@ EXPORT_SYMBOL(alloc_pages);
    		mark = wmark_pages(zone, alloc_flags & ALLOC_WMARK_MASK); // 计算 zone 中某个水位的页面大小（？）
    		if (!zone_watermark_fast(zone, order, mark, // 计算当前 zone 的空闲页面是否满足 WMARK_LOW
    				       ac->highest_zoneidx, alloc_flags, // 同时根据 order 计算是否有足够大的空闲内存块
-   				       gfp_mask)) {
+   				       gfp_mask)) { // 对内存管理进一步分析之后，水位描述符是为了防止内存碎片化
    			int ret;
 
                ...
@@ -773,6 +790,7 @@ EXPORT_SYMBOL(alloc_pages);
    	}
 
        // 分配多个页的情况
+       // 同样是为了检查该页块的其他页面类型的链表是否有足够的内存满足分配
    	if (__zone_watermark_ok(z, order, mark, highest_zoneidx, alloc_flags,
    					free_pages))
    		return true;
@@ -825,6 +843,7 @@ EXPORT_SYMBOL(alloc_pages);
    			continue;
 
            // 该 order 的块链表中有空闲页，可以分配内存，返回 true
+           // MIGRATE_PCPTYPES 是一种页面类型
    		for (mt = 0; mt < MIGRATE_PCPTYPES; mt++) {
    			if (!free_area_empty(area, mt))
    				return true;
@@ -841,7 +860,7 @@ EXPORT_SYMBOL(alloc_pages);
    }
    ```
 
-5. `rmqueue`
+6. `rmqueue`
 
    `rmqueue` 函数会从伙伴系统中获取内存。若没有需要大小的内存块，那么从更大的内存块中“切”内存。如程序要需要 `order = 4` 的内存块，但是伙伴系统中 `order = 4` 的内存块已经分配完了，那么从 `order = 5` 的内存块中“切”一块 `order = 4` 的内存块分配给该程序，同时将剩下的部分添加到 `order = 4` 的空闲链表中。
 
@@ -908,9 +927,10 @@ EXPORT_SYMBOL(alloc_pages);
 
    out:
    	/* Separate test+clear to avoid unnecessary atomics */
+       // ZONE_BOOSTED_WATERMARK 表示发生了碎片化，临时提高水位以提前触发 kswapd 内核线程进行内存回收
    	if (test_bit(ZONE_BOOSTED_WATERMARK, &zone->flags)) {
    		clear_bit(ZONE_BOOSTED_WATERMARK, &zone->flags);
-   		wakeup_kswapd(zone, 0, 0, zone_idx(zone)); // 判断是否需要唤醒 kswapd 线程回收内存
+   		wakeup_kswapd(zone, 0, 0, zone_idx(zone)); // 判断是否需要唤醒 kswapd 内核线程回收内存
    	}
 
    	VM_BUG_ON_PAGE(page && bad_range(zone, page), page);
@@ -973,6 +993,38 @@ EXPORT_SYMBOL(alloc_pages);
   	struct list_head lists[NR_PCP_LISTS];
   };
   ```
+
+8. `__rmqueue`
+
+   这个函数同样是调用 `__rmqueue_smallest`，但是如果 `__rmqueue_smallest` 分配失败，其会调用 `__rmqueue_fallback`。这个函数会从其他类型的页块中挪用页块，这是基于页面迁移类型做的优化，这里就不做进一步分析。
+
+   ```c
+   static __always_inline struct page *
+   __rmqueue(struct zone *zone, unsigned int order, int migratetype,
+   						unsigned int alloc_flags)
+   {
+   	struct page *page;
+
+   	...
+
+   retry:
+   	page = __rmqueue_smallest(zone, order, migratetype);
+   	if (unlikely(!page)) {
+   		if (alloc_flags & ALLOC_CMA)
+   			page = __rmqueue_cma_fallback(zone, order);
+
+   		if (!page && __rmqueue_fallback(zone, order, migratetype,
+   								alloc_flags))
+   			goto retry;
+   	}
+   out:
+   	if (page)
+   		trace_mm_page_alloc_zone_locked(page, order, migratetype);
+   	return page;
+   }
+   ```
+
+
 
 这里我们总结一下伙伴系统通过快路径分配物理页面的流程。
 
@@ -4539,6 +4591,10 @@ static int kcompactd(void *p)
 #### 关键函数compact_zone
 
 `compact_zone` 就是完成上面描述的扫描 zone （不过最新的内核不再以 zone 为扫描单元，而是以内存节点）的任务，找出可以迁移的页面和空闲页面，最终整理出大块内存。
+
+### 内存碎片化管理
+
+
 
 ### 疑问
 
