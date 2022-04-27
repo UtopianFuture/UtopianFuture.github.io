@@ -67,6 +67,7 @@
   - [关键函数compact_zone](#关键函数compact_zone)
 - [慢路径分配](#慢路径分配)
   - [关键函数__alloc_pages_slowpath](#关键函数__alloc_pages_slowpath)
+  - [水位管理和分配优先级](#水位管理和分配优先级)
 
 - [疑问](#疑问)
 
