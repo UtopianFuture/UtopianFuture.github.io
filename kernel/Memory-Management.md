@@ -65,6 +65,10 @@
   - [基本原理](#基本原理)
   - [kcompactd内核线程](#kcompactd内核线程)
   - [关键函数compact_zone](#关键函数compact_zone)
+- [慢路径分配](#慢路径分配)
+  - [关键函数__alloc_pages_slowpath](#关键函数__alloc_pages_slowpath)
+
+- [疑问](#疑问)
 
 
 - [Reference](#Reference)
@@ -4592,9 +4596,271 @@ static int kcompactd(void *p)
 
 `compact_zone` 就是完成上面描述的扫描 zone （不过最新的内核不再以 zone 为扫描单元，而是以内存节点）的任务，找出可以迁移的页面和空闲页面，最终整理出大块内存。
 
-### 内存碎片化管理
+### 慢路径分配
+
+在[请求页框](#请求页框)介绍了快路径分配物理内存，
+
+```c
+/*
+ * This is the 'heart' of the zoned buddy allocator.
+ */
+struct page *__alloc_pages(gfp_t gfp, unsigned int order, int preferred_nid,
+							nodemask_t *nodemask)
+{
+	struct page *page;
+	unsigned int alloc_flags = ALLOC_WMARK_LOW; // 表示页面分配的行为和属性，这里初始化为 ALLOC_WMARK_LOW
+    											// 表示允许分配内存的判断条件为 WMARK_LOW
+	...
+
+	/* First allocation attempt */
+    // 从空闲链表中分配内存，并返回第一个 page 的地址
+	page = get_page_from_freelist(alloc_gfp, order, alloc_flags, &ac);
+	if (likely(page))
+		goto out;
+
+	alloc_gfp = gfp;
+	ac.spread_dirty_pages = false;
+
+	/*
+	 * Restore the original nodemask if it was potentially replaced with
+	 * &cpuset_current_mems_allowed to optimize the fast-path attempt.
+	 */
+	ac.nodemask = nodemask;
+
+	page = __alloc_pages_slowpath(alloc_gfp, order, &ac); // 若分配不成功，则通过慢路径分配
+
+out:
+	...
+
+	return page;
+}
+EXPORT_SYMBOL(__alloc_pages);
+```
+
+但如果当前系统内存的水位在最低水位之下，那么 `__alloc_pages` 就会进入到慢路径分配内存，`__alloc_pages_slowpath` 也比较复杂，我们先看看整个的执行流程。
+
+![alloc_pages_slowpath](/home/guanshun/gitlab/UFuture.github.io/image/alloc_pages_slowpath.png)
+
+这其中涉及了众多内存优化机制，前面都有分析，这里我们结合代码再看一遍。
+
+#### 关键函数__alloc_pages_slowpath
+
+```C
+static inline struct page *
+__alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
+						struct alloc_context *ac)
+{
+	bool can_direct_reclaim = gfp_mask & __GFP_DIRECT_RECLAIM; // 该标志表示是否允许直接使用页面回收机制
+    // 该标志表示会形成一定的内存分配压力，PAGE_ALLOC_COSTLY_ORDER 宏定义为 3
+    // 那么当 order > 3 时机会给伙伴系统的分配带来一定的压力
+	const bool costly_order = order > PAGE_ALLOC_COSTLY_ORDER;
+	struct page *page = NULL;
+	unsigned int alloc_flags;
+	unsigned long did_some_progress;
+	enum compact_priority compact_priority;
+	enum compact_result compact_result;
+	int compaction_retries;
+	int no_progress_loops;
+	unsigned int cpuset_mems_cookie;
+	int reserve_flags;
+
+	/*
+	 * We also sanity check to catch abuse of atomic reserves being used by
+	 * callers that are not in atomic context.
+	 */
+	if (WARN_ON_ONCE((gfp_mask & (__GFP_ATOMIC|__GFP_DIRECT_RECLAIM)) ==
+				(__GFP_ATOMIC|__GFP_DIRECT_RECLAIM))) // 检查是否在非中断上下文中滥用 _GFP_ATOMIC 标志
+		gfp_mask &= ~__GFP_ATOMIC; // 该标志表示允许访问部分系统预留内存
+
+retry_cpuset:
+	compaction_retries = 0;
+	no_progress_loops = 0;
+	compact_priority = DEF_COMPACT_PRIORITY;
+	cpuset_mems_cookie = read_mems_allowed_begin();
+
+	/*
+	 * The fast path uses conservative alloc_flags to succeed only until
+	 * kswapd needs to be woken up, and to avoid the cost of setting up
+	 * alloc_flags precisely. So we do that now.
+	 */
+    // 重新设置分配掩码，因为在快路径中使用的是 ALLOC_WMARK_LOW 标志
+    // 但是在 ALLOC_WMARK_LOW 下无法分配内存，所以才需要进入慢路径
+    // 这里使用 ALLOC_WMARK_MIN 标志
+    // 还有其他的标志位需要设置，如 __GFP_HIGH，__GFP_ATOMIC，__GFP_NOMEMALLOC 等等
+	alloc_flags = gfp_to_alloc_flags(gfp_mask);
+
+	/*
+	 * We need to recalculate the starting point for the zonelist iterator
+	 * because we might have used different nodemask in the fast path, or
+	 * there was a cpuset modification and we are retrying - otherwise we
+	 * could end up iterating over non-eligible zones endlessly.
+	 */
+	ac->preferred_zoneref = first_zones_zonelist(ac->zonelist,
+					ac->highest_zoneidx, ac->nodemask);
+	if (!ac->preferred_zoneref->zone)
+		goto nopage;
+
+	if (alloc_flags & ALLOC_KSWAPD) // 如果此次分配使用了 __GFP_NOMEMALLOC 标志，则唤醒 kswapd 内核线程
+		wake_all_kswapds(order, gfp_mask, ac);
+
+	/*
+	 * The adjusted alloc_flags might result in immediate success, so try
+	 * that first
+	 */
+    // 和 _alloc_pages 一样，不过这里使用的是最低水位 ALLOC_WMARK_MIN 分配
+	page = get_page_from_freelist(gfp_mask, order, alloc_flags, ac);
+	if (page) // 如果分配成功，则返回，不然进一步整理内存
+		goto got_pg;
+
+	/*
+	 * For costly allocations, try direct compaction first, as it's likely
+	 * that we have enough base pages and don't need to reclaim. For non-
+	 * movable high-order allocations, do that as well, as compaction will
+	 * try prevent permanent fragmentation by migrating from blocks of the
+	 * same migratetype.
+	 * Don't try this for allocations that are allowed to ignore
+	 * watermarks, as the ALLOC_NO_WATERMARKS attempt didn't yet happen.
+	 */
+    // 如果使用最低水位还不能分配成功，那么当满足如下 3 个条件时考虑尝试使用直接内存规整机制来分配物理页面
+    // 1. 能够调用直接内存回收机制
+    // 2. costly_order
+    // 3. 不能访问系统预留内存，原来 gfp_pfmemalloc_allowed 表示系统预留内存
+	if (can_direct_reclaim && (costly_order ||
+			   (order > 0 && ac->migratetype != MIGRATE_MOVABLE))
+			&& !gfp_pfmemalloc_allowed(gfp_mask)) {
+        // 调用 try_to_compact_pages 进行内存规整，然后再使用 get_page_from_freelist 尝试分配
+		page = __alloc_pages_direct_compact(gfp_mask, order,
+						alloc_flags, ac, INIT_COMPACT_PRIORITY,
+						&compact_result);
+		if (page)
+			goto got_pg;
+
+		...
+	}
+
+retry:
+	/* Ensure kswapd doesn't accidentally go to sleep as long as we loop */
+	if (alloc_flags & ALLOC_KSWAPD)
+		wake_all_kswapds(order, gfp_mask, ac);
+
+	reserve_flags = __gfp_pfmemalloc_flags(gfp_mask);
+	if (reserve_flags)
+		alloc_flags = gfp_to_alloc_flags_cma(gfp_mask, reserve_flags);
+
+	/*
+	 * Reset the nodemask and zonelist iterators if memory policies can be
+	 * ignored. These allocations are high priority and system rather than
+	 * user oriented.
+	 */
+	if (!(alloc_flags & ALLOC_CPUSET) || reserve_flags) {
+		ac->nodemask = NULL;
+		ac->preferred_zoneref = first_zones_zonelist(ac->zonelist,
+					ac->highest_zoneidx, ac->nodemask);
+	}
+
+	/* Attempt with potentially adjusted zonelist and alloc_flags */
+	page = get_page_from_freelist(gfp_mask, order, alloc_flags, ac);
+	if (page)
+		goto got_pg;
+
+	/* Caller is not willing to reclaim, we can't balance anything */
+	if (!can_direct_reclaim)
+		goto nopage;
+
+	/* Avoid recursion of direct reclaim */
+	if (current->flags & PF_MEMALLOC)
+		goto nopage;
+
+	/* Try direct reclaim and then allocating */
+	page = __alloc_pages_direct_reclaim(gfp_mask, order, alloc_flags, ac,
+							&did_some_progress);
+	if (page)
+		goto got_pg;
+
+	/* Try direct compaction and then allocating */
+	page = __alloc_pages_direct_compact(gfp_mask, order, alloc_flags, ac,
+					compact_priority, &compact_result);
+	if (page)
+		goto got_pg;
+
+	/* Do not loop if specifically requested */
+    // 已经尝试了使用系统预留内存、内存回收、内存重整但都没有成功，那么还可以重试几次
+	if (gfp_mask & __GFP_NORETRY)
+		goto nopage;
+
+	/*
+	 * Do not retry costly high order allocations unless they are
+	 * __GFP_RETRY_MAYFAIL
+	 */
+	if (costly_order && !(gfp_mask & __GFP_RETRY_MAYFAIL)) // 又是一种失败情况
+		goto nopage;
+
+	if (should_reclaim_retry(gfp_mask, order, ac, alloc_flags, // 应该重试
+				 did_some_progress > 0, &no_progress_loops))
+		goto retry;
+
+	/*
+	 * It doesn't make any sense to retry for the compaction if the order-0
+	 * reclaim is not able to make any progress because the current
+	 * implementation of the compaction depends on the sufficient amount
+	 * of free memory (see __compaction_suitable)
+	 */
+	if (did_some_progress > 0 &&
+			should_compact_retry(ac, order, alloc_flags,
+				compact_result, &compact_priority, &compaction_retries))
+		goto retry;
 
 
+	/* Deal with possible cpuset update races before we start OOM killing */
+	if (check_retry_cpuset(cpuset_mems_cookie, ac))
+		goto retry_cpuset;
+
+	/* Reclaim has failed us, start killing things */
+    // 调用 OOM Killer 机制来终止占用内存较多的进程，从而释放内存（内核考虑的真周全啊！）
+	page = __alloc_pages_may_oom(gfp_mask, order, ac, &did_some_progress);
+	if (page)
+		goto got_pg;
+
+	/* Avoid allocations with no watermarks from looping endlessly */
+	if (tsk_is_oom_victim(current) && // 被释放的是当前进程（这不就尴尬了么）
+	    (alloc_flags & ALLOC_OOM || (gfp_mask & __GFP_NOMEMALLOC)))
+		goto nopage;
+
+	/* Retry as long as the OOM killer is making progress */
+	if (did_some_progress) { // 表示释放了一些内存，尝试重新分配
+		no_progress_loops = 0;
+		goto retry;
+	}
+
+nopage:
+	/* Deal with possible cpuset update races before we fail */
+	if (check_retry_cpuset(cpuset_mems_cookie, ac))
+		goto retry_cpuset;
+
+	...
+
+		/*
+		 * Help non-failing allocations by giving them access to memory
+		 * reserves but do not use ALLOC_NO_WATERMARKS because this
+		 * could deplete whole memory reserves which would just make
+		 * the situation worse
+		 */
+		page = __alloc_pages_cpuset_fallback(gfp_mask, order, ALLOC_HARDER, ac);
+		if (page)
+			goto got_pg;
+
+		cond_resched();
+		goto retry;
+	}
+fail:
+	warn_alloc(gfp_mask, ac->nodemask,
+			"page allocation failure: order:%u", order);
+got_pg:
+	return page;
+}
+```
+
+所以说内核为了能成功分配，简直“无所不用其极”，试了所有可能的方法，如果还是分配不出来，它也无能为力，只能 `warn_alloc` 。
 
 ### 疑问
 
