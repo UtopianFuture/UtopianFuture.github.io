@@ -166,6 +166,8 @@ tmux 的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`t
        pkill -9 --full "{{command_name}}"
     ```
 
+18. kill -s 9 pid 也能直接杀死某个进程。
+
 18. diff 和 vimdiff 可以以行为单位对比两个文件的不同。
 
 19. lsblk - list block devices
