@@ -78,7 +78,7 @@ VMM 对物理资源的虚拟可以归结为三个主要任务：处理器虚拟�
 
 #### 2. 内核启动过程
 
-主核的执行入口（PC 寄存器的初始值）是编译内核时决定的，运行时由 BIOS 或者 BootLoader 传递给内核。内核的初始入口是`kernel_entry`。LA 的`kernel_entry`和 mips 的类似，进行.bss 段的清 0（为什么要清 0），保存 a0~a3 等操作。之后就进入到第二入口`start_kernel`。
+主核的执行入口（PC 寄存器的初始值）是编译内核时决定的，运行时由 BIOS 或者 BootLoader 传递给内核。内核的初始入口是`kernel_entry`。LA 的 `kernel_entry` 和 mips 的类似，进行.bss 段的清 0（包括之后加载用户态进程也需要清 0，[为什么要清 0？](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/linux-note/others.md#bss-%E6%AE%B5%E6%B8%85-0)），保存 a0~a3 等操作。之后就进入到第二入口 `start_kernel`。
 
 通过 gdb 单步调试看 LA 内核是怎样初始化的。但是遇到一个问题，内核使用`-O2`优化项，在单步调试时很多值都是`optimized out`，同时设置断点也不会顺序执行，是跳着执行的，给阅读代码带来困难。后来请教师兄，这是正常的，start_kernel 部分的代码可以直接看源码，不用单步调试。
 
@@ -87,7 +87,7 @@ VMM 对物理资源的虚拟可以归结为三个主要任务：处理器虚拟�
 
 #### 1. start_kernel
 
-`start_kernel`的一级节点中，架构相关的重要函数有`setup_arch`, `trap_init`, `init_IRQ`, `time_init`。代码中涉及的技术都在之后有介绍。
+`start_kernel` 的一级节点中，架构相关的重要函数有 `setup_arch`, `trap_init`, `init_IRQ`, `time_init`。代码中涉及的技术都在之后有介绍。
 
 ```plain
 start_kernel
