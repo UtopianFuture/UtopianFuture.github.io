@@ -9,7 +9,20 @@
   - [进程标识](#进程标识)
   - [进程间的关系](#进程间的关系)
   - [获取当前进程](#获取当前进程)
+  - [内核线程](#内核线程)
 - [进程创建与终止](#进程创建与终止)
+  - [创建进程](#创建进程)
+    - [fork](#fork)
+    - [vfork](#vfork)
+    - [clone](#clone)
+    - [关键函数kernel_clone](#关键函数kernel_clone)
+    - [关键函数copy_process](#关键函数copy_process)
+    - [关键函数dup_task_struct](#关键函数dup_task_struct)
+    - [关键函数copy_mm](#关键函数copy_mm)
+
+  - [进程创建后的返回](#进程创建后的返回)
+  - [终止进程](#终止进程)
+
 - [进程调度](#进程调度)
 - [Reference](#Reference)
 
@@ -891,7 +904,593 @@ static __always_inline struct task_struct *get_current(void)
 
 好吧，这个我不懂。
 
+#### 内核线程
+
+内核线程就是运行在内核地址空间的进程，它没有独立的进程地址空间，所有的内核线程都共享内核地址空间，即 `task_struct` 结构中的 `mm_struct` 指针设为  null。但内核线程也和普通进程一样参与系统调度。
+
 ### 进程创建与终止
+
+#### 创建进程
+
+内核为进程的创建提供了相应的系统调用，如 `sys_fork`, `sys_vfork` 以及 `sys_clone` 等，C 标准库提供了这些系统调用的封装函数。下面简单介绍这几种系统调用。
+
+##### fork
+
+```c
+#ifdef __ARCH_WANT_SYS_FORK
+SYSCALL_DEFINE0(fork)
+{
+#ifdef CONFIG_MMU
+	struct kernel_clone_args args = {
+		.exit_signal = SIGCHLD, // 其他参数都是默认的，只是需要设置 SIGCHLD 标志位
+	};
+
+	return kernel_clone(&args);
+#else
+	/* can not support in nommu mode */
+	return -EINVAL;
+#endif
+}
+#endif
+```
+
+通过 COW 技术创建子进程，子进程只会复制父进程的页表，而不会复制页面内容。当它们开始执行各自的程序时，它们的进程地址空间才开始分道扬镳。
+
+`fork` 函数会有两次返回，一次在父进程中，一次在子进程中。如果返回值为 0，说明这是子进程；如果返回值为正数，说明这是父进程，父进程会返回子进程的 pid；如果返回 -1，表示创建失败。
+
+当然，只复制页表在某些情况下还是会比较慢，后来就有了 `vfork` 和 `clone`。
+
+##### vfork
+
+和  `fork` 类似，但是 `vfork` 的父进程会一直阻塞，知道子进程调用 `exit` 或 `execve` 为止，其可以避免复制父进程的页表项。
+
+```c
+#ifdef __ARCH_WANT_SYS_VFORK
+SYSCALL_DEFINE0(vfork)
+{
+	struct kernel_clone_args args = {
+        // CLONE_VFORK 表示父进程会被挂起，直至子进程释放虚拟内存
+        // CLONE_VM 表示父、子进程执行在相同的进程地址空间中
+		.flags		= CLONE_VFORK | CLONE_VM,
+		.exit_signal	= SIGCHLD,
+	};
+
+	return kernel_clone(&args);
+}
+#endif
+```
+
+##### clone
+
+`clone` 可以传递众多参数，有选择的继承父进程的资源。
+
+```c
+SYSCALL_DEFINE5(clone, unsigned long, clone_flags, unsigned long, newsp,
+		 int __user *, parent_tidptr,
+		 int __user *, child_tidptr,
+		 unsigned long, tls)
+{
+	struct kernel_clone_args args = {
+		.flags		= (lower_32_bits(clone_flags) & ~CSIGNAL),
+		.pidfd		= parent_tidptr,
+		.child_tid	= child_tidptr,
+		.parent_tid	= parent_tidptr,
+		.exit_signal	= (lower_32_bits(clone_flags) & CSIGNAL),
+		.stack		= newsp,
+		.tls		= tls,
+	};
+
+	return kernel_clone(&args);
+}
+```
+
+##### 关键函数kernel_clone
+
+在 5.15 的内核中，这些创建用户态进程和内核线程的接口最后都是调用 `kernel_clone`，只是传入的参数不一样。和书中介绍的不一样，5.15 的内核传入 `kernel_clone` 的参数是 `kernel_clone_args`，而不是之前的多个型参。
+
+```c
+struct kernel_clone_args {
+	u64 flags; // 创建进程的标志位
+	int __user *pidfd;
+	int __user *child_tid;
+	int __user *parent_tid; // 父子进程的 tid
+	int exit_signal;
+	unsigned long stack; // 用户栈的起始地址
+	unsigned long stack_size; // 用户栈的大小
+	unsigned long tls; // 线程本地存储（？）
+	pid_t *set_tid;
+	/* Number of elements in *set_tid */
+	size_t set_tid_size;
+	int cgroup; // 这个应该是虚拟化支持的一种机制，之后再分析
+	int io_thread;
+	struct cgroup *cgrp;
+	struct css_set *cset;
+};
+```
+
+```c
+/*
+ *  Ok, this is the main fork-routine.
+ *
+ * It copies the process, and if successful kick-starts
+ * it and waits for it to finish using the VM if required.
+ *
+ * args->exit_signal is expected to be checked for sanity by the caller.
+ */
+pid_t kernel_clone(struct kernel_clone_args *args)
+{
+	u64 clone_flags = args->flags;
+	struct completion vfork;
+	struct pid *pid;
+	struct task_struct *p;
+	int trace = 0;
+	pid_t nr;
+
+	...
+
+	p = copy_process(NULL, trace, NUMA_NO_NODE, args); // 显而易见，这是关键函数
+	add_latent_entropy();
+
+	/*
+	 * Do this prior waking up the new thread - the thread pointer
+	 * might get invalid after that point, if the thread exits quickly.
+	 */
+	trace_sched_process_fork(current, p);
+
+	pid = get_task_pid(p, PIDTYPE_PID);
+	nr = pid_vnr(pid); // 从当前命名空间看到的 PID（？）
+
+	if (clone_flags & CLONE_PARENT_SETTID)
+		put_user(nr, args->parent_tid);
+
+	if (clone_flags & CLONE_VFORK) {
+		p->vfork_done = &vfork; // vfork 创建子进程时要保证子进程先运行
+		init_completion(&vfork); // 这里使用一个 completion 变量来达到扣留父进程的目的
+		get_task_struct(p); // init_completion 负责初始化该变量
+	}
+
+	wake_up_new_task(p); // 将新创建的进程加入到就绪队列接受调度、运行
+
+	if (clone_flags & CLONE_VFORK) {
+		if (!wait_for_vfork_done(p, &vfork)) // 对于 vfork，等待子进程调用 exec 或 exit
+			ptrace_event_pid(PTRACE_EVENT_VFORK_DONE, pid);
+	}
+
+	put_pid(pid);
+    // 现在子进程已经创建成功了，父、子进程都需要返回到用户空间执行
+    // 而两者都会从该函数的返回处开始执行，所以 fork, vfork, clone 等系统调用都有 2 个返回值
+    // 这里返回 nr，为子进程的 pid，所以其为父进程
+	return nr;
+}
+```
+
+##### 关键函数copy_process
+
+这个函数很长，涉及的东西非常多，所以只关注目前认为更加重要的信息。
+
+```c
+/*
+ * This creates a new process as a copy of the old one,
+ * but does not actually start it yet.
+ *
+ * It copies the registers, and all the appropriate
+ * parts of the process environment (as per the clone
+ * flags). The actual kick-off is left to the caller.
+ */
+static __latent_entropy struct task_struct *copy_process(
+					struct pid *pid,
+					int trace,
+					int node,
+					struct kernel_clone_args *args)
+{
+	int pidfd = -1, retval;
+	struct task_struct *p;
+	struct multiprocess_signals delayed;
+	struct file *pidfile = NULL;
+	u64 clone_flags = args->flags;
+	struct nsproxy *nsp = current->nsproxy;
+
+	...
+
+	retval = -ENOMEM;
+	p = dup_task_struct(current, node); // 分配 task_struct
+	if (!p)
+		goto fork_out;
+	if (args->io_thread) {
+		/*
+		 * Mark us an IO worker, and block any signal that isn't
+		 * fatal or STOP
+		 */
+		p->flags |= PF_IO_WORKER;
+		siginitsetinv(&p->blocked, sigmask(SIGKILL)|sigmask(SIGSTOP));
+	}
+
+	...
+
+	retval = copy_creds(p, clone_flags); // 复制父进程的证书（？）
+
+	/*
+	 * If multiple threads are within copy_process(), then this check
+	 * triggers too late. This doesn't hurt, the check is only there
+	 * to stop root fork bombs.
+	 */
+	retval = -EAGAIN;
+    // nr_threads 表示系统已经创建的进程数，max_threads 表示系统最多可以拥有的进程数
+	if (data_race(nr_threads >= max_threads))
+		goto bad_fork_cleanup_count;
+
+	delayacct_tsk_init(p);	/* Must remain after dup_task_struct() */
+	p->flags &= ~(PF_SUPERPRIV | PF_WQ_WORKER | PF_IDLE | PF_NO_SETAFFINITY); // 设置子进程的标志位
+	p->flags |= PF_FORKNOEXEC; // 该标志表示这个进程暂时还不能执行
+	INIT_LIST_HEAD(&p->children);
+	INIT_LIST_HEAD(&p->sibling);
+	rcu_copy_process(p);
+	p->vfork_done = NULL;
+	spin_lock_init(&p->alloc_lock);
+
+	init_sigpending(&p->pending);
+
+	...
+
+	/* Perform scheduler related setup. Assign this task to a CPU. */
+	retval = sched_fork(clone_flags, p); // 初始化与进程调度相关的结构
+	if (retval)
+		goto bad_fork_cleanup_policy;
+
+	retval = perf_event_init_task(p, clone_flags);
+	if (retval)
+		goto bad_fork_cleanup_policy;
+	retval = audit_alloc(p);
+	if (retval)
+		goto bad_fork_cleanup_perf;
+	/* copy all the process information */
+	shm_init_task(p);
+	retval = security_task_alloc(p, clone_flags);
+	if (retval)
+		goto bad_fork_cleanup_audit;
+	retval = copy_semundo(clone_flags, p);
+	if (retval)
+		goto bad_fork_cleanup_security;
+	retval = copy_files(clone_flags, p); // 复制父进程打开文件信息
+	if (retval)
+		goto bad_fork_cleanup_semundo;
+	retval = copy_fs(clone_flags, p); // 复制父进程 fs_struct 数据结构
+	if (retval)
+		goto bad_fork_cleanup_files;
+	retval = copy_sighand(clone_flags, p); // 复制父进程的信号处理函数（？）
+	if (retval)
+		goto bad_fork_cleanup_fs;
+	retval = copy_signal(clone_flags, p); // 复制父进程的信号系统
+	if (retval)
+		goto bad_fork_cleanup_sighand;
+	retval = copy_mm(clone_flags, p); // 复制父进程的页表信息
+	if (retval)
+		goto bad_fork_cleanup_signal;
+	retval = copy_namespaces(clone_flags, p); // 复制父进程的命名空间
+	if (retval)
+		goto bad_fork_cleanup_mm;
+	retval = copy_io(clone_flags, p); // I/O 相关
+	if (retval)
+		goto bad_fork_cleanup_namespaces;
+	retval = copy_thread(clone_flags, args->stack, args->stack_size, p, args->tls);
+	if (retval)
+		goto bad_fork_cleanup_io;
+
+	stackleak_task_init(p);
+
+	if (pid != &init_struct_pid) {
+		pid = alloc_pid(p->nsproxy->pid_ns_for_children, args->set_tid,
+				args->set_tid_size);
+		if (IS_ERR(pid)) {
+			retval = PTR_ERR(pid);
+			goto bad_fork_cleanup_thread;
+		}
+	}
+
+	...
+
+	/* ok, now we should be set up.. */
+	p->pid = pid_nr(pid);
+	if (clone_flags & CLONE_THREAD) {
+		p->group_leader = current->group_leader;
+		p->tgid = current->tgid;
+	} else {
+		p->group_leader = p;
+		p->tgid = p->pid;
+	}
+
+	p->nr_dirtied = 0;
+	p->nr_dirtied_pause = 128 >> (PAGE_SHIFT - 10);
+	p->dirty_paused_when = 0;
+
+	p->pdeath_signal = 0;
+	INIT_LIST_HEAD(&p->thread_group);
+	p->task_works = NULL;
+
+	...
+
+	p->start_time = ktime_get_ns();
+	p->start_boottime = ktime_get_boottime_ns();
+
+	/*
+	 * Make it visible to the rest of the system, but dont wake it up yet.
+	 * Need tasklist lock for parent etc handling!
+	 */
+	write_lock_irq(&tasklist_lock);
+
+	/* CLONE_PARENT re-uses the old parent */
+	if (clone_flags & (CLONE_PARENT|CLONE_THREAD)) {
+		p->real_parent = current->real_parent;
+		p->parent_exec_id = current->parent_exec_id;
+		if (clone_flags & CLONE_THREAD)
+			p->exit_signal = -1;
+		else
+			p->exit_signal = current->group_leader->exit_signal;
+	} else {
+		p->real_parent = current;
+		p->parent_exec_id = current->self_exec_id;
+		p->exit_signal = args->exit_signal;
+	}
+
+	klp_copy_process(p);
+
+	sched_core_fork(p);
+
+	spin_lock(&current->sighand->siglock);
+
+	/*
+	 * Copy seccomp details explicitly here, in case they were changed
+	 * before holding sighand lock.
+	 */
+	copy_seccomp(p);
+
+	rseq_fork(p, clone_flags);
+
+	...
+
+	/* Let kill terminate clone/fork in the middle */
+	if (fatal_signal_pending(current)) {
+		retval = -EINTR;
+		goto bad_fork_cancel_cgroup;
+	}
+
+	/* past the last point of failure */
+	if (pidfile)
+		fd_install(pidfd, pidfile);
+
+	init_task_pid_links(p);
+	if (likely(p->pid)) {
+		ptrace_init_task(p, (clone_flags & CLONE_PTRACE) || trace);
+
+		init_task_pid(p, PIDTYPE_PID, pid);
+		if (thread_group_leader(p)) {
+			init_task_pid(p, PIDTYPE_TGID, pid);
+			init_task_pid(p, PIDTYPE_PGID, task_pgrp(current));
+			init_task_pid(p, PIDTYPE_SID, task_session(current));
+
+			if (is_child_reaper(pid)) {
+				ns_of_pid(pid)->child_reaper = p;
+				p->signal->flags |= SIGNAL_UNKILLABLE;
+			}
+			p->signal->shared_pending.signal = delayed.signal;
+			p->signal->tty = tty_kref_get(current->signal->tty);
+			/*
+			 * Inherit has_child_subreaper flag under the same
+			 * tasklist_lock with adding child to the process tree
+			 * for propagate_has_child_subreaper optimization.
+			 */
+			p->signal->has_child_subreaper = p->real_parent->signal->has_child_subreaper ||
+							 p->real_parent->signal->is_child_subreaper;
+			list_add_tail(&p->sibling, &p->real_parent->children);
+			list_add_tail_rcu(&p->tasks, &init_task.tasks);
+			attach_pid(p, PIDTYPE_TGID);
+			attach_pid(p, PIDTYPE_PGID);
+			attach_pid(p, PIDTYPE_SID);
+			__this_cpu_inc(process_counts);
+		} else {
+			current->signal->nr_threads++;
+			atomic_inc(&current->signal->live);
+			refcount_inc(&current->signal->sigcnt);
+			task_join_group_stop(p);
+			list_add_tail_rcu(&p->thread_group,
+					  &p->group_leader->thread_group);
+			list_add_tail_rcu(&p->thread_node,
+					  &p->signal->thread_head);
+		}
+		attach_pid(p, PIDTYPE_PID);
+		nr_threads++;
+	}
+	total_forks++;
+	hlist_del_init(&delayed.node);
+	spin_unlock(&current->sighand->siglock);
+	syscall_tracepoint_update(p);
+	write_unlock_irq(&tasklist_lock);
+
+	proc_fork_connector(p);
+	sched_post_fork(p);
+	cgroup_post_fork(p, args);
+	perf_event_fork(p);
+
+	trace_task_newtask(p, clone_flags);
+	uprobe_copy_process(p, clone_flags);
+
+	copy_oom_score_adj(clone_flags, p);
+
+	return p;
+
+    ...
+}
+```
+
+##### 关键函数dup_task_struct
+
+`dup_task_struct` 为新进程分配一个进程描述符和内核栈。
+
+```c
+static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
+{
+	struct task_struct *tsk;
+	unsigned long *stack;
+	struct vm_struct *stack_vm_area __maybe_unused;
+	int err;
+
+	if (node == NUMA_NO_NODE)
+		node = tsk_fork_get_node(orig);
+    // 分配 task_struct
+    // 哈，调用 kmem_cache_alloc_node，即 slab 分配器
+    // 之前的文章中就介绍过，slab 分配器分配小块内存，且分配的内存按照 cache 行对齐
+	tsk = alloc_task_struct_node(node);
+	if (!tsk)
+		return NULL;
+
+    // 分配内核栈，通过 __vmalloc_node_range 即 vmalloc 分配机制来分配内核栈
+	stack = alloc_thread_stack_node(tsk, node);
+	if (!stack)
+		goto free_tsk;
+
+	if (memcg_charge_kernel_stack(tsk))
+		goto free_stack;
+
+	stack_vm_area = task_stack_vm_area(tsk); // 这个就是该进程内核栈内存区域对应的空间描述符 -- vm_struct
+
+	err = arch_dup_task_struct(tsk, orig); // 将父进程的 task_struct 直接复制到子进程的 task_struct
+
+	/*
+	 * arch_dup_task_struct() clobbers the stack-related fields.  Make
+	 * sure they're properly initialized before using any stack-related
+	 * functions again.
+	 */
+	tsk->stack = stack;
+
+	...
+
+	return NULL;
+}
+```
+
+##### 关键函数copy_mm
+
+这个函数就很好理解了。
+
+```c
+static int copy_mm(unsigned long clone_flags, struct task_struct *tsk)
+{
+	struct mm_struct *mm, *oldmm;
+
+	tsk->min_flt = tsk->maj_flt = 0;
+	tsk->nvcsw = tsk->nivcsw = 0;
+#ifdef CONFIG_DETECT_HUNG_TASK
+	tsk->last_switch_count = tsk->nvcsw + tsk->nivcsw;
+	tsk->last_switch_time = 0;
+#endif
+
+	tsk->mm = NULL;
+	tsk->active_mm = NULL;
+
+	/*
+	 * Are we cloning a kernel thread?
+	 *
+	 * We need to steal a active VM for that..
+	 */
+	oldmm = current->mm; // 获取父进程的进程地址空间描述符
+	if (!oldmm)
+		return 0;
+
+	/* initialize the new vmacache entries */
+	vmacache_flush(tsk);
+
+	if (clone_flags & CLONE_VM) { // 如果是 fork，那么公用地址空间
+		mmget(oldmm);
+		mm = oldmm;
+	} else { // 不然需要复制父进程的地址空间描述符
+		mm = dup_mm(tsk, current->mm);
+		if (!mm)
+			return -ENOMEM;
+	}
+
+	tsk->mm = mm;
+	tsk->active_mm = mm;
+	return 0;
+}
+```
+
+##### 关键函数dup_mm
+
+这个函数涉及到很多内存管理的知识，应该仔细分析，把它搞懂。
+
+```c
+/**
+ * dup_mm() - duplicates an existing mm structure
+ * @tsk: the task_struct with which the new mm will be associated.
+ * @oldmm: the mm to duplicate.
+ *
+ * Allocates a new mm structure and duplicates the provided @oldmm structure
+ * content into it.
+ *
+ * Return: the duplicated mm or NULL on failure.
+ */
+static struct mm_struct *dup_mm(struct task_struct *tsk,
+				struct mm_struct *oldmm)
+{
+	struct mm_struct *mm;
+	int err;
+
+	mm = allocate_mm(); // 调用 slab 分配器创建一个 mm_struct
+	if (!mm)
+		goto fail_nomem;
+
+    // 直接复制（？）
+    // 复制数据结构的内容，而不是复制内存，有什么区别（？）
+	memcpy(mm, oldmm, sizeof(*mm));
+
+    // 这里为什么又需要配置 mm，不是直接复制么
+    // 还需要分配 pgd。pgd 指向该进程一级页表的基地址
+    // 好吧，pgd 的分配也需要调用伙伴系统分配页面
+	if (!mm_init(mm, tsk, mm->user_ns))
+		goto fail_nomem;
+
+	err = dup_mmap(mm, oldmm); // 复制父进程的进程地址空间到子进程，好吧，我搞糊涂了，
+	if (err)
+		goto free_pt;
+
+	mm->hiwater_rss = get_mm_rss(mm);
+	mm->hiwater_vm = mm->total_vm;
+
+	if (mm->binfmt && !try_module_get(mm->binfmt->module))
+		goto free_pt;
+
+	return mm;
+
+free_pt:
+	/* don't put binfmt in mmput, we haven't got module yet */
+	mm->binfmt = NULL;
+	mm_init_owner(mm, NULL);
+	mmput(mm);
+
+fail_nomem:
+	return NULL;
+}
+```
+
+
+
+#### 进程创建后的返回
+
+
+
+#### 终止进程
+
+进程的终止主要有 2 中方法：
+
+- 自愿终止
+  - 从 `main` 函数返回，连接程序会自动的添加 `exit` 系统调用
+  - 主动调用 `exit` 系统调用
+- 被动终止
+  - 进程受到一个自己不能处理的信号
+  - 进程在内核态执行时产生一个异常
+  - 进程收到 SIGKILL 等终止信号
+
+当一个进程终止时，内核会释放它所有占用的资源（`task_struct` 视情况而定），并把这个消息传递给父进程。
 
 ### 进程调度
 
