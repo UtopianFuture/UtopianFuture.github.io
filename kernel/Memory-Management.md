@@ -2231,13 +2231,15 @@ static __always_inline unsigned int __kmalloc_index(size_t size,
 
 ### vmalloc
 
-这部分只是大概了解 vmalloc 是干什么的和其分配流程，但其详细的实现还不懂。
+这部分只是大概了解 `vmalloc` 是干什么的和其分配流程，但其详细的实现还不懂。
 
 上面介绍了 `kmalloc` 使用 slab 分配器分配小块的、连续的物理内存，因为 slab 分配器在创建的时候也需要使用伙伴系统分配物理内存页面的接口，所以 **slab 分配器建立在一个物理地址连续的大块内存之上**（理解这点很重要）。那如果在内核中不需要连续的物理地址，而**仅仅需要虚拟地址连续的内存块**该如何处理？这就是 `vmalloc` 的工作。
 
+后来发现 `vmalloc` 的用途不止于此，在创建子进程时需要为子进程分配内核栈，这时就需要用到 `vmalloc`。那是不是说需要在内核地址空间分配内存时就需要用到 `vmalloc`，这个有待验证。
+
 vmalloc 映射区的**映射方式与用户空间完全相同**，内核可以通过调用 vmalloc 函数在内核地址空间的 vmalloc 区域获得内存。这个函数的功能相当于用户空间的 malloc 函数，所提供的虚拟地址空间是连续的， 但不保证物理地址是连续的。
 
-还是先看看 vmalloc 相关的数据结构，内核中用 `vm_struct` 来表示一块 vmalloc 分配的区域。
+还是先看看 `vmalloc` 相关的数据结构，内核中用 `vm_struct` 来表示一块 vmalloc 分配的区域。
 
 ```c
 struct vm_struct {
@@ -2289,7 +2291,7 @@ void *__vmalloc_node(unsigned long size, unsigned long align,
 
 vmalloc 分配的空间在 [内存分布](# 内存分布) 小节中的图中有清晰的说明（不同架构的内存布局是不一样的，因为这篇文章的时间跨度较大，参考多本书籍，所以混合了 arm 内核、Loongarch 内核和 x86 内核的源码，这是个问题，之后要想想怎么解决。在 64 位 x86 内核中，该区域为 `0xffffc90000000000 ~ 0xffffe8ffffffffff`）。
 
-1. vmalloc 的核心功能都是在 `__vmalloc_node_range` 函数中实现的。
+1. vmalloc 的核心功能都是在 `__vmalloc_node_range` 函数中实现的。分配内存套路都是一样的，先分配虚拟地址，再根据需要决定是否要分配物理地址，最后建立映射。
 
    ```c
    void *__vmalloc_node_range(unsigned long size, unsigned long align,
@@ -2316,8 +2318,9 @@ vmalloc 分配的空间在 [内存分布](# 内存分布) 小节中的图中有�
    		goto fail;
    	}
 
-   	addr = __vmalloc_area_node(area, gfp_mask, prot, shift, node); // 分配物理内存，并和 vm_struct 空间
-   	if (!addr)                                                     // 建立映射关系
+       // 分配物理内存，并和 vm_struct 空间建立映射关系
+   	addr = __vmalloc_area_node(area, gfp_mask, prot, shift, node);
+   	if (!addr)
    		goto fail;
 
    	/*
@@ -2328,19 +2331,9 @@ vmalloc 分配的空间在 [内存分布](# 内存分布) 小节中的图中有�
    	clear_vm_uninitialized_flag(area);
 
    	size = PAGE_ALIGN(size);
-   	kmemleak_vmalloc(area, size, gfp_mask);
+   	kmemleak_vmalloc(area, size, gfp_mask); // 检查内存泄漏（？）
 
    	return addr;
-
-   fail:
-   	if (shift > PAGE_SHIFT) {
-   		shift = PAGE_SHIFT;
-   		align = real_align;
-   		size = real_size;
-   		goto again;
-   	}
-
-   	return NULL;
    }
    ```
 
@@ -2365,7 +2358,10 @@ vmalloc 分配的空间在 [内存分布](# 内存分布) 小节中的图中有�
    		align = 1ul << clamp_t(int, get_count_order_long(size),
    				       PAGE_SHIFT, IOREMAP_MAX_ORDER);
 
-   	area = kzalloc_node(sizeof(*area), gfp_mask & GFP_RECLAIM_MASK, node); // 怎么调用 kmalloc_node 了
+       // 怎么调用 kmalloc_node 了？
+       // 这是因为需要分配一个新的数据结构，而数据结构往往就是几十个字节
+       // 所以使用 slab 分配器。这种分配方式之后会遇到很多
+   	area = kzalloc_node(sizeof(*area), gfp_mask & GFP_RECLAIM_MASK, node);
    	if (unlikely(!area))
    		return NULL;
 
@@ -2391,7 +2387,7 @@ vmalloc 分配的空间在 [内存分布](# 内存分布) 小节中的图中有�
      - 从 `VMALLOC_START` 开始查找每个已存在的 vmalloc 区域的缝隙能够容纳目前申请的大小。如果已有的 vmalloc 区域的缝隙不能容纳，那么从最后一块 vmalloc 区域的结束地址开辟一个新的 vmalloc 区域。
      - 找到新的区域缝隙后，调用 `insert_vmap_area` 将其注册到红黑树。
 
-这里有个疑问，为什么 vmalloc 最后申请空间也要调用到 slab 分配器？
+这里有个疑问，为什么 vmalloc 最后申请空间也要调用到 slab 分配器？（上面已经解释了）
 
 ```c
 #0  slab_alloc_node (orig_size=64, addr=18446744071581699837, node=<optimized out>, gfpflags=3264,
@@ -2408,6 +2404,74 @@ vmalloc 分配的空间在 [内存分布](# 内存分布) 小节中的图中有�
     start=<optimized out>, end=<optimized out>, gfp_mask=gfp_mask@entry=3520, prot=..., vm_flags=0, node=-1,
     caller=0xffffffff810a20ad <kernel_clone+157>) at mm/vmalloc.c:3010
 ```
+
+3. `__vmalloc_area_node`
+
+   ```c
+   static void *__vmalloc_area_node(struct vm_struct *area, gfp_t gfp_mask,
+   				 pgprot_t prot, unsigned int page_shift,
+   				 int node)
+   {
+   	const gfp_t nested_gfp = (gfp_mask & GFP_RECLAIM_MASK) | __GFP_ZERO;
+   	unsigned long addr = (unsigned long)area->addr;
+   	unsigned long size = get_vm_area_size(area);
+   	unsigned long array_size;
+   	unsigned int nr_small_pages = size >> PAGE_SHIFT;
+   	unsigned int page_order;
+
+   	array_size = (unsigned long)nr_small_pages * sizeof(struct page *);
+   	gfp_mask |= __GFP_NOWARN;
+   	if (!(gfp_mask & (GFP_DMA | GFP_DMA32))) // 确定使用哪个 ZONE
+   		gfp_mask |= __GFP_HIGHMEM; // 不过在 64 位系统中已经没有 HIGHMEM 了
+
+   	/* Please note that the recursion is strictly bounded. */
+       // 哈，这个就很好理解了，大于一个 page 的调用伙伴系统，否则调用 slab 分配器
+       // 不过这里只是分配指向所有 page 的指针，真正的物理内存不是在这里分配
+   	if (array_size > PAGE_SIZE) {
+   		area->pages = __vmalloc_node(array_size, 1, nested_gfp, node,
+   					area->caller);
+   	} else {
+   		area->pages = kmalloc_node(array_size, nested_gfp, node);
+   	}
+
+   	...
+
+   	set_vm_area_page_order(area, page_shift - PAGE_SHIFT);
+       // 计算需要分配多少个 page
+   	page_order = vm_area_page_order(area);
+
+       // 这里应该是分配物理页面
+   	area->nr_pages = vm_area_alloc_pages(gfp_mask, node,
+   		page_order, nr_small_pages, area->pages);
+
+   	atomic_long_add(area->nr_pages, &nr_vmalloc_pages);
+
+   	/*
+   	 * If not enough pages were obtained to accomplish an
+   	 * allocation request, free them via __vfree() if any.
+   	 */
+   	if (area->nr_pages != nr_small_pages) {
+   		warn_alloc(gfp_mask, NULL,
+   			"vmalloc error: size %lu, page order %u, failed to allocate pages",
+   			area->nr_pages * PAGE_SIZE, page_order);
+   		goto fail;
+   	}
+
+   	if (vmap_pages_range(addr, addr + size, prot, area->pages,
+   			page_shift) < 0) {
+   		warn_alloc(gfp_mask, NULL,
+   			"vmalloc error: size %lu, failed to map pages",
+   			area->nr_pages * PAGE_SIZE);
+   		goto fail;
+   	}
+
+   	return area->addr;
+
+   fail:
+   	__vfree(area->addr);
+   	return NULL;
+   }
+   ```
 
 ### 进程地址空间
 
