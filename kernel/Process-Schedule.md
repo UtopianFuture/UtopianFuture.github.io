@@ -1258,6 +1258,7 @@ static __latent_entropy struct task_struct *copy_process(
 	if (pidfile)
 		fd_install(pidfd, pidfile);
 
+    // 这段代码不懂
 	init_task_pid_links(p);
 	if (likely(p->pid)) {
 		ptrace_init_task(p, (clone_flags & CLONE_PTRACE) || trace);
@@ -1399,10 +1400,10 @@ static int copy_mm(unsigned long clone_flags, struct task_struct *tsk)
 	/* initialize the new vmacache entries */
 	vmacache_flush(tsk);
 
-	if (clone_flags & CLONE_VM) { // 如果是 fork，那么公用地址空间
+	if (clone_flags & CLONE_VM) { // 如果是 fork，那么共用地址空间
 		mmget(oldmm);
 		mm = oldmm;
-	} else { // 不然需要复制父进程的地址空间描述符
+	} else { // 不然需要复制父进程的地址空间描述符及页表
 		mm = dup_mm(tsk, current->mm);
 		if (!mm)
 			return -ENOMEM;
@@ -1441,15 +1442,19 @@ static struct mm_struct *dup_mm(struct task_struct *tsk,
 
     // 直接复制（？）
     // 复制数据结构的内容，而不是复制内存，有什么区别（？）
+    // 区别在与只是 mm_struct 中的内容，它只是描述符，而不是真正的内容
+    // 如重要的页表项还没有复制，这里只是复制的页表项的地址等等
 	memcpy(mm, oldmm, sizeof(*mm));
 
     // 这里为什么又需要配置 mm，不是直接复制么
     // 还需要分配 pgd。pgd 指向该进程一级页表的基地址
     // 好吧，pgd 的分配也需要调用伙伴系统分配页面
+    // 因为子进程的 mm_struct 不应该和父进程的完全一样，这里需要重新设置
 	if (!mm_init(mm, tsk, mm->user_ns))
 		goto fail_nomem;
 
-	err = dup_mmap(mm, oldmm); // 复制父进程的进程地址空间到子进程，好吧，我搞糊涂了，
+    // 复制父进程的进程地址空间的页表到子进程，继续完成上面的工作
+	err = dup_mmap(mm, oldmm);
 	if (err)
 		goto free_pt;
 
@@ -1461,18 +1466,129 @@ static struct mm_struct *dup_mm(struct task_struct *tsk,
 
 	return mm;
 
-free_pt:
-	/* don't put binfmt in mmput, we haven't got module yet */
-	mm->binfmt = NULL;
-	mm_init_owner(mm, NULL);
-	mmput(mm);
-
-fail_nomem:
-	return NULL;
+    ...
 }
 ```
 
+##### 关键函数dup_mmap
 
+这个函数复制父进程的进程地址空间的**页表**到子进程。
+
+```c
+#ifdef CONFIG_MMU
+static __latent_entropy int dup_mmap(struct mm_struct *mm,
+					struct mm_struct *oldmm)
+{
+	struct vm_area_struct *mpnt, *tmp, *prev, **pprev;
+	struct rb_node **rb_link, *rb_parent;
+	int retval;
+	unsigned long charge;
+	LIST_HEAD(uf);
+
+	...
+
+	/* No ordering required: file already has been exposed. */
+	dup_mm_exe_file(mm, oldmm);
+
+	mm->total_vm = oldmm->total_vm;
+	mm->data_vm = oldmm->data_vm;
+	mm->exec_vm = oldmm->exec_vm;
+	mm->stack_vm = oldmm->stack_vm;
+
+	rb_link = &mm->mm_rb.rb_node;
+	rb_parent = NULL;
+	pprev = &mm->mmap;
+
+    ...
+
+    // 遍历父进程所有的 VMA，将这些 VMA 逐个添加到子进程的 mm->mmap 中
+	prev = NULL;
+	for (mpnt = oldmm->mmap; mpnt; mpnt = mpnt->vm_next) {
+		struct file *file;
+
+        // 这应该是不需要复制的 VMA -- DONTCOPY
+		if (mpnt->vm_flags & VM_DONTCOPY) {
+			vm_stat_account(mm, mpnt->vm_flags, -vma_pages(mpnt));
+			continue;
+		}
+		charge = 0;
+
+        ...
+
+		if (mpnt->vm_flags & VM_ACCOUNT) {
+			unsigned long len = vma_pages(mpnt);
+
+			if (security_vm_enough_memory_mm(oldmm, len)) /* sic */
+				goto fail_nomem;
+			charge = len;
+		}
+        // 为子进程创建新的 VMA
+		tmp = vm_area_dup(mpnt);
+		if (!tmp)
+			goto fail_nomem;
+		retval = vma_dup_policy(mpnt, tmp);
+		if (retval)
+			goto fail_nomem_policy;
+		tmp->vm_mm = mm; // 一个个 VMA 添加
+		retval = dup_userfaultfd(tmp, &uf);
+		if (retval)
+			goto fail_nomem_anon_vma_fork;
+		if (tmp->vm_flags & VM_WIPEONFORK) {
+			/*
+			 * VM_WIPEONFORK gets a clean slate in the child.
+			 * Don't prepare anon_vma until fault since we don't
+			 * copy page for current vma.
+			 */
+			tmp->anon_vma = NULL;
+		} else if (anon_vma_fork(tmp, mpnt)) // 创建子进程的 anon_vma，并通过枢纽 avc 连接父子进程
+			goto fail_nomem_anon_vma_fork;
+		tmp->vm_flags &= ~(VM_LOCKED | VM_LOCKONFAULT);
+		file = tmp->vm_file;
+		if (file) { // 该 vma 对应的 file
+			struct address_space *mapping = file->f_mapping;
+
+			get_file(file);
+			i_mmap_lock_write(mapping);
+			if (tmp->vm_flags & VM_SHARED)
+				mapping_allow_writable(mapping);
+			flush_dcache_mmap_lock(mapping);
+			/* insert tmp into the share list, just after mpnt */
+			vma_interval_tree_insert_after(tmp, mpnt,
+					&mapping->i_mmap);
+			flush_dcache_mmap_unlock(mapping);
+			i_mmap_unlock_write(mapping);
+		}
+
+		...
+
+		/*
+		 * Link in the new vma and copy the page table entries.
+		 */
+		*pprev = tmp;
+		pprev = &tmp->vm_next;
+		tmp->vm_prev = prev;
+		prev = tmp;
+
+		__vma_link_rb(mm, tmp, rb_link, rb_parent); // 插入 vma
+		rb_link = &tmp->vm_rb.rb_right;
+		rb_parent = &tmp->vm_rb;
+
+		mm->map_count++;
+		if (!(tmp->vm_flags & VM_WIPEONFORK))
+			retval = copy_page_range(tmp, mpnt); // 复制 4/5 级页表
+
+		if (tmp->vm_ops && tmp->vm_ops->open)
+			tmp->vm_ops->open(tmp);
+
+		if (retval)
+			goto out;
+	}
+	/* a new mm has just been created */
+	retval = arch_dup_mmap(oldmm, mm);
+
+    ...
+}
+```
 
 #### 进程创建后的返回
 
