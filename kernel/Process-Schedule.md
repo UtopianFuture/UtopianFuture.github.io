@@ -19,6 +19,8 @@
     - [关键函数copy_process](#关键函数copy_process)
     - [关键函数dup_task_struct](#关键函数dup_task_struct)
     - [关键函数copy_mm](#关键函数copy_mm)
+    - [关键函数dup_mmap](#关键函数dup_mmap)
+    - [关键函数copy_thread](#关键函数copy_thread)
 
   - [进程创建后的返回](#进程创建后的返回)
   - [终止进程](#终止进程)
@@ -1060,6 +1062,7 @@ pid_t kernel_clone(struct kernel_clone_args *args)
     // 现在子进程已经创建成功了，父、子进程都需要返回到用户空间执行
     // 而两者都会从该函数的返回处开始执行，所以 fork, vfork, clone 等系统调用都有 2 个返回值
     // 这里返回 nr，为子进程的 pid，所以其为父进程
+    // 而另一个返回值为子进程被调度执行后的返回
 	return nr;
 }
 ```
@@ -1172,7 +1175,7 @@ static __latent_entropy struct task_struct *copy_process(
 	retval = copy_io(clone_flags, p); // I/O 相关
 	if (retval)
 		goto bad_fork_cleanup_namespaces;
-	retval = copy_thread(clone_flags, args->stack, args->stack_size, p, args->tls);
+	retval = copy_thread(clone_flags, args->stack, args->stack_size, p, args->tls); // 设置内核栈等信息
 	if (retval)
 		goto bad_fork_cleanup_io;
 
@@ -1587,6 +1590,81 @@ static __latent_entropy int dup_mmap(struct mm_struct *mm,
 	retval = arch_dup_mmap(oldmm, mm);
 
     ...
+}
+```
+
+##### 关键函数copy_thread
+
+这里设置些架构相关的寄存器，涉及到 clone, vfork, fork 等系统调用返回用户态的寄存器状态以及返回到哪个处理函数进行系统态 - 用户态的切换，现在知道这个函数是 `ret_from_fork` 。
+
+```c
+int copy_thread(unsigned long clone_flags, unsigned long sp, unsigned long arg,
+		struct task_struct *p, unsigned long tls)
+{
+	struct inactive_task_frame *frame;
+	struct fork_frame *fork_frame; // 内核栈么
+	struct pt_regs *childregs; // 这是 X86 所有的通用寄存器
+	int ret = 0;
+
+	childregs = task_pt_regs(p);
+	fork_frame = container_of(childregs, struct fork_frame, regs);
+	frame = &fork_frame->frame;
+
+	frame->bp = encode_frame_pointer(childregs);
+	frame->ret_addr = (unsigned long) ret_from_fork; // 在这里设置 clone,fork,vfork 等的返回地址
+	p->thread.sp = (unsigned long) fork_frame;
+	p->thread.io_bitmap = NULL;
+	memset(p->thread.ptrace_bps, 0, sizeof(p->thread.ptrace_bps));
+
+#ifdef CONFIG_X86_64
+	current_save_fsgs();
+	p->thread.fsindex = current->thread.fsindex;
+	p->thread.fsbase = current->thread.fsbase;
+	p->thread.gsindex = current->thread.gsindex;
+	p->thread.gsbase = current->thread.gsbase;
+
+	savesegment(es, p->thread.es);
+	savesegment(ds, p->thread.ds);
+#else
+	p->thread.sp0 = (unsigned long) (childregs + 1);
+	/*
+	 * Clear all status flags including IF and set fixed bit. 64bit
+	 * does not have this initialization as the frame does not contain
+	 * flags. The flags consistency (especially vs. AC) is there
+	 * ensured via objtool, which lacks 32bit support.
+	 */
+	frame->flags = X86_EFLAGS_FIXED;
+#endif
+
+	/* Kernel thread ? */
+	if (unlikely(p->flags & PF_KTHREAD)) {
+		p->thread.pkru = pkru_get_init_value();
+		memset(childregs, 0, sizeof(struct pt_regs));
+		kthread_frame_init(frame, sp, arg);
+		return 0;
+	}
+
+	/*
+	 * Clone current's PKRU value from hardware. tsk->thread.pkru
+	 * is only valid when scheduled out.
+	 */
+	p->thread.pkru = read_pkru();
+
+	frame->bx = 0;
+	*childregs = *current_pt_regs();
+    // 这里设置 rax 寄存器为 0，而 rax 是保存返回值的寄存器
+    // 所以 fork,clone,vfork 系统调用子进程的返回值是 0
+	childregs->ax = 0;
+	if (sp)
+		childregs->sp = sp;
+
+#ifdef CONFIG_X86_32
+	task_user_gs(p) = get_user_gs(current_pt_regs());
+#endif
+
+	...
+
+	return ret;
 }
 ```
 
