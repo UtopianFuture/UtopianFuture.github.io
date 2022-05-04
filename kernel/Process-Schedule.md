@@ -1668,10 +1668,6 @@ int copy_thread(unsigned long clone_flags, unsigned long sp, unsigned long arg,
 }
 ```
 
-#### 进程创建后的返回
-
-
-
 #### 终止进程
 
 进程的终止主要有 2 中方法：
@@ -1688,4 +1684,12 @@ int copy_thread(unsigned long clone_flags, unsigned long sp, unsigned long arg,
 
 ### 进程调度
 
+
+
 ### Reference
+
+[1] 奔跑吧 Linux 内核，卷 1：基础架构
+
+[2] 内核版本：5.15-rc5，commitid: f6274b06e326d8471cdfb52595f989a90f5e888f
+
+[3] https://blog.csdn.net/u013982161/article/details/51347944
