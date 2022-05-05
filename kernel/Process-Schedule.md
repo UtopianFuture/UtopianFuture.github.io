@@ -25,7 +25,25 @@
 - [进程调度](#进程调度)
   - [调度策略](#调度策略)
   - [经典调度算法](#经典调度算法)
-  - [CFS](#CFS)
+- [CFS](#CFS)
+  - [vruntime](#vruntime)
+  - [相关数据结构](#相关数据结构)
+    - [sched_entity](#sched_entity)
+    - [rq](#rq)
+    - [cfs_rq](#cfs_rq)
+    - [sched_class](#sched_class)
+
+  - [进程创建中的相关初始化](#进程创建中的相关初始化)
+    - [关键函数sched_fork](#关键函数sched_fork)
+    - [关键函数task_fork_fair](#关键函数task_fork_fair)
+    - [关键函数update_curr](#关键函数update_curr)
+
+  - [进程加入调度器](#进程加入调度器)
+    - [关键函数wake_up_new_task](#关键函数wake_up_new_task)
+    - [关键函数enqueue_task_fair](#关键函数enqueue_task_fair)
+    - [关键函数enqueue_entity](#关键函数enqueue_entity)
+
+  - [进程调度](#进程调度)
 
 - [Reference](#Reference)
 
@@ -94,7 +112,7 @@ struct task_struct {
 
 	int				prio; // 进程的动态优先级。这是调度类考（？）虑的优先级
 	int				static_prio; // 静态优先级，再进程启动时分配
-	int				normal_prio; // 基于 static_prio 和调度策略计算出来的优先级
+	int				normal_prio; // 基于 static_prio 和调度策略计算出来的优先级，子进程初始化时继承该优先级
 	unsigned int			rt_priority; // 实时进程的优先级
 
 	const struct sched_class	*sched_class; // 调度类
@@ -856,7 +874,7 @@ asmlinkage __visible void __init start_kernel(void)
 	.static_prio	= MAX_PRIO-20,					\
 	.normal_prio	= MAX_PRIO-20,					\
 	.policy		= SCHED_NORMAL,					\
-	.cpus_allowed	= CPU_MASK_ALL,					\
+	.cpus_allowed	= CPU_MASK_ALL,					\ // 该进程可以在哪个 CPU 上运行
 	.nr_cpus_allowed= NR_CPUS,					\
 	.mm		= NULL,						\
 	.active_mm	= &init_mm,					\
@@ -885,7 +903,7 @@ static __always_inline struct task_struct *get_current(void)
 
 #### 内核线程
 
-内核线程就是运行在内核地址空间的进程，它没有独立的进程地址空间，所有的内核线程都共享内核地址空间，即 `task_struct` 结构中的 `mm_struct` 指针设为  null。但内核线程也和普通进程一样参与系统调度。
+内核线程就是运行在内核地址空间的进程，它**没有独立的进程地址空间**，所有的内核线程都共享内核地址空间，即 `task_struct` 结构中的 `mm_struct` 指针设为  null。但内核线程也和普通进程一样参与系统调度。
 
 ### 进程创建与终止
 
@@ -1113,7 +1131,7 @@ static __latent_entropy struct task_struct *copy_process(
 	...
 
 	/* Perform scheduler related setup. Assign this task to a CPU. */
-	retval = sched_fork(clone_flags, p); // 初始化与进程调度相关的结构
+	retval = sched_fork(clone_flags, p); // 初始化与进程调度相关的结构，下面分析
 	if (retval)
 		goto bad_fork_cleanup_policy;
 
@@ -1673,6 +1691,13 @@ int copy_thread(unsigned long clone_flags, unsigned long sp, unsigned long arg,
 |   CFS    | SCHED_NORMAL、 SCHED_BATCH、 SCHED_IDLE |         普通进程。优先级为 100 ~ 139         |                        由 CFS 来调度                         |
 |   idle   |                   无                    |               最低优先级的进程               | 当继续队列中没有其他进程时进入 idle 调度类。idle 调度类会让 CPU 进入低功耗模式 |
 
+- `SCHED_DEADLINE`：限期进程调度策略，使task选择`Deadline调度器`来调度运行；
+- `SCHED_FIFO`：实时进程调度策略，先进先出调度没有时间片，没有更高优先级的情况下，只能等待主动让出CPU；
+- `SCHED_RR`：实时进程调度策略，时间片轮转，进程用完时间片后加入优先级对应运行队列的尾部，把CPU让给同优先级的其他进程；
+- `SCHED_NORMAL`：普通进程调度策略，使task选择`CFS调度器`来调度运行；
+- `SCHED_BATCH`：普通进程调度策略，批量处理，使task选择`CFS调度器`来调度运行；
+- `SCHED_IDLE`：普通进程调度策略，使task以最低优先级选择`CFS调度器`来调度运行；
+
 #### 经典调度算法
 
 现代操作系统的进程调度器的设计大多受多级反馈队列算法的影响。多级反馈队列算法的核心是把进程按优先级分成多个队列，相同优先级的进程在同一个队列。它最大的特点再与能够根据判断正在运行的进程属于哪种进程，如 I/O 消耗型或 CPU 消耗型，作出不同的反馈，然后动态的修改进程的优先级。
@@ -1700,9 +1725,99 @@ int copy_thread(unsigned long clone_flags, unsigned long sp, unsigned long arg,
 
 虽说算法思想不难，但是在实际工程中最难的是参数如何确定和优化，如时间间隔 S。
 
-#### CFS
+### CFS
 
-##### vruntime
+`Completely Fair Scheduler`，完全公平调度器，用于内核中普通进程的调度。
+
+`CFS` 采用了红黑树算法来管理所有的调度实体`sched_entity`，算法效率为 `O(log(n))`。`CFS` 跟踪调度实体 `sched_entity` 的虚拟运行时间 `vruntime`，平等对待运行队列中的调度实体，将执行时间少的调度实体排列到红黑树的左边。调度实体通过 `enqueue_entity()` 和 `dequeue_entity()` 来进行红黑树的出队入队。每个 `sched_latency` 周期内，根据各个任务的权重值，可以计算出运行时间 `runtime`，运行时间可以转换成虚拟运行时间 `vruntime`。根据虚拟运行时间的大小，插入到 CFS 红黑树中，虚拟运行时间少的调度实体放置到左边，在下一次任务调度的时候，**选择虚拟运行时间少的调度实体来运行**。
+
+#### vruntime
+
+内核使用 0 ~ 139 表示进程的优先级，数值越低，优先级越高。优先级 0 ~ 99 分配给实时进程，100 ~ 139 分配给普通进程使用。另外，在用户空间有一个传统的变量 nice，它映射到普通进程的优先级，即 100 ~ 139。nice 值的范围是 -20 ~ 19，进程默认的 nice 值为 0，**nice 值越高，优先级越低，权重越低，反之亦然**。如果一个 CPU 密集型的进程 nice 值从 0 增加到 1，那么它相对于其他 nice 值为 0 的进程将减少 10% 的 CPU 时间。为了计算方便，内核约定 nice 值为 0 的进程权重为 1024，其他 nice 值对应的权重值可以通过查表的方式来获取，
+
+```c
+const int sched_prio_to_weight[40] = {
+ /* -20 */     88761,     71755,     56483,     46273,     36291,
+ /* -15 */     29154,     23254,     18705,     14949,     11916,
+ /* -10 */      9548,      7620,      6100,      4904,      3906,
+ /*  -5 */      3121,      2501,      1991,      1586,      1277,
+ /*   0 */      1024,       820,       655,       526,       423,
+ /*   5 */       335,       272,       215,       172,       137,
+ /*  10 */       110,        87,        70,        56,        45,
+ /*  15 */        36,        29,        23,        18,        15,
+};
+```
+
+通过这个表定义的权重值就可以达到 nice 值增减 1，占用 CPU 时间增减 10%，这个可以自行计算。
+
+这里有个问题，为什么有了优先级还要使用 nice 值？仅仅是因为优先级是内核态的变量，而 nice 值可以在用户态访问么？
+
+```c
+const u32 sched_prio_to_wmult[40] = {
+ /* -20 */     48388,     59856,     76040,     92818,    118348,
+ /* -15 */    147320,    184698,    229616,    287308,    360437,
+ /* -10 */    449829,    563644,    704093,    875809,   1099582,
+ /*  -5 */   1376151,   1717300,   2157191,   2708050,   3363326,
+ /*   0 */   4194304,   5237765,   6557202,   8165337,  10153587,
+ /*   5 */  12820798,  15790321,  19976592,  24970740,  31350126,
+ /*  10 */  39045157,  49367440,  61356676,  76695844,  95443717,
+ /*  15 */ 119304647, 148102320, 186737708, 238609294, 286331153,
+};
+```
+
+那么这个表有何用途？
+
+前面讲到 `CFS` 跟踪调度实体 `sched_entity` 的虚拟运行时间 `vruntime`，平等对待运行队列中的调度实体，将执行时间少的调度实体排列到红黑树的左边，在下一次任务调度的时候，选择虚拟运行时间少的调度实体来运行。也就是说 `vruntime` 是决定进程调度次序的关键变量，但为何要设计 `vruntime`，而不是直接使用 `runtime`？
+
+在 `CFS` 中有一个计算 `vruntime` 的核心函数 `calc_delta_fair`，其调用 `__calc_delta`，
+
+```c
+/*
+ * delta_exec * weight / lw.weight
+ *   OR
+ * (delta_exec * (weight * lw->inv_weight)) >> WMULT_SHIFT
+ *
+ * Either weight := NICE_0_LOAD and lw \e sched_prio_to_wmult[], in which case
+ * we're guaranteed shift stays positive because inv_weight is guaranteed to
+ * fit 32 bits, and NICE_0_LOAD gives another 10 bits; therefore shift >= 22.
+ *
+ * Or, weight =< lw.weight (because lw.weight is the runqueue weight), thus
+ * weight/lw.weight <= 1, and therefore our shift will also be positive.
+ */
+// 该函数计算 vruntime，其中 delta_exec 表示实际运行时间，weight 表示 nice 值为 0 的权重值，lw 表示该进程的权重值
+static u64 __calc_delta(u64 delta_exec, unsigned long weight, struct load_weight *lw)
+{
+	u64 fact = scale_load_down(weight);
+	u32 fact_hi = (u32)(fact >> 32);
+	int shift = WMULT_SHIFT;
+	int fs;
+
+	__update_inv_weight(lw);
+
+	if (unlikely(fact_hi)) {
+		fs = fls(fact_hi);
+		shift -= fs;
+		fact >>= fs;
+	}
+
+	fact = mul_u32_u32(fact, lw->inv_weight);
+
+	fact_hi = (u32)(fact >> 32);
+	if (fact_hi) {
+		fs = fls(fact_hi);
+		shift -= fs;
+		fact >>= fs;
+	}
+
+	return mul_u64_u32_shr(delta_exec, fact, shift);
+}
+```
+
+从这个函数的计算公式可以得出，nice 越大，计算出来的 `vruntime` 就越大，而调度器是选择虚拟运行时间少的调度实体来运行，所以 nice 值越大，优先级越低。随着 `vruntime` 的增长，优先级低的进程也有机会被调度。
+
+还是不理解为什么要进入 `vruntime`。
+
+#### 相关数据结构
 
 ##### sched_entity
 
@@ -1731,7 +1846,7 @@ struct sched_entity {
 	/* rq on which this entity is (to be) queued: */
 	struct cfs_rq			*cfs_rq; // 该调度实体属于哪个队列么
 	/* rq "owned" by this entity/group: */
-	struct cfs_rq			*my_q;
+	struct cfs_rq			*my_q; // 指向归属于当前调度实体的CFS队列，用于包含子任务或子任务组
 	/* cached value of my_q->h_nr_running */
 	unsigned long			runnable_weight; // 进程在可运行状态的权重，即进程的权重
 #endif
@@ -1931,7 +2046,7 @@ struct cfs_rq {
 
     ...
 
-	struct rb_root_cached	tasks_timeline; // 红黑树
+	struct rb_root_cached	tasks_timeline; // 红黑树，用于存放调度实体
 
 	/*
 	 * 'curr' points to currently running entity on this cfs_rq.
@@ -1946,13 +2061,14 @@ struct cfs_rq {
 	/*
 	 * CFS load tracking
 	 */
-	struct sched_avg	avg;
+	struct sched_avg	avg; // 计算负载相关
 
     ...
 
 #endif /* CONFIG_SMP */
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
+    // 指向CFS运行队列所属的 CPU RQ 运行队列
 	struct rq		*rq;	/* CPU runqueue to which this cfs_rq is attached */
 
 	/*
@@ -1978,19 +2094,459 @@ struct cfs_rq {
 
 这三个重要的数据结构关系如下图：
 
-![process_schedule](/home/guanshun/gitlab/UFuture.github.io/image/process_schedule.png)
+![process_schedule.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/process_schedule.png?raw=true)
 
-##### 进程创建
+除了这 3 个重要的数据结构，内核还为每中调度类定义了各自的方法集，这里先给出 CFS 的方法集，其定义在 `kernel/sched/fair.c` 中，idle 调度类的方法集在 	`kernel/sched/idle.c` 中，其他的应该差不多。
 
-##### 进程加入调度器
+##### sched_class
 
-##### 进程调度
+```c
+/*
+ * All the scheduling class methods:
+ */
+DEFINE_SCHED_CLASS(fair) = {
 
-##### 进程切换
+	.enqueue_task		= enqueue_task_fair,
+	.dequeue_task		= dequeue_task_fair,
+	.yield_task		= yield_task_fair,
+	.yield_to_task		= yield_to_task_fair,
 
-##### 调度节拍
+	.check_preempt_curr	= check_preempt_wakeup,
 
-##### 组调度机制
+	.pick_next_task		= __pick_next_task_fair,
+	.put_prev_task		= put_prev_task_fair,
+	.set_next_task          = set_next_task_fair,
+
+#ifdef CONFIG_SMP
+	.balance		= balance_fair,
+	.pick_task		= pick_task_fair,
+	.select_task_rq		= select_task_rq_fair,
+	.migrate_task_rq	= migrate_task_rq_fair,
+
+	.rq_online		= rq_online_fair,
+	.rq_offline		= rq_offline_fair,
+
+	.task_dead		= task_dead_fair,
+	.set_cpus_allowed	= set_cpus_allowed_common,
+#endif
+
+	.task_tick		= task_tick_fair,
+	.task_fork		= task_fork_fair,
+
+	.prio_changed		= prio_changed_fair,
+	.switched_from		= switched_from_fair,
+	.switched_to		= switched_to_fair,
+
+	.get_rr_interval	= get_rr_interval_fair,
+
+	.update_curr		= update_curr_fair,
+
+#ifdef CONFIG_FAIR_GROUP_SCHED
+	.task_change_group	= task_change_group_fair,
+#endif
+
+#ifdef CONFIG_UCLAMP_TASK
+	.uclamp_enabled		= 1,
+#endif
+};
+```
+
+这些回调函数之后都会用到，这里只是做个记录。
+
+#### 进程创建中的相关初始化
+
+[关键函数copy_process](#关键函数copy_process)中介绍了通过 `clone`, `vfork`, `fork` 等系统调用创建进程的过程，在创建的过程中也会初始化进程调度相关的数据结构。
+
+```c
+static __latent_entropy struct task_struct *copy_process(
+					struct pid *pid,
+					int trace,
+					int node,
+					struct kernel_clone_args *args)
+{
+	...
+
+	/* Perform scheduler related setup. Assign this task to a CPU. */
+	retval = sched_fork(clone_flags, p); // 初始化与进程调度相关的结构，下面分析
+	if (retval)
+		goto bad_fork_cleanup_policy;
+
+    ...
+}
+```
+
+下面分析一下 `sched_fork` 是怎样初始化调度器的。
+
+##### 关键函数sched_fork
+
+```c
+
+ * fork()/clone()-time setup:
+ */
+int sched_fork(unsigned long clone_flags, struct task_struct *p)
+{
+	unsigned long flags;
+
+     // 和之前的情况不同，这个看似关键的函数只是初始化 task_struct 中进程调度相关的数据结构
+	__sched_fork(clone_flags, p);
+	/*
+	 * We mark the process as NEW here. This guarantees that
+	 * nobody will actually run it, and a signal or other external
+	 * event cannot wake it up and insert it on the runqueue either.
+	 */
+	p->__state = TASK_NEW;
+
+	/*
+	 * Make sure we do not leak PI boosting priority to the child.
+	 */
+	p->prio = current->normal_prio; // 设置优先级
+
+	uclamp_fork(p);
+
+	...
+
+	if (dl_prio(p->prio)) // deadline 进程为什么出错？
+		return -EAGAIN;
+	else if (rt_prio(p->prio))
+		p->sched_class = &rt_sched_class; // 实时进程
+	else
+		p->sched_class = &fair_sched_class; // 普通进程使用 CFS 调度类
+
+	init_entity_runnable_average(&p->se); //
+
+	/*
+	 * The child is not yet in the pid-hash so no cgroup attach races,
+	 * and the cgroup is pinned to this child due to cgroup_fork()
+	 * is ran before sched_fork().
+	 *
+	 * Silence PROVE_RCU.
+	 */
+	raw_spin_lock_irqsave(&p->pi_lock, flags);
+	rseq_migrate(p);
+	/*
+	 * We're setting the CPU for the first time, we don't migrate,
+	 * so use __set_task_cpu().
+	 */
+	__set_task_cpu(p, smp_processor_id()); // 子进程开始所处的 CPU 应该就是父进程运行的 CPU
+	if (p->sched_class->task_fork)
+		p->sched_class->task_fork(p); // 该回调函数为 task_fork_fair，前面有说明
+	raw_spin_unlock_irqrestore(&p->pi_lock, flags);
+
+#ifdef CONFIG_SCHED_INFO
+	if (likely(sched_info_on()))
+		memset(&p->sched_info, 0, sizeof(p->sched_info)); // 统计信息直接复制
+#endif
+#if defined(CONFIG_SMP)
+	p->on_cpu = 0; // on_cpu 表示程序是否处于运行态，这里进程还没有加入调度器开始运行
+#endif
+	init_task_preempt_count(p);
+#ifdef CONFIG_SMP
+	plist_node_init(&p->pushable_tasks, MAX_PRIO);
+	RB_CLEAR_NODE(&p->pushable_dl_tasks);
+#endif
+	return 0;
+}
+```
+
+##### 关键函数task_fork_fair
+
+```c
+static void task_fork_fair(struct task_struct *p)
+{
+	struct cfs_rq *cfs_rq;
+	struct sched_entity *se = &p->se, *curr;
+	struct rq *rq = this_rq();
+	struct rq_flags rf;
+
+	rq_lock(rq, &rf);
+	update_rq_clock(rq);
+
+	cfs_rq = task_cfs_rq(current); // 获取当前进程所在的 CFS 就绪队列
+	curr = cfs_rq->curr;
+	if (curr) {
+		update_curr(cfs_rq);
+		se->vruntime = curr->vruntime;
+	}
+	place_entity(cfs_rq, se, 1); // 根据情况对进程虚拟时间进行一些惩罚（？）
+
+	if (sysctl_sched_child_runs_first && curr && entity_before(curr, se)) {
+		/*
+		 * Upon rescheduling, sched_class::put_prev_task() will place
+		 * 'current' within the tree based on its new key value.
+		 */
+		swap(curr->vruntime, se->vruntime);
+		resched_curr(rq);
+	}
+
+	se->vruntime -= cfs_rq->min_vruntime;
+	rq_unlock(rq, &rf);
+}
+```
+
+##### 关键函数update_curr
+
+该函数传入的参数为当前进程所在的 CFS 就绪队列，其用于更新进程的 `vruntime`。
+
+```c
+/*
+ * Update the current task's runtime statistics.
+ */
+static void update_curr(struct cfs_rq *cfs_rq)
+{
+	struct sched_entity *curr = cfs_rq->curr;
+	u64 now = rq_clock_task(rq_of(cfs_rq));
+	u64 delta_exec;
+
+	delta_exec = now - curr->exec_start; // 哦，这才是执行时间
+
+	curr->exec_start = now; // 现在就更新么，新进程不是还没有放入到调度器中？
+
+	schedstat_set(curr->statistics.exec_max,
+		      max(delta_exec, curr->statistics.exec_max));
+
+	curr->sum_exec_runtime += delta_exec;
+	schedstat_add(cfs_rq->exec_clock, delta_exec);
+
+	curr->vruntime += calc_delta_fair(delta_exec, curr); // 前面有说明，根据实际执行时间和 nice 值计算 vruntime
+	update_min_vruntime(cfs_rq);
+
+	account_cfs_rq_runtime(cfs_rq, delta_exec);
+}
+```
+
+##### 关键函数place_entity
+
+根据情况对进程虚拟时间进行一些惩罚
+
+```c
+static void
+place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
+{
+	u64 vruntime = cfs_rq->min_vruntime; // CFS 就绪队列中红黑树里最小的 vruntime 值
+
+	/*
+	 * The 'current' period is already promised to the current tasks,
+	 * however the extra weight of the new task will slow them down a
+	 * little, place the new task so that it fits in the slot that
+	 * stays open at the end.
+	 */
+	if (initial && sched_feat(START_DEBIT))
+        // 需要更新最小值，使得低优先级的进程也能被调度
+		vruntime += sched_vslice(cfs_rq, se);
+
+	...
+
+	/* ensure we never gain time by being placed backwards. */
+	se->vruntime = max_vruntime(se->vruntime, vruntime); // 相当于确定新进程的权重
+}
+```
+
+上面两个函数都是确定子进程的 `vruntime` 的。
+
+#### 进程加入调度器
+
+在[关键函数kernel_clone](#关键函数kernel_clone)中我们知道进程创建完后需要将其加入到就绪队列接受调度、运行，这里我们进一步分析 `wake_up_new_task`。
+
+```c
+pid_t kernel_clone(struct kernel_clone_args *args)
+{
+	...
+
+	p = copy_process(NULL, trace, NUMA_NO_NODE, args); // 显而易见，这是关键函数
+
+    ...
+
+	wake_up_new_task(p); // 将新创建的进程加入到就绪队列接受调度、运行
+
+	...
+
+	return nr;
+}
+```
+
+##### 关键函数wake_up_new_task
+
+```c
+void wake_up_new_task(struct task_struct *p)
+{
+	struct rq_flags rf;
+	struct rq *rq;
+
+	raw_spin_lock_irqsave(&p->pi_lock, rf.flags);
+	WRITE_ONCE(p->__state, TASK_RUNNING);
+#ifdef CONFIG_SMP
+	/*
+	 * Fork balancing, do it here and not earlier because:
+	 *  - cpus_ptr can change in the fork path
+	 *  - any previously selected CPU might disappear through hotplug
+	 *
+	 * Use __set_task_cpu() to avoid calling sched_class::migrate_task_rq,
+	 * as we're not fully set-up yet.
+	 */
+    // 初始化为上次使用的 CPU，不过 p 是新进程，还没有使用，怎么搞？
+    // 应该是初始化时设置为父进程使用的 CPU
+	p->recent_used_cpu = task_cpu(p);
+	rseq_migrate(p);
+    // 重新设置子进程将要运行的 CPU
+    // 其实 CPU 在 sched_fork 中已经设置过，那为什么要重新设置？
+    // 因为在初始化的过程中，cpus_allowed 可能发生变化，即该进程能够运行在哪个 CPU 上
+    // 亦或者是之前选择的 CPU 关闭了
+    // select_task_rq 选择调度域中最空闲的 CPU，这个很好理解
+	__set_task_cpu(p, select_task_rq(p, task_cpu(p), WF_FORK));
+#endif
+	rq = __task_rq_lock(p, &rf);
+	update_rq_clock(rq);
+	post_init_entity_util_avg(p);
+
+	activate_task(rq, p, ENQUEUE_NOCLOCK); // 将子进程添加到调度器中，并将进程状态设为可执行
+	trace_sched_wakeup_new(p);
+	check_preempt_curr(rq, p, WF_FORK);
+#ifdef CONFIG_SMP
+	if (p->sched_class->task_woken) { // 为何在 sched_class 中唯独没有这个回调函数
+		/*
+		 * Nothing relies on rq->lock after this, so it's fine to
+		 * drop it.
+		 */
+		rq_unpin_lock(rq, &rf);
+		p->sched_class->task_woken(rq, p);
+		rq_repin_lock(rq, &rf);
+	}
+#endif
+	task_rq_unlock(rq, p, &rf);
+}
+```
+
+##### 关键函数enqueue_task_fair
+
+`activate_task` -> `enqueue_task`
+
+这个函数是在 sched_class 中设置的回调函数，用于将调度实体加入到就绪队列的红黑树中。
+
+```c
+static void
+enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
+{
+	struct cfs_rq *cfs_rq;
+	struct sched_entity *se = &p->se;
+	int idle_h_nr_running = task_has_idle_policy(p);
+	int task_new = !(flags & ENQUEUE_WAKEUP);
+
+	...
+
+    // 这个调度实体应该只有一个吧，为何要用 for 循环来遍历？
+	for_each_sched_entity(se) {
+		if (se->on_rq)
+			break;
+		cfs_rq = cfs_rq_of(se);
+		enqueue_entity(cfs_rq, se, flags);
+
+		cfs_rq->h_nr_running++;
+		cfs_rq->idle_h_nr_running += idle_h_nr_running; // 为何 idle 数量也要增加
+
+		...
+
+		flags = ENQUEUE_WAKEUP;
+	}
+
+    // 为何要遍历 2 次？
+    // 貌似上面那次是插入到红黑树中，这里是开始调度，根据 se_update_runnable 猜的
+	for_each_sched_entity(se) {
+		cfs_rq = cfs_rq_of(se);
+
+		update_load_avg(cfs_rq, se, UPDATE_TG);
+		se_update_runnable(se);
+		update_cfs_group(se);
+
+		cfs_rq->h_nr_running++;
+		cfs_rq->idle_h_nr_running += idle_h_nr_running;
+
+		...
+	}
+
+	/* At this point se is NULL and we are at root level*/
+	add_nr_running(rq, 1);
+
+	...
+
+	hrtick_update(rq);
+}
+```
+
+##### 关键函数enqueue_entity
+
+```c
+static void
+enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
+{
+	bool renorm = !(flags & ENQUEUE_WAKEUP) || (flags & ENQUEUE_MIGRATED);
+	bool curr = cfs_rq->curr == se;
+
+	/*
+	 * If we're the current task, we must renormalise before calling
+	 * update_curr().
+	 */
+	if (renorm && curr)
+		se->vruntime += cfs_rq->min_vruntime;
+
+    // 更新当前进程的 vruntime，这个在 sched_fork 中就已经计算过了，为什么这里还要计算？
+	update_curr(cfs_rq);
+
+	/*
+	 * Otherwise, renormalise after, such that we're placed at the current
+	 * moment in time, instead of some random moment in the past. Being
+	 * placed in the past could significantly boost this task to the
+	 * fairness detriment of existing tasks.
+	 */
+	if (renorm && !curr)
+		se->vruntime += cfs_rq->min_vruntime;
+
+	/*
+	 * When enqueuing a sched_entity, we must:
+	 *   - Update loads to have both entity and cfs_rq synced with now.
+	 *   - Add its load to cfs_rq->runnable_avg
+	 *   - For group_entity, update its weight to reflect the new share of
+	 *     its group cfs_rq
+	 *   - Add its new weight to cfs_rq->load.weight
+	 */
+	update_load_avg(cfs_rq, se, UPDATE_TG | DO_ATTACH); // 如注释解释的，更新负载
+	se_update_runnable(se);
+	update_cfs_group(se);
+	account_entity_enqueue(cfs_rq, se);
+
+	if (flags & ENQUEUE_WAKEUP)
+		place_entity(cfs_rq, se, 0);
+
+	check_schedstat_required();
+	update_stats_enqueue(cfs_rq, se, flags);
+	check_spread(cfs_rq, se);
+	if (!curr)
+		__enqueue_entity(cfs_rq, se); // 将调度实体插入到红黑树中
+	se->on_rq = 1; // 到这里进程才真正可执行
+
+	/*
+	 * When bandwidth control is enabled, cfs might have been removed
+	 * because of a parent been throttled but cfs->nr_running > 1. Try to
+	 * add it unconditionally.
+	 */
+	if (cfs_rq->nr_running == 1 || cfs_bandwidth_used())
+		list_add_leaf_cfs_rq(cfs_rq);
+
+	if (cfs_rq->nr_running == 1)
+		check_enqueue_throttle(cfs_rq);
+}
+```
+
+我们将整个添加过程用框图的方式整理一下，
+
+![enqueue_entity.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/enqueue_entity.png?raw=true)
+
+#### 进程调度
+
+#### 进程切换
+
+#### 调度节拍
+
+#### 组调度机制
 
 ### Reference
 
@@ -1999,3 +2555,5 @@ struct cfs_rq {
 [2] 内核版本：5.15-rc5，commitid: f6274b06e326d8471cdfb52595f989a90f5e888f
 
 [3] https://blog.csdn.net/u013982161/article/details/51347944
+
+[4] https://www.cnblogs.com/LoyenWang/p/12495319.html
