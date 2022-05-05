@@ -39,6 +39,8 @@
 
 #### task_struct
 
+啊！这个数据结构好长，又不能精简。
+
 ```c
 struct task_struct {
 #ifdef CONFIG_THREAD_INFO_IN_TASK
@@ -61,22 +63,22 @@ struct task_struct {
 	 */
 	randomized_struct_fields_start
 
-	void				*stack;
+	void				*stack; // 内核栈的位置么
 	refcount_t			usage;
 	/* Per task flags (PF_*), defined further below: */
 	unsigned int			flags; // 进程属性标志位。如进程退出时会设置 PF_EXITING
 	unsigned int			ptrace;
 
 #ifdef CONFIG_SMP
-	int				on_cpu;
+	int				on_cpu; // 表示进程处于运行态
 	struct __call_single_node	wake_entry;
 #ifdef CONFIG_THREAD_INFO_IN_TASK
 	/* Current CPU: */
-	unsigned int			cpu;
+	unsigned int			cpu; // 进程运行在哪个 CPU
 #endif
-	unsigned int			wakee_flips;
-	unsigned long			wakee_flip_decay_ts;
-	struct task_struct		*last_wakee;
+	unsigned int			wakee_flips; // 用于 wake affine 特性（？）
+	unsigned long			wakee_flip_decay_ts; // 记录上一次 wakee_flips 的时间
+	struct task_struct		*last_wakee; // 用于记录上一次唤醒的是哪个进程
 
 	/*
 	 * recent_used_cpu is initially set as the last CPU used by a task
@@ -86,9 +88,9 @@ struct task_struct {
 	 * used CPU that may be idle.
 	 */
 	int				recent_used_cpu;
-	int				wake_cpu;
+	int				wake_cpu; // 进程上次运行在哪个 CPU 上
 #endif
-	int				on_rq;
+	int				on_rq; // 设置进程的状态
 
 	int				prio; // 进程的动态优先级。这是调度类考（？）虑的优先级
 	int				static_prio; // 静态优先级，再进程启动时分配
@@ -110,27 +112,14 @@ struct task_struct {
 	struct task_group		*sched_task_group;
 #endif
 
-#ifdef CONFIG_UCLAMP_TASK
-	/*
-	 * Clamp values requested for a scheduling entity.
-	 * Must be updated with task_rq_lock() held.
-	 */
-	struct uclamp_se		uclamp_req[UCLAMP_CNT];
-	/*
-	 * Effective clamp values used for a scheduling entity.
-	 * Must be updated with task_rq_lock() held.
-	 */
-	struct uclamp_se		uclamp[UCLAMP_CNT];
-#endif
+...
 
 #ifdef CONFIG_PREEMPT_NOTIFIERS
 	/* List of struct preempt_notifier: */
 	struct hlist_head		preempt_notifiers;
 #endif
 
-#ifdef CONFIG_BLK_DEV_IO_TRACE
-	unsigned int			btrace_seq;
-#endif
+...
 
 	unsigned int			policy; // 确定进程的类型，如普通进程还是实时进程等
 	int				nr_cpus_allowed; // 确定该进程可以在哪几个 CPU 上运行
@@ -143,39 +132,26 @@ struct task_struct {
 #endif
 	unsigned short			migration_flags;
 
-#ifdef CONFIG_PREEMPT_RCU
-	int				rcu_read_lock_nesting;
-	union rcu_special		rcu_read_unlock_special;
-	struct list_head		rcu_node_entry;
-	struct rcu_node			*rcu_blocked_node;
-#endif /* #ifdef CONFIG_PREEMPT_RCU */
-
-#ifdef CONFIG_TASKS_RCU
-	unsigned long			rcu_tasks_nvcsw;
-	u8				rcu_tasks_holdout;
-	u8				rcu_tasks_idx;
-	int				rcu_tasks_idle_cpu;
-	struct list_head		rcu_tasks_holdout_list;
-#endif /* #ifdef CONFIG_TASKS_RCU */
+...
 
 #ifdef CONFIG_TASKS_TRACE_RCU
-	int				trc_reader_nesting;
+	int				trc_reader_nesting; // RCU 到底是啥
 	int				trc_ipi_to_cpu;
 	union rcu_special		trc_reader_special;
 	bool				trc_reader_checked;
 	struct list_head		trc_holdout_list;
 #endif /* #ifdef CONFIG_TASKS_TRACE_RCU */
 
-	struct sched_info		sched_info;
+	struct sched_info		sched_info; // 调度相关信息
 
-	struct list_head		tasks;
+	struct list_head		tasks; // 所有的 task 放在一个 list 么
 #ifdef CONFIG_SMP
 	struct plist_node		pushable_tasks;
 	struct rb_node			pushable_dl_tasks;
 #endif
 
 	struct mm_struct		*mm; // 哈哈，这个就很熟悉了
-	struct mm_struct		*active_mm;
+	struct mm_struct		*active_mm; // 这个和 mm 有什么区别
 
 	/* Per-thread vma caching: */
 	struct vmacache			vmacache;
@@ -1706,7 +1682,7 @@ int copy_thread(unsigned long clone_flags, unsigned long sp, unsigned long arg,
 - 如果进程 A 的优先级大于 B，那么调度器选择 A；
 - 如果 A 和 B 的优先级一样，那么使用轮转算法来选择；
 - 当一个新进程进入调度器时，把它放入优先级最高的队列；
-- 若一个进程完全占用了时间便，说明这是一个 CPU 消耗型的进程，需要将其优先级降一级（让出 CPU 么，）；
+- 若一个进程完全占用了时间便，说明这是一个 CPU 消耗型的进程，需要将其优先级降一级（让出 CPU 么）；
 - 若一个进程在时间便结束前放弃 CPU，说明这是一个 I/O 消耗型的进程，那么优先级不变；
 
 这样设计的调度器会存在如下几个问题：
@@ -1726,7 +1702,295 @@ int copy_thread(unsigned long clone_flags, unsigned long sp, unsigned long arg,
 
 #### CFS
 
+##### vruntime
 
+##### sched_entity
+
+这个数据结构描述了**进程作为调度实体**所需要的所有信息。
+
+```c
+struct sched_entity {
+	/* For load-balancing: */
+	struct load_weight		load; // 调度实体的权重
+	struct rb_node			run_node; // 调度实体作为一个节点插入 CFS 的红黑树中
+	struct list_head		group_node; // 就绪队列的链表。这种设计和 VMA 类似
+	unsigned int			on_rq; // 当进程加入就绪队列时，该变量置 1，否则置 0
+
+	u64				exec_start; // 计算调度实体虚拟时间的起始时间
+	u64				sum_exec_runtime; // 调度实体的总运行时间，这是真实时间
+	u64				vruntime; // 调度实体的虚拟运行时间
+	u64				prev_sum_exec_runtime; // 上一次调度实体的总运行时间
+
+	u64				nr_migrations; // 发生迁移的次数
+
+	struct sched_statistics		statistics; // 统计信息
+
+#ifdef CONFIG_FAIR_GROUP_SCHED
+	int				depth;
+	struct sched_entity		*parent; // 这也有 parent？
+	/* rq on which this entity is (to be) queued: */
+	struct cfs_rq			*cfs_rq; // 该调度实体属于哪个队列么
+	/* rq "owned" by this entity/group: */
+	struct cfs_rq			*my_q;
+	/* cached value of my_q->h_nr_running */
+	unsigned long			runnable_weight; // 进程在可运行状态的权重，即进程的权重
+#endif
+
+#ifdef CONFIG_SMP
+	/*
+	 * Per entity load average tracking.
+	 *
+	 * Put into separate cache line so it does not
+	 * collide with read-mostly values above.
+	 */
+	struct sched_avg		avg;
+#endif
+};
+```
+
+##### rq
+
+这个数据结构是每个 CPU 通用就绪队列的描述符。它包含了多个调度策略的就绪队列，可以理解为一个 CPU 总的就绪队列，所有相关的信息都可以在里面找到。
+
+```c
+struct rq {
+	/* runqueue lock: */
+	raw_spinlock_t		__lock;
+
+	/*
+	 * nr_running and cpu_load should be in the same cacheline because
+	 * remote CPUs use both these fields when doing load calculation.
+	 */
+	unsigned int		nr_running; // 就绪队列中可运行进程的数量
+
+    ...
+
+#ifdef CONFIG_SMP
+	unsigned int		ttwu_pending;
+#endif
+	u64			nr_switches; // 进程切换的次数
+
+#ifdef CONFIG_UCLAMP_TASK
+	/* Utilization clamp values based on CPU's RUNNABLE tasks */
+	struct uclamp_rq	uclamp[UCLAMP_CNT] ____cacheline_aligned;
+	unsigned int		uclamp_flags;
+#define UCLAMP_FLAG_IDLE 0x01
+#endif
+
+	struct cfs_rq		cfs; // CFS 就绪队列
+	struct rt_rq		rt; // 实时进程的就绪队列
+	struct dl_rq		dl; // 时是进程的就绪队列，deadline 也是实时进程
+
+#ifdef CONFIG_FAIR_GROUP_SCHED
+	/* list of leaf cfs_rq on this CPU: */
+	struct list_head	leaf_cfs_rq_list;
+	struct list_head	*tmp_alone_branch;
+#endif /* CONFIG_FAIR_GROUP_SCHED */
+
+	/*
+	 * This is part of a global counter where only the total sum
+	 * over all CPUs matters. A task can increase this counter on
+	 * one CPU and if it got migrated afterwards it may decrease
+	 * it on another CPU. Always updated under the runqueue lock:
+	 */
+	unsigned int		nr_uninterruptible; // 不可中断状态的进程进入就绪队列的数量
+
+	struct task_struct __rcu	*curr; // 正在运行的进程
+	struct task_struct	*idle; // idle 进程，也就是 0 号进程
+	struct task_struct	*stop; // stop 进程（还有这种进程，是干什么的）
+	unsigned long		next_balance; // 下一次做负载均衡的时间（？）
+	struct mm_struct	*prev_mm; // 进程切换时指向上一个进程的 mm
+
+	unsigned int		clock_update_flags; // 用于更新就绪队列时钟的标志位
+	u64			clock; // 每次时钟节拍到来时会更新这个时钟
+	/* Ensure that all clocks are in the same cache line */
+	u64			clock_task ____cacheline_aligned; // 计算 vruntime 时使用该时钟
+	u64			clock_pelt;
+	unsigned long		lost_idle_time;
+
+	atomic_t		nr_iowait;
+
+	...
+
+#ifdef CONFIG_SMP
+	struct root_domain		*rd; // 调度域的根（？）
+	struct sched_domain __rcu	*sd;
+
+    // CPU 对应普通进程的量化计算能力，系统大约会预留最高计算能力的 80% 给普通进程
+    // 预留 20% 给实时进程
+	unsigned long		cpu_capacity;
+    // CPU 最高的量化计算能力，系统中拥有最强处理器能力的 CPU 通常量化为 1024（？）
+	unsigned long		cpu_capacity_orig;
+
+	struct callback_head	*balance_callback;
+
+	unsigned char		nohz_idle_balance;
+	unsigned char		idle_balance;
+
+    // 若一个进程的实际算理大于 CPU 额定算力的 80%，那么这个进程称为不合适的进程（？）
+	unsigned long		misfit_task_load;
+
+	/* For active balancing */
+	int			active_balance;
+    // 用于负载均衡，表示迁移的目标 CPU
+	int			push_cpu;
+	struct cpu_stop_work	active_balance_work;
+
+	/* CPU of this runqueue: */
+	int			cpu; // 用于表示就绪队列运行在哪个 CPU 上
+	int			online; // 表示 CPU 所处的状态
+
+	struct list_head cfs_tasks; // 可运行状态的调度实体会添加到这个链表头中
+
+	struct sched_avg	avg_rt;
+	struct sched_avg	avg_dl;
+#ifdef CONFIG_HAVE_SCHED_AVG_IRQ
+	struct sched_avg	avg_irq;
+#endif
+#ifdef CONFIG_SCHED_THERMAL_PRESSURE
+	struct sched_avg	avg_thermal;
+#endif
+	u64			idle_stamp;
+	u64			avg_idle;
+
+	unsigned long		wake_stamp;
+	u64			wake_avg_idle;
+
+	/* This is used to determine avg_idle's max value */
+	u64			max_idle_balance_cost;
+#endif /* CONFIG_SMP */
+
+	...
+
+	/* calc_load related fields */
+	unsigned long		calc_load_update;
+	long			calc_load_active;
+
+
+#ifdef CONFIG_SCHEDSTATS
+	/* latency stats */
+	struct sched_info	rq_sched_info;
+	unsigned long long	rq_cpu_time;
+	/* could above be rq->cfs_rq.exec_clock + rq->rt_rq.rt_runtime ? */
+
+	/* sys_sched_yield() stats */
+	unsigned int		yld_count;
+
+	/* schedule() stats */
+	unsigned int		sched_count;
+	unsigned int		sched_goidle;
+
+	/* try_to_wake_up() stats */
+	unsigned int		ttwu_count;
+	unsigned int		ttwu_local;
+#endif
+
+#ifdef CONFIG_CPU_IDLE
+	/* Must be inspected within a rcu lock section */
+	struct cpuidle_state	*idle_state;
+#endif
+
+#ifdef CONFIG_SMP
+	unsigned int		nr_pinned;
+#endif
+	unsigned int		push_busy;
+	struct cpu_stop_work	push_work;
+
+#ifdef CONFIG_SCHED_CORE
+	/* per rq */
+	struct rq		*core;
+	struct task_struct	*core_pick;
+	unsigned int		core_enabled;
+	unsigned int		core_sched_seq;
+	struct rb_root		core_tree;
+
+	/* shared state -- careful with sched_core_cpu_deactivate() */
+	unsigned int		core_task_seq;
+	unsigned int		core_pick_seq;
+	unsigned long		core_cookie;
+	unsigned char		core_forceidle;
+	unsigned int		core_forceidle_seq;
+#endif
+};
+```
+
+##### cfs_rq
+
+CFS 调度域的就绪队列。
+
+```c
+struct cfs_rq {
+	struct load_weight	load;
+	unsigned int		nr_running; // 可运行状态的进程数量
+    // 这个不理解（？）
+	unsigned int		h_nr_running;      /* SCHED_{NORMAL,BATCH,IDLE} */
+	unsigned int		idle_h_nr_running; /* SCHED_IDLE */
+
+	u64			exec_clock; // 就绪队列的总运行时间
+	u64			min_vruntime; // CFS 就绪队列中红黑树里最小的 vruntime 值
+
+    ...
+
+	struct rb_root_cached	tasks_timeline; // 红黑树
+
+	/*
+	 * 'curr' points to currently running entity on this cfs_rq.
+	 * It is set to NULL otherwise (i.e when none are currently running).
+	 */
+	struct sched_entity	*curr; // 当前正在运行的进程
+	struct sched_entity	*next; // 进程切换的下一个进程
+	struct sched_entity	*last; // 用于抢占内核，当其他进程抢占了当前进程是，last 指向这个抢占进程
+	struct sched_entity	*skip;
+
+#ifdef CONFIG_SMP
+	/*
+	 * CFS load tracking
+	 */
+	struct sched_avg	avg;
+
+    ...
+
+#endif /* CONFIG_SMP */
+
+#ifdef CONFIG_FAIR_GROUP_SCHED
+	struct rq		*rq;	/* CPU runqueue to which this cfs_rq is attached */
+
+	/*
+	 * leaf cfs_rqs are those that hold tasks (lowest schedulable entity in
+	 * a hierarchy). Non-leaf lrqs hold other higher schedulable entities
+	 * (like users, containers etc.)
+	 *
+	 * leaf_cfs_rq_list ties together list of leaf cfs_rq's in a CPU.
+	 * This list is used during load balance.
+	 */
+	int			on_list;
+	struct list_head	leaf_cfs_rq_list;
+	struct task_group	*tg;	/* group that "owns" this runqueue */
+
+	/* Locally cached copy of our task_group's idle value */
+	int			idle;
+
+    ...
+
+#endif /* CONFIG_FAIR_GROUP_SCHED */
+};
+```
+
+这三个重要的数据结构关系如下图：
+
+![process_schedule](/home/guanshun/gitlab/UFuture.github.io/image/process_schedule.png)
+
+##### 进程创建
+
+##### 进程加入调度器
+
+##### 进程调度
+
+##### 进程切换
+
+##### 调度节拍
+
+##### 组调度机制
 
 ### Reference
 
