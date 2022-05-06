@@ -44,6 +44,11 @@
     - [关键函数__schedule](#关键函数__schedule)
     - [关键函数pick_next_entity](#关键函数pick_next_entity)
   - [进程切换](#进程切换)
+    - [关键函数context_switch](#关键函数context_switch)
+    - [关键函数switch_mm](#关键函数switch_mm)
+    - [关键函数switch_to](#关键函数switch_to)
+    - [关键函数__switch_to](#关键函数__switch_to)
+    - [thread_struct](#thread_struct)
 - [Reference](#Reference)
 
 ### 基本概念
@@ -462,25 +467,9 @@ struct task_struct {
 	/* cg_list protected by css_set_lock and tsk->alloc_lock: */
 	struct list_head		cg_list;
 #endif
-#ifdef CONFIG_X86_CPU_RESCTRL
-	u32				closid;
-	u32				rmid;
-#endif
-#ifdef CONFIG_FUTEX
-	struct robust_list_head __user	*robust_list;
-#ifdef CONFIG_COMPAT
-	struct compat_robust_list_head __user *compat_robust_list;
-#endif
-	struct list_head		pi_state_list;
-	struct futex_pi_state		*pi_state_cache;
-	struct mutex			futex_exit_mutex;
-	unsigned int			futex_state;
-#endif
-#ifdef CONFIG_PERF_EVENTS
-	struct perf_event_context	*perf_event_ctxp[perf_nr_task_contexts];
-	struct mutex			perf_event_mutex;
-	struct list_head		perf_event_list;
-#endif
+
+    ...
+
 #ifdef CONFIG_DEBUG_PREEMPT
 	unsigned long			preempt_disable_ip;
 #endif
@@ -539,28 +528,6 @@ struct task_struct {
 
 	unsigned long			numa_pages_migrated;
 #endif /* CONFIG_NUMA_BALANCING */
-
-#ifdef CONFIG_RSEQ
-	struct rseq __user *rseq;
-	u32 rseq_sig;
-	/*
-	 * RmW on rseq_event_mask must be performed atomically
-	 * with respect to preemption.
-	 */
-	unsigned long rseq_event_mask;
-#endif
-
-	struct tlbflush_unmap_batch	tlb_ubc;
-
-	union {
-		refcount_t		rcu_users;
-		struct rcu_head		rcu;
-	};
-
-	/* Cache last used pipe for splice(): */
-	struct pipe_inode_info		*splice_pipe;
-
-	struct page_frag		task_frag;
 
 	...
 
@@ -3024,15 +2991,10 @@ struct thread_struct {
 };
 ```
 
-#### **调度节拍**
-
-#### 组调度机制
-
 ### 疑问
 
 1. 在[关键函数context_switch](#关键函数context_switch)中使用 last 参数来达到在 next 进程中能够处理 prev 进程的遗留问题，但是，last 是一个指针，在进程页表都切换了的情况下，prev 能正确指向 prev 的 task_struct 么？
-2. `thread_struct` 数据结构保存进程在上下文切换时的硬件上下文，但怎么和我想象的内容不太一样，很多寄存器没有保存，只保存了 sp 和一些段寄存器，在 X86 中其他的寄存器值都保存在栈里么？
-3.
+2. `thread_struct` 数据结构保存进程在上下文切换时的硬件上下文，但怎么和我想象的内容不太一样，很多寄存器没有保存，只保存了 sp 和一些段寄存器，在 X86 中其他的寄存器值都保存在栈里么？还是说就只需要保存这些？
 
 ### Reference
 
