@@ -2389,7 +2389,7 @@ vmalloc 分配的空间在 [内存分布](# 内存分布) 小节中的图中有�
 
 这里有个疑问，为什么 vmalloc 最后申请空间也要调用到 slab 分配器？（上面已经解释了）
 
-```c
+```
 #0  slab_alloc_node (orig_size=64, addr=18446744071581699837, node=<optimized out>, gfpflags=3264,
     s=0xffff88810004f600) at mm/slub.c:3120
 #1  kmem_cache_alloc_node (s=0xffff88810004f600, gfpflags=gfpflags@entry=3264, node=node@entry=-1)
@@ -2537,6 +2537,17 @@ struct mm_struct {
 		unsigned long arg_start, arg_end, env_start, env_end; //（？）
 
 		unsigned long saved_auxv[AT_VECTOR_SIZE]; /* for /proc/PID/auxv */
+
+        /*
+		 * Special counters, in some configurations protected by the
+		 * page_table_lock, in other configurations by being atomic.
+		 */
+		struct mm_rss_stat rss_stat;
+
+		struct linux_binfmt *binfmt;
+
+		/* Architecture-specific MM context */
+		mm_context_t context; // 保存硬件上下文
 
 #ifdef CONFIG_MEMCG
 		struct task_struct __rcu *owner; // owner of this mm_struct
