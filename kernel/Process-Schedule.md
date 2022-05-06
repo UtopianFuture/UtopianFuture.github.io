@@ -32,19 +32,18 @@
     - [rq](#rq)
     - [cfs_rq](#cfs_rq)
     - [sched_class](#sched_class)
-
   - [进程创建中的相关初始化](#进程创建中的相关初始化)
     - [关键函数sched_fork](#关键函数sched_fork)
     - [关键函数task_fork_fair](#关键函数task_fork_fair)
     - [关键函数update_curr](#关键函数update_curr)
-
   - [进程加入调度器](#进程加入调度器)
     - [关键函数wake_up_new_task](#关键函数wake_up_new_task)
     - [关键函数enqueue_task_fair](#关键函数enqueue_task_fair)
     - [关键函数enqueue_entity](#关键函数enqueue_entity)
-
   - [进程调度](#进程调度)
-
+    - [关键函数__schedule](#关键函数__schedule)
+    - [关键函数pick_next_entity](#关键函数pick_next_entity)
+  - [进程切换](#进程切换)
 - [Reference](#Reference)
 
 ### 基本概念
@@ -1846,7 +1845,7 @@ struct sched_entity {
 	/* rq on which this entity is (to be) queued: */
 	struct cfs_rq			*cfs_rq; // 该调度实体属于哪个队列么
 	/* rq "owned" by this entity/group: */
-	struct cfs_rq			*my_q; // 指向归属于当前调度实体的CFS队列，用于包含子任务或子任务组
+	struct cfs_rq			*my_q; // 指向归属于当前调度实体的 CFS 队列，用于包含子任务或子任务组
 	/* cached value of my_q->h_nr_running */
 	unsigned long			runnable_weight; // 进程在可运行状态的权重，即进程的权重
 #endif
@@ -2541,6 +2540,196 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 ![enqueue_entity.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/enqueue_entity.png?raw=true)
 
 #### 进程调度
+
+以下 3 种情况可能会发起进程调度：
+
+- 在阻塞操作中，如使用互斥量（mutex）、信号量（semaphore）、等待队列（waitqueue）等；
+- 在中断返回前和系统调用返回用户空间时，检查 `TIF_NEED_RESCHED` 标志位以判断是否需要调度；
+- 将要被唤醒的进程不会马上调用 `schedule`，而是会将其调度实体被添加到 CFS 的就绪队列中（这在前面就已经分析了），并且设置 `TIF_NEED_RESCHED` 标志位；
+
+而被唤醒的进程的调度时机根据内核是否可以被抢占可分成两种情况：
+
+- 内核可抢占
+  - 如果唤醒动作（何为唤醒动作，将进程插入到就绪队列么）发生在系统调用或异常处理上下文中，在下一次调用 `preempt_enable` 时会检查是否需要抢占调度；
+  - 如果唤醒动作发生在硬中断处理上下文中，硬件中断处理返回前会检查是否要抢占当前进程；
+- 内核不可抢占
+  - 当前进程调用 `cond_resched` 时会检查是否要调度；
+  - 主动调用 `schedule`；
+
+主动调用 `schedule` 的地方很多，
+
+![call_schedule.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/call_schedule.png?raw=true)
+
+这是另一个例子，应该是内核线程创建子进程后返回，申请进程调用。
+
+```
+#0  schedule () at kernel/sched/core.c:6360
+#1  0xffffffff810cc802 in kthreadd (unused=<optimized out>) at kernel/kthread.c:673
+#2  0xffffffff81004572 in ret_from_fork () at arch/x86/entry/entry_64.S:295
+```
+
+`schedule` 函数如下：
+
+```c
+asmlinkage __visible void __sched schedule(void)
+{
+	struct task_struct *tsk = current;
+
+	sched_submit_work(tsk); // 好吧，不知道这时干嘛的
+	do {
+		preempt_disable(); // 关闭内核抢占。为什么关闭、开启都是调用 barrier() 呢？
+		__schedule(SM_NONE); // 调度的核心函数
+		sched_preempt_enable_no_resched();
+	} while (need_resched());
+	sched_update_worker(tsk);
+}
+```
+
+##### 关键函数__schedule
+
+```c
+static void __sched notrace __schedule(unsigned int sched_mode)
+{
+	struct task_struct *prev, *next;
+	unsigned long *switch_count;
+	unsigned long prev_state;
+	struct rq_flags rf;
+	struct rq *rq;
+	int cpu;
+
+	cpu = smp_processor_id();
+	rq = cpu_rq(cpu);
+	prev = rq->curr;
+
+    // 判断当前进程是否处于 atomic 上下文中
+    // 所谓 atomic 上下文包含硬件中断上下文、软中断上下文等
+    // 因为 schedule 是一个可睡眠函数，在 atomic 中调用可能会导致中断无法返回，造成死锁
+	schedule_debug(prev, !!sched_mode);
+
+    ... // 这里是申请各种锁
+
+	/* Promote REQ to ACT */
+	rq->clock_update_flags <<= 1;
+	update_rq_clock(rq);
+
+	switch_count = &prev->nivcsw;
+
+	/*
+	 * We must load prev->state once (task_struct::state is volatile), such
+	 * that:
+	 *
+	 *  - we form a control dependency vs deactivate_task() below.
+	 *  - ptrace_{,un}freeze_traced() can change ->state underneath us.
+	 */
+	prev_state = READ_ONCE(prev->__state);
+    // 如果本次调度不是抢占调度且当前进程处于非运行状态
+	if (!(sched_mode & SM_MASK_PREEMPT) && prev_state) {
+		if (signal_pending_state(prev_state, prev)) {
+			WRITE_ONCE(prev->__state, TASK_RUNNING);
+		} else {
+			prev->sched_contributes_to_load =
+				(prev_state & TASK_UNINTERRUPTIBLE) &&
+				!(prev_state & TASK_NOLOAD) &&
+				!(prev->flags & PF_FROZEN);
+
+			if (prev->sched_contributes_to_load)
+				rq->nr_uninterruptible++;
+
+            // 如果当前进程主动调用 schedule，将其移出就绪队列
+            // 否则直接选择下一个执行的进程
+			deactivate_task(rq, prev, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK);
+
+			if (prev->in_iowait) {
+				atomic_inc(&rq->nr_iowait);
+				delayacct_blkio_start();
+			}
+		}
+		switch_count = &prev->nvcsw;
+	}
+
+	next = pick_next_task(rq, prev, &rf); // 选择下一个执行的进程
+	clear_tsk_need_resched(prev); // 清楚当前进程的 TIF_NEED_RESCHED 标志位
+	clear_preempt_need_resched();
+#ifdef CONFIG_SCHED_DEBUG
+	rq->last_seen_need_resched_ns = 0;
+#endif
+
+	if (likely(prev != next)) {
+		rq->nr_switches++;
+		/*
+		 * RCU users of rcu_dereference(rq->curr) may not see
+		 * changes to task_struct made by pick_next_task().
+		 */
+		RCU_INIT_POINTER(rq->curr, next);
+
+		++*switch_count;
+
+		migrate_disable_switch(rq, prev);
+		psi_sched_switch(prev, next, !task_on_rq_queued(prev));
+
+		trace_sched_switch(sched_mode & SM_MASK_PREEMPT, prev, next);
+
+		/* Also unlocks the rq: */
+		rq = context_switch(rq, prev, next, &rf); // 进程上下文切换，下面分析
+	}
+    ...
+}
+```
+
+##### 关键函数pick_next_entity
+
+`pick_next_task_fair` 是 CFS 的选择函数，不同的调度类的选择函数不同，选择策略应该也不同。其会调用 `pick_next_entity`。CFS 选择红黑树中最左侧的调度实体。
+
+```c
+static struct sched_entity *
+pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr)
+{
+	struct sched_entity *left = __pick_first_entity(cfs_rq);
+	struct sched_entity *se;
+
+	/*
+	 * If curr is set we have to see if its left of the leftmost entity
+	 * still in the tree, provided there was anything in the tree at all.
+	 */
+	if (!left || (curr && entity_before(curr, left)))
+		left = curr;
+
+	se = left; /* ideally we run the leftmost entity */
+
+	/*
+	 * Avoid running the skip buddy, if running something else can
+	 * be done without getting too unfair.
+	 */
+	if (cfs_rq->skip && cfs_rq->skip == se) {
+		struct sched_entity *second;
+
+		if (se == curr) {
+			second = __pick_first_entity(cfs_rq);
+		} else {
+			second = __pick_next_entity(se);
+			if (!second || (curr && entity_before(curr, second)))
+				second = curr;
+		}
+
+		if (second && wakeup_preempt_entity(second, left) < 1)
+			se = second;
+	}
+
+	if (cfs_rq->next && wakeup_preempt_entity(cfs_rq->next, left) < 1) {
+		/*
+		 * Someone really wants this to run. If it's not unfair, run it.
+		 */
+		se = cfs_rq->next;
+	} else if (cfs_rq->last && wakeup_preempt_entity(cfs_rq->last, left) < 1) {
+		/*
+		 * Prefer last buddy, try to return the CPU to a preempted task.
+		 */
+		se = cfs_rq->last;
+	}
+
+	return se;
+}
+```
 
 #### 进程切换
 
