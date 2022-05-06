@@ -168,7 +168,10 @@ struct task_struct {
 #endif
 
 	struct mm_struct		*mm; // 哈哈，这个就很熟悉了
-	struct mm_struct		*active_mm; // 这个和 mm 有什么区别
+    // 这个和 mm 有什么区别？
+    // 是这样的，对于内核线程来说，没有进程地址空间描述符，但处于进程调度的需要
+    // 需要借用一个进程的地址空间，所以有了 active_mm
+	struct mm_struct		*active_mm;
 
 	/* Per-thread vma caching: */
 	struct vmacache			vmacache;
@@ -425,58 +428,7 @@ struct task_struct {
 
 	struct wake_q_node		wake_q;
 
-#ifdef CONFIG_RT_MUTEXES
-	/* PI waiters blocked on a rt_mutex held by this task: */
-	struct rb_root_cached		pi_waiters;
-	/* Updated under owner's pi_lock and rq lock */
-	struct task_struct		*pi_top_task;
-	/* Deadlock detection and priority inheritance handling: */
-	struct rt_mutex_waiter		*pi_blocked_on;
-#endif
-
-#ifdef CONFIG_DEBUG_MUTEXES
-	/* Mutex deadlock detection: */
-	struct mutex_waiter		*blocked_on;
-#endif
-
-#ifdef CONFIG_DEBUG_ATOMIC_SLEEP
-	int				non_block_count;
-#endif
-
-#ifdef CONFIG_TRACE_IRQFLAGS
-	struct irqtrace_events		irqtrace;
-	unsigned int			hardirq_threaded;
-	u64				hardirq_chain_key;
-	int				softirqs_enabled;
-	int				softirq_context;
-	int				irq_config;
-#endif
-#ifdef CONFIG_PREEMPT_RT
-	int				softirq_disable_cnt;
-#endif
-
-#ifdef CONFIG_LOCKDEP
-# define MAX_LOCK_DEPTH			48UL
-	u64				curr_chain_key;
-	int				lockdep_depth;
-	unsigned int			lockdep_recursion;
-	struct held_lock		held_locks[MAX_LOCK_DEPTH];
-#endif
-
-#if defined(CONFIG_UBSAN) && !defined(CONFIG_UBSAN_TRAP)
-	unsigned int			in_ubsan;
-#endif
-
-	/* Journalling filesystem info: */
-	void				*journal_info;
-
-	/* Stacked block device info: */
-	struct bio_list			*bio_list;
-
-#ifdef CONFIG_BLOCK
-	/* Stack plugging: */
-	struct blk_plug			*plug;
-#endif
+	...
 
 	/* VM state: */
 	struct reclaim_state		*reclaim_state;
@@ -493,18 +445,9 @@ struct task_struct {
 	kernel_siginfo_t		*last_siginfo;
 
 	struct task_io_accounting	ioac;
-#ifdef CONFIG_PSI
-	/* Pressure stall state */
-	unsigned int			psi_flags;
-#endif
-#ifdef CONFIG_TASK_XACCT
-	/* Accumulated RSS usage: */
-	u64				acct_rss_mem1;
-	/* Accumulated virtual memory usage: */
-	u64				acct_vm_mem1;
-	/* stime + utime since last update: */
-	u64				acct_timexpd;
-#endif
+
+    ...
+
 #ifdef CONFIG_CPUSETS
 	/* Protected by ->alloc_lock: */
 	nodemask_t			mems_allowed;
@@ -619,27 +562,8 @@ struct task_struct {
 
 	struct page_frag		task_frag;
 
-#ifdef CONFIG_TASK_DELAY_ACCT
-	struct task_delay_info		*delays;
-#endif
+	...
 
-#ifdef CONFIG_FAULT_INJECTION
-	int				make_it_fail;
-	unsigned int			fail_nth;
-#endif
-	/*
-	 * When (nr_dirtied >= nr_dirtied_pause), it's time to call
-	 * balance_dirty_pages() for a dirty throttling pause:
-	 */
-	int				nr_dirtied;
-	int				nr_dirtied_pause;
-	/* Start of a write-and-pause period: */
-	unsigned long			dirty_paused_when;
-
-#ifdef CONFIG_LATENCYTOP
-	int				latency_record_count;
-	struct latency_record		latency_record[LT_SAVECOUNT];
-#endif
 	/*
 	 * Time slack values; these are used to round up poll() and
 	 * select() etc timeout values. These are in nanoseconds.
@@ -647,20 +571,7 @@ struct task_struct {
 	u64				timer_slack_ns;
 	u64				default_timer_slack_ns;
 
-#if defined(CONFIG_KASAN_GENERIC) || defined(CONFIG_KASAN_SW_TAGS)
-	unsigned int			kasan_depth;
-#endif
-
-#ifdef CONFIG_KCSAN
-	struct kcsan_ctx		kcsan_ctx;
-#ifdef CONFIG_TRACE_IRQFLAGS
-	struct irqtrace_events		kcsan_save_irqtrace;
-#endif
-#endif
-
-#if IS_ENABLED(CONFIG_KUNIT)
-	struct kunit			*kunit_test;
-#endif
+	...
 
 #ifdef CONFIG_FUNCTION_GRAPH_TRACER
 	/* Index of current stored address in ret_stack: */
@@ -683,38 +594,7 @@ struct task_struct {
 	atomic_t			tracing_graph_pause;
 #endif
 
-#ifdef CONFIG_TRACING
-	/* State flags for use by tracers: */
-	unsigned long			trace;
-
-	/* Bitmask and counter of trace recursion: */
-	unsigned long			trace_recursion;
-#endif /* CONFIG_TRACING */
-
-#ifdef CONFIG_KCOV
-	/* See kernel/kcov.c for more details. */
-
-	/* Coverage collection mode enabled for this task (0 if disabled): */
-	unsigned int			kcov_mode;
-
-	/* Size of the kcov_area: */
-	unsigned int			kcov_size;
-
-	/* Buffer for coverage collection: */
-	void				*kcov_area;
-
-	/* KCOV descriptor wired with this task or NULL: */
-	struct kcov			*kcov;
-
-	/* KCOV common handle for remote coverage collection: */
-	u64				kcov_handle;
-
-	/* KCOV sequence number: */
-	int				kcov_sequence;
-
-	/* Collect coverage from softirq context: */
-	unsigned int			kcov_softirq;
-#endif
+	...
 
 #ifdef CONFIG_MEMCG
 	struct mem_cgroup		*memcg_in_oom;
@@ -728,24 +608,8 @@ struct task_struct {
 	struct mem_cgroup		*active_memcg;
 #endif
 
-#ifdef CONFIG_BLK_CGROUP
-	struct request_queue		*throttle_queue;
-#endif
+    ...
 
-#ifdef CONFIG_UPROBES
-	struct uprobe_task		*utask;
-#endif
-#if defined(CONFIG_BCACHE) || defined(CONFIG_BCACHE_MODULE)
-	unsigned int			sequential_io;
-	unsigned int			sequential_io_avg;
-#endif
-	struct kmap_ctrl		kmap_ctrl;
-#ifdef CONFIG_DEBUG_ATOMIC_SLEEP
-	unsigned long			task_state_change;
-# ifdef CONFIG_PREEMPT_RT
-	unsigned long			saved_state_change;
-# endif
-#endif
 	int				pagefault_disabled;
 #ifdef CONFIG_MMU
 	struct task_struct		*oom_reaper_list;
@@ -764,42 +628,8 @@ struct task_struct {
 	/* Used by LSM modules for access restriction: */
 	void				*security;
 #endif
-#ifdef CONFIG_BPF_SYSCALL
-	/* Used by BPF task local storage */
-	struct bpf_local_storage __rcu	*bpf_storage;
-	/* Used for BPF run context */
-	struct bpf_run_ctx		*bpf_ctx;
-#endif
 
-#ifdef CONFIG_GCC_PLUGIN_STACKLEAK
-	unsigned long			lowest_stack;
-	unsigned long			prev_lowest_stack;
-#endif
-
-#ifdef CONFIG_X86_MCE
-	void __user			*mce_vaddr;
-	__u64				mce_kflags;
-	u64				mce_addr;
-	__u64				mce_ripv : 1,
-					mce_whole_page : 1,
-					__mce_reserved : 62;
-	struct callback_head		mce_kill_me;
-	int				mce_count;
-#endif
-
-#ifdef CONFIG_KRETPROBES
-	struct llist_head               kretprobe_instances;
-#endif
-
-#ifdef CONFIG_ARCH_HAS_PARANOID_L1D_FLUSH
-	/*
-	 * If L1D flush is supported on mm context switch
-	 * then we use this callback head to queue kill work
-	 * to kill tasks that are not running on SMT disabled
-	 * cores
-	 */
-	struct callback_head		l1d_flush_kill;
-#endif
+    ...
 
 	/*
 	 * New fields for task_struct should be added above here, so that
@@ -2670,7 +2500,7 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 		trace_sched_switch(sched_mode & SM_MASK_PREEMPT, prev, next);
 
 		/* Also unlocks the rq: */
-		rq = context_switch(rq, prev, next, &rf); // 进程上下文切换，下面分析
+		rq = context_switch(rq, prev, next, &rf); // 进程上下文切换
 	}
     ...
 }
@@ -2733,9 +2563,476 @@ pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr)
 
 #### 进程切换
 
-#### 调度节拍
+进程上下文包括执行该进程有关的各种寄存器、内核栈、`task_struct` 等数据结构，进程切换的核心函数是 `context_switch`。
+
+##### 关键函数context_switch
+
+```c
+/*
+ * context_switch - switch to the new MM and the new thread's register state.
+ */
+static __always_inline struct rq *
+context_switch(struct rq *rq, struct task_struct *prev,
+	       struct task_struct *next, struct rq_flags *rf)
+{
+	prepare_task_switch(rq, prev, next); // 最重要的应该是 WRITE_ONCE(next->on_cpu, 1);
+
+	/*
+	 * For paravirt, this is coupled with an exit in switch_to to
+	 * combine the page table reload and the switch backend into
+	 * one hypercall.
+	 */
+	arch_start_context_switch(prev); // 好吧，这个我不知道是干啥的
+
+    // 这些是根据不同的切换要求选择不同的切换方式
+    // lazy_tlb 是啥
+    // mmgrab 又是啥
+	/*
+	 * kernel -> kernel   lazy + transfer active
+	 *   user -> kernel   lazy + mmgrab() active
+	 *
+	 * kernel ->   user   switch + mmdrop() active
+	 *   user ->   user   switch
+	 */
+    // 哦，内核线程是没有独立的地址空间的，可以以此判断
+	if (!next->mm) {                                // to kernel
+		enter_lazy_tlb(prev->active_mm, next); // 注释是说这个仅仅表示切换到内核线程或没有 mm 的执行环境
+
+        // 之前就有这个问题，active_mm 和 mm 有什么区别？前面解释了
+        // 这里是借用了前一个进程的用户地址空间，因为前一个进程也可能是内核线程
+        // 所以这里借用 active_mm 而不是 mm
+		next->active_mm = prev->active_mm;
+		if (prev->mm)                           // from user
+            // 增加 mm->mm_count 的计数值
+            // Make sure that @mm will not get freed even after the owning task exits
+            // mm_count: The number of references to &struct mm_struct
+			mmgrab(prev->active_mm);
+		else									// from kernel
+			prev->active_mm = NULL;
+	} else {                                        // to user
+		membarrier_switch_mm(rq, prev->active_mm, next->mm);
+		/*
+		 * sys_membarrier() requires an smp_mb() between setting
+		 * rq->curr / membarrier_switch_mm() and returning to userspace.
+		 *
+		 * The below provides this either through switch_mm(), or in
+		 * case 'prev->active_mm == next->mm' through
+		 * finish_task_switch()'s mmdrop().
+		 */
+		switch_mm_irqs_off(prev->active_mm, next->mm, next); // 该函数等同于 switch_mm
+
+		if (!prev->mm) {                        // from kernel
+			/* will mmdrop() in finish_task_switch(). */
+			rq->prev_mm = prev->active_mm;
+			prev->active_mm = NULL; // 不需要借用了么，那下次需要切换怎么办？
+		}
+	}
+
+	rq->clock_update_flags &= ~(RQCF_ACT_SKIP|RQCF_REQ_SKIP);
+
+	prepare_lock_switch(rq, next, rf);
+
+	/* Here we just switch the register state and the stack. */
+    // prev 进程被调度出去“睡觉”了
+    // 这里利用 %rax 寄存器保存指向 prev 进程的指针
+    // 使得在切换到 next 上下文后第 3 个参数 prev 仍然指向 prev 进程
+    // 从而在 next 进程中能够给 prev 进程收尾
+    // 但还有一个问题，prev 是一个指针，在进程页表都切换了的情况下，prev 能正确指向 prev 的 task_struct 么
+    // 可能 task_struct 存储的内存保留下来了？
+    // 也就是说，要在不同进程间传递信息除了共享内存，还能使用通用寄存器
+	switch_to(prev, next, prev);
+	barrier(); // 从这之后就执行 next 进程
+
+	return finish_task_switch(prev); // smp_store_release(&prev->on_cpu, 0);
+}
+```
+
+`switch_to` 是新旧进程的切换点，完成 next 进程栈切换后开始执行 next 进程。进程执行的处理器相关寄存器等内容保存到进程的硬件上下文数据结构中（没有在 `task_struct` 中找到对应的数据结构，原来是 `mm_struct->context`）。
+
+一个特殊情况是新建进程，第一次执行的切入点在 `copy_thread` 中指定的 `ret_from_fork` 中，因此，当 `switch_to` 切换到新建进程中时，新进程从 `ret_from_fork` 开始执行。
+
+##### 关键函数switch_mm
+
+`switch_mm` 切换进程的地址空间，也就是切换 next 进程的页表到硬件页表中。这里还进行复杂的 tlb flush 操作，需要搞清楚。
+
+好吧，虽然我理解 asid 机制，但还是看不懂这段代码，唯一能理解就是切换 cr3 寄存器。
+
+```c
+void switch_mm_irqs_off(struct mm_struct *prev, struct mm_struct *next,
+			struct task_struct *tsk)
+{
+	struct mm_struct *real_prev = this_cpu_read(cpu_tlbstate.loaded_mm);
+	u16 prev_asid = this_cpu_read(cpu_tlbstate.loaded_mm_asid);
+	bool was_lazy = this_cpu_read(cpu_tlbstate_shared.is_lazy);
+	unsigned cpu = smp_processor_id();
+	u64 next_tlb_gen;
+	bool need_flush;
+	u16 new_asid;
+
+	...
+
+	if (was_lazy)
+		this_cpu_write(cpu_tlbstate_shared.is_lazy, false);
+
+	/*
+	 * The membarrier system call requires a full memory barrier and
+	 * core serialization before returning to user-space, after
+	 * storing to rq->curr, when changing mm.  This is because
+	 * membarrier() sends IPIs to all CPUs that are in the target mm
+	 * to make them issue memory barriers.  However, if another CPU
+	 * switches to/from the target mm concurrently with
+	 * membarrier(), it can cause that CPU not to receive an IPI
+	 * when it really should issue a memory barrier.  Writing to CR3
+	 * provides that full memory barrier and core serializing
+	 * instruction.
+	 */
+	if (real_prev == next) {
+		VM_WARN_ON(this_cpu_read(cpu_tlbstate.ctxs[prev_asid].ctx_id) !=
+			   next->context.ctx_id);
+
+		/*
+		 * Even in lazy TLB mode, the CPU should stay set in the
+		 * mm_cpumask. The TLB shootdown code can figure out from
+		 * cpu_tlbstate_shared.is_lazy whether or not to send an IPI.
+		 */
+		if (WARN_ON_ONCE(real_prev != &init_mm &&
+				 !cpumask_test_cpu(cpu, mm_cpumask(next))))
+			cpumask_set_cpu(cpu, mm_cpumask(next));
+
+		/*
+		 * If the CPU is not in lazy TLB mode, we are just switching
+		 * from one thread in a process to another thread in the same
+		 * process. No TLB flush required.
+		 */
+		if (!was_lazy)
+			return;
+
+		/*
+		 * Read the tlb_gen to check whether a flush is needed.
+		 * If the TLB is up to date, just use it.
+		 * The barrier synchronizes with the tlb_gen increment in
+		 * the TLB shootdown code.
+		 */
+		smp_mb();
+		next_tlb_gen = atomic64_read(&next->context.tlb_gen);
+		if (this_cpu_read(cpu_tlbstate.ctxs[prev_asid].tlb_gen) ==
+				next_tlb_gen)
+			return;
+
+		/*
+		 * TLB contents went out of date while we were in lazy
+		 * mode. Fall through to the TLB switching code below.
+		 */
+		new_asid = prev_asid;
+		need_flush = true;
+	} else {
+		/*
+		 * Apply process to process speculation vulnerability
+		 * mitigations if applicable.
+		 */
+		cond_mitigation(tsk);
+
+		/*
+		 * Stop remote flushes for the previous mm.
+		 * Skip kernel threads; we never send init_mm TLB flushing IPIs,
+		 * but the bitmap manipulation can cause cache line contention.
+		 */
+		if (real_prev != &init_mm) {
+			VM_WARN_ON_ONCE(!cpumask_test_cpu(cpu,
+						mm_cpumask(real_prev)));
+			cpumask_clear_cpu(cpu, mm_cpumask(real_prev));
+		}
+
+		/*
+		 * Start remote flushes and then read tlb_gen.
+		 */
+		if (next != &init_mm)
+			cpumask_set_cpu(cpu, mm_cpumask(next));
+		next_tlb_gen = atomic64_read(&next->context.tlb_gen);
+
+		choose_new_asid(next, next_tlb_gen, &new_asid, &need_flush);
+
+		/* Let nmi_uaccess_okay() know that we're changing CR3. */
+		this_cpu_write(cpu_tlbstate.loaded_mm, LOADED_MM_SWITCHING);
+		barrier();
+	}
+
+	if (need_flush) {
+		this_cpu_write(cpu_tlbstate.ctxs[new_asid].ctx_id, next->context.ctx_id);
+		this_cpu_write(cpu_tlbstate.ctxs[new_asid].tlb_gen, next_tlb_gen);
+		load_new_mm_cr3(next->pgd, new_asid, true); // 切换 cr3 寄存器，就是切换页表
+
+		trace_tlb_flush(TLB_FLUSH_ON_TASK_SWITCH, TLB_FLUSH_ALL);
+	} else {
+		/* The new ASID is already up to date. */
+		load_new_mm_cr3(next->pgd, new_asid, false);
+
+		trace_tlb_flush(TLB_FLUSH_ON_TASK_SWITCH, 0);
+	}
+
+	/* Make sure we write CR3 before loaded_mm. */
+	barrier();
+
+	this_cpu_write(cpu_tlbstate.loaded_mm, next);
+	this_cpu_write(cpu_tlbstate.loaded_mm_asid, new_asid);
+
+	if (next != real_prev) {
+		cr4_update_pce_mm(next);
+		switch_ldt(real_prev, next);
+	}
+}
+```
+
+##### 关键函数switch_to
+
+`switch_to` 切换到 next 进程的内核态和硬件上下文。
+
+```c
+#define switch_to(prev, next, last)					\ // last is prev
+do {									\
+	((last) = __switch_to_asm((prev), (next)));			\
+} while (0)
+```
+
+这里有两个问题：
+
+- 为什么 `switch_to` 有 3 个参数，`prev` 和 `next` 就足够了，为何还要 `last` ？
+- `switch_to` 函数后面的代码，如 `finish_task_switch` 由哪个进程执行？因为 `switch_to` 之后执行的就是 next 进程，如果是新进程从 `ret_from_fork` 开始执行，如果不是，则从上次中断的 pc 开始执行，即 `switch_to` 后的指令。
+
+其实 `context_switch` 代码可以分成两个部分：A0 和 A1，这两部分代码属于同一个进程。
+
+![switch_to.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/switch_to.png?raw=true)
+
+假设进程 A 在 CPU 0 上主动执行 `switch_to` 切换到 B 执行，那么 A 执行了 A0，然后运行了 `switch_to`。在 `switch_to` 中 CPU 0 切换到 B 上硬件上下文，运行 B，A 被换出了，这时 B 直接运行自己的代码段，而 A1还没有执行，所以需要 `last` 指向 A。
+
+那为何不直接使用 `prev` 呢？在 `switch_to` 执行前，`prev` 指向 A，但是  `switch_to` 执行完后，此时内核栈已经从 A 的内核栈切换到 B 的内核栈，读取 `prev` 变成了读取 B 的 `prev` 参数，而不是 A 的 `prev` 参数，所以读出来的 `prev` 不一定指向 A。**那为什么 `__switch_to_asm` 能够返回指向 A 的指针？**因为 `__switch_to` 会返回 `prev`。
+
+经过一段时间，某个 CPU 上的进程 X 主动执行 `switch_to` 切换到 A 执行，即 A 从 CPU 0 切换到 CPU n。这时 X 进入睡眠，而 A 从上次的睡眠点开始运行，也就是说开始运行 A1，而这时 `last` 执行 X。通常 A1 是 `finish_task_switch`，即 A 重新运行前需要通过这个函数对 X 进行一些清理工作，而 `last` 就是传给 `finish_task_switch` 的参数。
+
+```c
+.pushsection .text, "ax"
+SYM_FUNC_START(__switch_to_asm)
+	/*
+	 * Save callee-saved registers
+	 * This must match the order in inactive_task_frame
+	 */
+	pushq	%rbp
+	pushq	%rbx
+	pushq	%r12
+	pushq	%r13
+	pushq	%r14
+	pushq	%r15
+
+	/* switch stack */
+    // %rdi 是函数传参的第 1 个参数，这里是 prev
+    // TASK_threadsp 是 task_struct->thread->sp
+    // 保存栈指针到 prev 的 task_struct 中
+	movq	%rsp, TASK_threadsp(%rdi)
+	movq	TASK_threadsp(%rsi), %rsp // %rsi 是第 2 个参数 - next，这就完成了栈指针的切换
+
+#ifdef CONFIG_STACKPROTECTOR
+	movq	TASK_stack_canary(%rsi), %rbx // 这是干嘛
+	movq	%rbx, PER_CPU_VAR(fixed_percpu_data) + stack_canary_offset
+#endif
+
+#ifdef CONFIG_RETPOLINE
+	/*
+	 * When switching from a shallower to a deeper call stack
+	 * the RSB may either underflow or use entries populated
+	 * with userspace addresses. On CPUs where those concerns
+	 * exist, overwrite the RSB with entries which capture
+	 * speculative execution to prevent attack.
+	 */
+	FILL_RETURN_BUFFER %r12, RSB_CLEAR_LOOPS, X86_FEATURE_RSB_CTXSW
+#endif
+
+	/* restore callee-saved registers */
+	popq	%r15
+	popq	%r14
+	popq	%r13
+	popq	%r12
+	popq	%rbx
+	popq	%rbp
+
+	jmp	__switch_to
+SYM_FUNC_END(__switch_to_asm)
+.popsection
+```
+
+##### 关键函数__switch_to
+
+```c
+/*
+ *	switch_to(x,y) should switch tasks from x to y.
+ */
+__visible __notrace_funcgraph struct task_struct *
+__switch_to(struct task_struct *prev_p, struct task_struct *next_p)
+{
+	struct thread_struct *prev = &prev_p->thread; // thread_struct 是保存硬件上下文的，不过
+	struct thread_struct *next = &next_p->thread;
+	struct fpu *prev_fpu = &prev->fpu;
+	struct fpu *next_fpu = &next->fpu;
+	int cpu = smp_processor_id();
+
+    ...
+
+	/* We must save %fs and %gs before load_TLS() because
+	 * %fs and %gs may be cleared by load_TLS().
+	 *
+	 * (e.g. xen_load_tls())
+	 */
+	save_fsgs(prev_p); // 这些都很好理解
+
+	/*
+	 * Load TLS before restoring any segments so that segment loads
+	 * reference the correct GDT entries.
+	 */
+	load_TLS(next, cpu);
+
+	/*
+	 * Leave lazy mode, flushing any hypercalls made here.  This
+	 * must be done after loading TLS entries in the GDT but before
+	 * loading segments that might reference them.
+	 */
+	arch_end_context_switch(next_p);
+
+	/* Switch DS and ES.
+	 *
+	 * Reading them only returns the selectors, but writing them (if
+	 * nonzero) loads the full descriptor from the GDT or LDT.  The
+	 * LDT for next is loaded in switch_mm, and the GDT is loaded
+	 * above.
+	 *
+	 * We therefore need to write new values to the segment
+	 * registers on every context switch unless both the new and old
+	 * values are zero.
+	 *
+	 * Note that we don't need to do anything for CS and SS, as
+	 * those are saved and restored as part of pt_regs.
+	 */
+	savesegment(es, prev->es);
+	if (unlikely(next->es | prev->es))
+		loadsegment(es, next->es);
+
+	savesegment(ds, prev->ds);
+	if (unlikely(next->ds | prev->ds))
+		loadsegment(ds, next->ds);
+
+	x86_fsgsbase_load(prev, next);
+
+	x86_pkru_load(prev, next);
+
+	/*
+	 * Switch the PDA and FPU contexts.
+	 */
+	this_cpu_write(current_task, next_p); // 是吧
+	this_cpu_write(cpu_current_top_of_stack, task_top_of_stack(next_p));
+
+	switch_fpu_finish(next_fpu);
+
+	/* Reload sp0. */
+	update_task_stack(next_p);
+
+	switch_to_extra(prev_p, next_p);
+
+	...
+
+	/* Load the Intel cache allocation PQR MSR. */
+	resctrl_sched_in();
+
+	return prev_p; // 哦，原来真的会返回 prev
+}
+```
+
+##### thread_struct
+
+这个数据结构保存进程在上下文切换时的硬件上下文，但怎么和我想象的内容不太一样，很多寄存器没有保存，只保存了 sp 和一些段寄存器，在 X86 中其他的寄存器值都保存在栈里么？
+
+```c
+struct thread_struct {
+	/* Cached TLS descriptors: */
+    // 这个 TLS 是啥？
+    // Thread Local Storage (TLS) are per-thread global variables.
+    // 也就是保存线程中的一些全局变量等
+	struct desc_struct	tls_array[GDT_ENTRY_TLS_ENTRIES];
+#ifdef CONFIG_X86_32
+	unsigned long		sp0;
+#endif
+	unsigned long		sp;
+#ifdef CONFIG_X86_32
+	unsigned long		sysenter_cs;
+#else
+	unsigned short		es; // 段寄存器。关于 X86 的段寻址机制还需要深入理解
+	unsigned short		ds;
+	unsigned short		fsindex;
+	unsigned short		gsindex;
+#endif
+
+#ifdef CONFIG_X86_64
+	unsigned long		fsbase;
+	unsigned long		gsbase;
+#else
+	/*
+	 * XXX: this could presumably be unsigned short.  Alternatively,
+	 * 32-bit kernels could be taught to use fsindex instead.
+	 */
+	unsigned long fs;
+	unsigned long gs;
+#endif
+
+	/* Save middle states of ptrace breakpoints */
+	struct perf_event	*ptrace_bps[HBP_NUM];
+	/* Debug status used for traps, single steps, etc... */
+	unsigned long           virtual_dr6;
+	/* Keep track of the exact dr7 value set by the user */
+	unsigned long           ptrace_dr7;
+	/* Fault info: */
+	unsigned long		cr2;
+	unsigned long		trap_nr;
+	unsigned long		error_code;
+#ifdef CONFIG_VM86
+	/* Virtual 86 mode info */
+	struct vm86		*vm86;
+#endif
+	/* IO permissions: */
+	struct io_bitmap	*io_bitmap;
+
+	/*
+	 * IOPL. Privilege level dependent I/O permission which is
+	 * emulated via the I/O bitmap to prevent user space from disabling
+	 * interrupts.
+	 */
+	unsigned long		iopl_emul;
+
+	unsigned int		sig_on_uaccess_err:1;
+
+	/*
+	 * Protection Keys Register for Userspace.  Loaded immediately on
+	 * context switch. Store it in thread_struct to avoid a lookup in
+	 * the tasks's FPU xstate buffer. This value is only valid when a
+	 * task is scheduled out. For 'current' the authoritative source of
+	 * PKRU is the hardware itself.
+	 */
+	u32			pkru;
+
+	/* Floating point and extended processor state */
+	struct fpu		fpu;
+	/*
+	 * WARNING: 'fpu' is dynamically-sized.  It *MUST* be at
+	 * the end.
+	 */
+};
+```
+
+#### **调度节拍**
 
 #### 组调度机制
+
+### 疑问
+
+1. 在[关键函数context_switch](#关键函数context_switch)中使用 last 参数来达到在 next 进程中能够处理 prev 进程的遗留问题，但是，last 是一个指针，在进程页表都切换了的情况下，prev 能正确指向 prev 的 task_struct 么？
+2. `thread_struct` 数据结构保存进程在上下文切换时的硬件上下文，但怎么和我想象的内容不太一样，很多寄存器没有保存，只保存了 sp 和一些段寄存器，在 X86 中其他的寄存器值都保存在栈里么？
+3.
 
 ### Reference
 
