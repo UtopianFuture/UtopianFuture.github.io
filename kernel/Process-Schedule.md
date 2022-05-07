@@ -52,9 +52,9 @@
 - [负载计算](#负载计算)
   - [量化负载的计算](#量化负载的计算)
   - [实际算力的计算](#实际算力的计算)
-  - [PELT 算法](#PELT 算法)
-    - [[历史累计衰减时间](#http://www.wowotech.net/process_management/PELT.html)](#[历史累计衰减时间](#http://www.wowotech.net/process_management/PELT.html))
-    - [[负载贡献](http://www.wowotech.net/process_management/450.html)](#[负载贡献](http://www.wowotech.net/process_management/450.html))
+  - [PELT算法](#PELT算法)
+    - [历史累计衰减时间](#历史累计衰减时间)
+    - [负载贡献](#负载贡献)
     - [sched_avg](#sched_avg)
 
 - [Reference](#Reference)
