@@ -46,7 +46,7 @@
    需要在用户目录下的.ssh/config 中添加
 
    ```plain
-\# ~/.ssh/config
+~/.ssh/config
 Host rd.loongson.cn
 HostName 10.2.5.20
 Port 29148
