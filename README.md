@@ -7,6 +7,7 @@
 - [debug loongarch kernel in qemu](./kernel/debug-loongarch-kernel-in-qemu.md)
 - [MemBlock in kernel](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/Analysis-memblock_add_range.md)
 - [Memory Management](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/Memory-Management.md)
+- [Process Schedule](#https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/Process-Schedule.md)
 - [What is UEFI?](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/what-is-uefi.md)
 - [Run helloworld in edk2](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/run-helloworld-in-edk2.md)
 - [How to configure edk2?](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/UEFI.md)
