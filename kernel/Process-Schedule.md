@@ -49,6 +49,14 @@
     - [关键函数switch_to](#关键函数switch_to)
     - [关键函数__switch_to](#关键函数__switch_to)
     - [thread_struct](#thread_struct)
+- [负载计算](#负载计算)
+  - [量化负载的计算](#量化负载的计算)
+  - [实际算力的计算](#实际算力的计算)
+  - [PELT 算法](#PELT 算法)
+    - [[历史累计衰减时间](#http://www.wowotech.net/process_management/PELT.html)](#[历史累计衰减时间](#http://www.wowotech.net/process_management/PELT.html))
+    - [[负载贡献](http://www.wowotech.net/process_management/450.html)](#[负载贡献](http://www.wowotech.net/process_management/450.html))
+    - [sched_avg](#sched_avg)
+
 - [Reference](#Reference)
 
 ### 基本概念
@@ -777,7 +785,7 @@ SYSCALL_DEFINE5(clone, unsigned long, clone_flags, unsigned long, newsp,
 }
 ```
 
-##### 关键函数kernel_clone
+##### 关键函数 kernel_clone
 
 在 5.15 的内核中，这些创建用户态进程和内核线程的接口最后都是调用 `kernel_clone`，只是传入的参数不一样。和书中介绍的不一样，5.15 的内核传入 `kernel_clone` 的参数是 `kernel_clone_args`，而不是之前的多个型参。
 
@@ -1163,7 +1171,7 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 }
 ```
 
-##### 关键函数copy_mm
+##### 关键函数 copy_mm
 
 这个函数就很好理解了。
 
@@ -1487,12 +1495,12 @@ int copy_thread(unsigned long clone_flags, unsigned long sp, unsigned long arg,
 |   CFS    | SCHED_NORMAL、 SCHED_BATCH、 SCHED_IDLE |         普通进程。优先级为 100 ~ 139         |                        由 CFS 来调度                         |
 |   idle   |                   无                    |               最低优先级的进程               | 当继续队列中没有其他进程时进入 idle 调度类。idle 调度类会让 CPU 进入低功耗模式 |
 
-- `SCHED_DEADLINE`：限期进程调度策略，使task选择`Deadline调度器`来调度运行；
-- `SCHED_FIFO`：实时进程调度策略，先进先出调度没有时间片，没有更高优先级的情况下，只能等待主动让出CPU；
-- `SCHED_RR`：实时进程调度策略，时间片轮转，进程用完时间片后加入优先级对应运行队列的尾部，把CPU让给同优先级的其他进程；
-- `SCHED_NORMAL`：普通进程调度策略，使task选择`CFS调度器`来调度运行；
-- `SCHED_BATCH`：普通进程调度策略，批量处理，使task选择`CFS调度器`来调度运行；
-- `SCHED_IDLE`：普通进程调度策略，使task以最低优先级选择`CFS调度器`来调度运行；
+- `SCHED_DEADLINE`：限期进程调度策略，使 task 选择`Deadline调度器`来调度运行；
+- `SCHED_FIFO`：实时进程调度策略，先进先出调度没有时间片，没有更高优先级的情况下，只能等待主动让出 CPU；
+- `SCHED_RR`：实时进程调度策略，时间片轮转，进程用完时间片后加入优先级对应运行队列的尾部，把 CPU 让给同优先级的其他进程；
+- `SCHED_NORMAL`：普通进程调度策略，使 task 选择`CFS调度器`来调度运行；
+- `SCHED_BATCH`：普通进程调度策略，批量处理，使 task 选择`CFS调度器`来调度运行；
+- `SCHED_IDLE`：普通进程调度策略，使 task 以最低优先级选择`CFS调度器`来调度运行；
 
 #### 经典调度算法
 
@@ -1862,6 +1870,14 @@ struct cfs_rq {
     ...
 
 #endif /* CONFIG_SMP */
+
+    struct {
+		raw_spinlock_t	lock ____cacheline_aligned;
+		int		nr;
+		unsigned long	load_avg;
+		unsigned long	util_avg;
+		unsigned long	runnable_avg;
+	} removed;
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
     // 指向CFS运行队列所属的 CPU RQ 运行队列
@@ -2359,7 +2375,7 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 
 这是另一个例子，应该是内核线程创建子进程后返回，申请进程调用。
 
-```
+```plain
 #0  schedule () at kernel/sched/core.c:6360
 #1  0xffffffff810cc802 in kthreadd (unused=<optimized out>) at kernel/kthread.c:673
 #2  0xffffffff81004572 in ret_from_fork () at arch/x86/entry/entry_64.S:295
@@ -2770,7 +2786,7 @@ do {									\
 
 ![switch_to.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/switch_to.png?raw=true)
 
-假设进程 A 在 CPU 0 上主动执行 `switch_to` 切换到 B 执行，那么 A 执行了 A0，然后运行了 `switch_to`。在 `switch_to` 中 CPU 0 切换到 B 上硬件上下文，运行 B，A 被换出了，这时 B 直接运行自己的代码段，而 A1还没有执行，所以需要 `last` 指向 A。
+假设进程 A 在 CPU 0 上主动执行 `switch_to` 切换到 B 执行，那么 A 执行了 A0，然后运行了 `switch_to`。在 `switch_to` 中 CPU 0 切换到 B 上硬件上下文，运行 B，A 被换出了，这时 B 直接运行自己的代码段，而 A1 还没有执行，所以需要 `last` 指向 A。
 
 那为何不直接使用 `prev` 呢？在 `switch_to` 执行前，`prev` 指向 A，但是  `switch_to` 执行完后，此时内核栈已经从 A 的内核栈切换到 B 的内核栈，读取 `prev` 变成了读取 B 的 `prev` 参数，而不是 A 的 `prev` 参数，所以读出来的 `prev` 不一定指向 A。**那为什么 `__switch_to_asm` 能够返回指向 A 的指针？**因为 `__switch_to` 会返回 `prev`。
 
@@ -2991,9 +3007,270 @@ struct thread_struct {
 };
 ```
 
+### 负载计算
+
+这章的内容是探究如何更好的描述一个调度实体和就绪队列的工作负载。大部分内容都是从[这里](#http://www.wowotech.net/process_management/450.html)复制过来的，它讲的很清楚，我就省的再敲一遍。然后对于计算公式我能够理解，然后内核代码也贴出来了，可以说对于 PELT 算法我知道怎样算工作负载，但对于其要怎样使用还不懂，比如  `sched_avg` 中的 `load_avg`, `runnable_avg`, `util_avg` 变量我就不知道怎么用。这里就当个记录吧，之后有需要再深入理解。
+
+#### 量化负载的计算
+
+内核中使用量化负载来衡量 CPU、进程、就绪队列的负载。量化负载说白了就是运行时间除以总时间乘上权重，那么以此可以计算：
+
+- CPU 的负载 = 运行时间 / 总时间 * 就绪队列的总权重
+
+- decay_avg_load = decay_sum_runable_time / decay_sum_period_time * weight
+
+  decay_avg_load 就是量化负载；decay_sum_runable_time 是就绪队列或调度实体在可运行状态下的所有历史累计衰减时间，这个历史衰减时间我认为就是运行时间（好吧，不是这么简单，见下面的分析）；decay_sum_period_time 是就绪队列或调度实体在所有采样周期里累加衰减时间；weight 是调度实体或就绪队列的权重。
+
+当一个进程 decay_sum_runable_time 无限接近 decay_sum_period_time 时，它的量化负载就无限接近权重，这说明这个进程一直在占用 CPU。我们将 CPU 对应的就绪队列值哦个所有进程的量化负载累加起来就得到 CPU 的总负载。
+
+#### 实际算力的计算
+
+处理器有一个计算能力的概念，也就是这个处理器最大的处理能力。在 SMP 架构下，系统中所有处理器的计算能力是一样的，但在 ARM 架构中使用了大小核设计，处理器的处理能力就不一样了。内核同样使用量化计算能力来描述处理器的计算能力，若系统中功能最强大的 CPU 的量化计算能力设置为 1024，那么系统中功能稍弱的 CPU 的量化计算能力就要小于 1024。通常 CPU 的量化计算能力通过设备树或  BIOS 传给内核。[rq](#rq)中有成员变量 `cpu_capacity_orig` 和 `cpu_capacity` 来描述 CPU 的算力。
+
+CPU 的最大量化计算能力称为额定算力，而一个进程或就绪队列当前计算能力称为实际算力，其计算公式为：
+
+- util_avg = decay_sum_runable_time / decay_sum_period_time * cpu_capacity
+
+  util_avg 可以理解为额定算力的利用率或 CPU 利用率。
+
+  从公式中就可以看出，如果一个调度实体的执行时间越接近采样时间，它的实际算力就越接近额定算力，也可以理解为它的 CPU 利用率更高。
+
+内核中的绿色节能调度器会使用实际算力来进行进程的迁移调度。
+
+#### PELT算法
+
+##### [历史累计衰减时间](#http://www.wowotech.net/process_management/PELT.html)
+
+PELT 算法为了做到 Per-entity 的负载跟踪，将时间（物理时间，不是虚拟时间）分成了 1024us 的序列，在每一个 1024us 的周期中，一个 entity 对系统负载的贡献可以根据**该实体处于 runnable 状态的时间进行计算**。如果在该周期内，runnable 的时间是 x，那么对系统负载的贡献就是（x/1024）。当然，一个实体在一个计算周期内的负载可能会超过 1024us，这是因为我们会累积在过去周期中的负载，当然，对于过去的负载我们在计算的时候需要乘一个衰减因子。如果我们让 Li 表示在周期 pi 中该调度实体的对系统负载贡献，那么一个调度实体对系统负荷的总贡献可以表示为：
+
+*L = L0 + L1\*y + L2\*y^2 + L3\*y^3 + ...*
+
+其中 y 是衰减因子。通过上面的公式可以看出：
+
+- 调度实体对系统负荷的贡献值是一个序列之和组成；
+
+- 最近的负荷值拥有最大的权重；
+
+- 过去的负荷也会被累计，但是是以递减的方式来影响负载计算。
+
+使用这样序列的好处是计算简单，我们不需要使用数组来记录过去的负荷贡献，只要把上次的总负荷的贡献值乘以 y 再加上新的 L0 负荷值就 OK 了。
+
+在 3.8 版本的代码中，y^32 = 0.5, y = 0.97857206。这样选定的 y 值，一个调度实体的负荷贡献经过 32 个周期（1024us）后，对当前时间的的符合贡献值会衰减一半。
+
+举个例子，如何计算一个 se 的负载贡献。如果有一个 task，从第一次加入 rq 后开始一直运行 4096us 后一直睡眠，那么在 1023us、2047us、3071us、4095us、5119us、6143us、7167us 和 8191us 时间的每一个时刻负载贡献分别是多少呢？
+
+```txt
+1023us: L0 = 1023
+2047us: L1 = 1023 + 1024 * y                                                 = 1023 + (L0 + 1) * y = 2025
+3071us: L2 = 1023 + 1024 * y + 1024 * y2                                     = 1023 + (L1 + 1) * y = 3005
+4095us: L3 = 1023 + 1024 * y + 1024 * y2 + 1024 * y3                         = 1023 + (L2 + 1) * y = 3963
+5119us: L4 = 0    + 1024 * y + 1024 * y2 + 1024 * y3 + 1024 * y4             =    0 + (L3 + 1) * y = 3877
+6143us: L5 = 0    +    0     + 1024 * y2 + 1024 * y3 + 1024 * y4 + 1024 * y5 =          0 + L4 * y = 3792
+7167us: L6 = 0    + L5 * y = L4 * y2 = 3709
+8191us: L7 = 0    + L6 * y = L5 * y2 = L4 * y3 = 3627
+```
+
+##### [负载贡献](http://www.wowotech.net/process_management/450.html)
+
+从上面的计算公式我们也可以看出，经常需要计算 valyn 的值，因此内核提供 `decay_load` 函数用于计算第 n 个周期的衰减值。为了避免浮点数运算，采用移位和乘法运算提高计算速度。`decay_load(val, n) = val * y^n * 2^32 >> 32`。我们将 `y^n * 2^32` 的值提前计算出来保存在数组 `runnable_avg_yN_inv` 中。
+
+```c
+static const u32 runnable_avg_yN_inv[] __maybe_unused = {
+	0xffffffff, 0xfa83b2da, 0xf5257d14, 0xefe4b99a, 0xeac0c6e6, 0xe5b906e6,
+	0xe0ccdeeb, 0xdbfbb796, 0xd744fcc9, 0xd2a81d91, 0xce248c14, 0xc9b9bd85,
+	0xc5672a10, 0xc12c4cc9, 0xbd08a39e, 0xb8fbaf46, 0xb504f333, 0xb123f581,
+	0xad583ee9, 0xa9a15ab4, 0xa5fed6a9, 0xa2704302, 0x9ef5325f, 0x9b8d39b9,
+	0x9837f050, 0x94f4efa8, 0x91c3d373, 0x8ea4398a, 0x8b95c1e3, 0x88980e80,
+	0x85aac367, 0x82cd8698,
+};
+```
+
+根据 `runnable_avg_yN_inv` 数组的值，我们就方便实现 `decay_load` 函数。
+
+```c
+/*
+ * Approximate:
+ *   val * y^n,    where y^32 ~= 0.5 (~1 scheduling period)
+ */
+static u64 decay_load(u64 val, u64 n)
+{
+	unsigned int local_n;
+
+	if (unlikely(n > LOAD_AVG_PERIOD * 63))
+		return 0;
+
+	/* after bounds checking we can collapse to 32-bit */
+	local_n = n;
+
+	/*
+	 * As y^PERIOD = 1/2, we can combine
+	 *    y^n = 1/2^(n/PERIOD) * y^(n%PERIOD)
+	 * With a look-up table which covers y^n (n<PERIOD)
+	 *
+	 * To achieve constant time decay_load.
+	 */
+	if (unlikely(local_n >= LOAD_AVG_PERIOD)) {
+		val >>= local_n / LOAD_AVG_PERIOD;
+		local_n %= LOAD_AVG_PERIOD;
+	}
+
+	val = mul_u64_u32_shr(val, runnable_avg_yN_inv[local_n], 32);
+	return val;
+}
+```
+
+经过上面举例，我们可以知道计算当前负载贡献并不需要记录所有历史负载贡献。我们只需要知道**上一刻负载贡献**就可以计算当前负载贡献，这大大降低了代码实现复杂度。
+
+我们继续上面举例问题的思考，我们依然假设一个 task 开始从 0 时刻运行，那么 1022us 后的负载贡献自然就是 1022。当 task 经过 10us 之后，此时（现在时刻是 1032us）的负载贡献又是多少呢？
+
+很简单，10us 中的 2us 和之前的 1022us 可以凑成一个周期 1024us。这个 1024us 需要进行一次衰减，即现在的负载贡献是：1024y + 8 = 1010。2us 属于上一个负载计算时距离一个周期 1024us 的差值，由于 2 是上一个周期的时间，因此也需要衰减一次，8 是当前周期时间，不需要衰减。
+
+又经过了 2124us，此时（现在时刻是 3156us）负载贡献又是多少呢？即：1010y2 + 1016y2 + 1024y + 84 = 3024。2124us 可以分解成 3 部分：1016us 补齐上一时刻不足 1024us 部分，凑成一个周期；1024us 一个整周期；当前时刻不足一个周期的剩余 84us 部分。相当于我们经过了 2 个周期，因此针对上一次的负载贡献需要衰减 2 次，也就是 1010y^2 部分，1016us 是补齐上一次不足一个周期的部分，因此也需要衰减 2 次，所以公式中还有 1016y^2 部分。1024us 部分相当于距离当前时刻是一个周期，所以需要衰减 1 次，最后 84 部分是当前剩余时间，不需要衰减。
+
+针对以上事例，我们可以得到一个更通用情况下的计算公式。假设上一时刻负载贡献是 u，经历 d 时间后的负载贡献如何计算呢？根据上面的例子，我们可以把时间 d 分成 3 和部分：d1 是离当前时间最远（不完整的）period 的剩余部分，d2 是完整 period 时间，而 d3 是（不完整的）当前 period 的剩余部分。假设时间 d 是经过 p 个周期（d=d1+d2+d3, p=1+d2/1024）。d1，d2，d3 的示意图如下：
+
+```plain
+      d1          d2           d3
+      ^           ^            ^
+      |           |            |
+    |<->|<----------------->|<--->|
+|---x---|------| ... |------|-----x (now)
+
+                            p-1
+ u' = (u + d1) y^p + 1024 * \Sum y^n + d3 y^0
+                            n=1
+                              p-1
+    = u y^p + d1 y^p + 1024 * \Sum y^n + d3 y^0
+                              n=1
+```
+
+上面的例子现在就可以套用上面的公式计算。例如，上一次的负载贡献 u=1010，经过时间 d=2124us，可以分解成 3 部分，d1=1016us，d2=1024，d3=84。经历的周期 p=2。所以当前时刻负载贡献 u'=1010y2 + 1016y2 + 1024y + 84，与上面计算结果一致。
+
+内核中用来实现上述计算的是 `___update_load_sum`，
+
+```c
+static __always_inline int
+___update_load_sum(u64 now, struct sched_avg *sa,
+		  unsigned long load, unsigned long runnable, int running)
+{
+	u64 delta;
+
+	delta = now - sa->last_update_time;
+
+	delta >>= 10; // 将其转换成微秒
+
+	sa->last_update_time += delta << 10;
+
+	if (!accumulate_sum(delta, sa, load, runnable, running)) // 计算工作负载
+		return 0;
+
+	return 1;
+}
+```
+
+计算结果保存在 `sched_avg` 中的 `load_sum`, `runnable_sum`, `util_sum` 中。
+
+而 `___update_load_avg` 计算量化负载，计算结果保存在 `sched_avg` 中的 `load_avg`, `runnable_avg`, `util_avg` 中。
+
+```c
+static __always_inline void
+___update_load_avg(struct sched_avg *sa, unsigned long load)
+{
+	u32 divider = get_pelt_divider(sa);
+
+	/*
+	 * Step 2: update *_avg.
+	 */
+	sa->load_avg = div_u64(load * sa->load_sum, divider);
+	sa->runnable_avg = div_u64(sa->runnable_sum, divider);
+	WRITE_ONCE(sa->util_avg, sa->util_sum / divider);
+}
+```
+
+##### sched_avg
+
+该数据结构用来描述[调度实体](#sched_entity)或[就绪队列](#cfs_rq)的负载信息。注释值得一看。
+
+```c
+/*
+ * The load/runnable/util_avg accumulates an infinite geometric series
+ *
+ * [load_avg definition]
+ *
+ *   load_avg = runnable% * scale_load_down(load)
+ *
+ * [runnable_avg definition]
+ *
+ *   runnable_avg = runnable% * SCHED_CAPACITY_SCALE
+ *
+ * [util_avg definition]
+ *
+ *   util_avg = running% * SCHED_CAPACITY_SCALE
+ *
+ * where runnable% is the time ratio that a sched_entity is runnable and
+ * running% the time ratio that a sched_entity is running.
+ *
+ * For cfs_rq, they are the aggregated values of all runnable and blocked
+ * sched_entities.
+ *
+ * The load/runnable/util_avg doesn't directly factor frequency scaling and CPU
+ * capacity scaling. The scaling is done through the rq_clock_pelt that is used
+ * for computing those signals (see update_rq_clock_pelt())
+ *
+ * N.B., the above ratios (runnable% and running%) themselves are in the
+ * range of [0, 1]. To do fixed point arithmetics, we therefore scale them
+ * to as large a range as necessary. This is for example reflected by
+ * util_avg's SCHED_CAPACITY_SCALE.
+ *
+ * [Overflow issue]
+ *
+ * The 64-bit load_sum can have 4353082796 (=2^64/47742/88761) entities
+ * with the highest load (=88761), always runnable on a single cfs_rq,
+ * and should not overflow as the number already hits PID_MAX_LIMIT.
+ *
+ * For all other cases (including 32-bit kernels), struct load_weight's
+ * weight will overflow first before we do, because:
+ *
+ *    Max(load_avg) <= Max(load.weight)
+ *
+ * Then it is the load_weight's responsibility to consider overflow
+ * issues.
+ */
+struct sched_avg {
+	u64				last_update_time; // 上一次更新的时间点，用于计算时间间隔
+    // 对于调度实体来说，它的统计对象是调度实体在可运行状态下的累计衰减总时间
+    // 对于就绪队列来说，它的统计对象是所有进程的累计工作总负载（时间乘权重）
+	u64				load_sum;
+    // 对于调度实体来说，它的统计对象是调度实体在就绪队列里可运行状态下的累计衰减总时间
+    // 对于就绪队列来说，它的统计对象是所有可以运行状态下进程的累计工作总负载（时间乘权重）
+	u64				runnable_sum;
+    // 对于调度实体来说，它的统计对象是调度实体在正在运行状态下的累计衰减总时间
+    // 对于就绪队列来说，它的统计对象是所有正在运行状态进程的累计衰减总时间
+	u32				util_sum;
+	u32				period_contrib; // 存放上一次时间采样时，不能凑成一个周期（1024us）的剩余时间
+    // 对于调度实体来说，它是可运行状态下的量化负载，用来衡量一个进程的负载贡献值
+    // 对于就绪队列来说，它是总的量化负载
+	unsigned long			load_avg;
+    // 对于调度实体来说，它是可运行状态下的量化负载，等于 load_avg
+    // 对于就绪队列来说，它是队列里所有可运行状态下进程的总量化负载
+    // 在 SMP 负载均衡中使用该成员来比较 CPU 的负载大小
+	unsigned long			runnable_avg;
+	unsigned long			util_avg; // 实际算力
+	struct util_est			util_est;
+} ____cacheline_aligned;
+```
+
+有几点需要注意：
+
+- 调度实体在就绪队列中的时间包括两部分：
+  - 正在运行时间，running；
+  - 等待时间，runable，包括正在运行的时间和等待时间；
+
 ### 疑问
 
-1. 在[关键函数context_switch](#关键函数context_switch)中使用 last 参数来达到在 next 进程中能够处理 prev 进程的遗留问题，但是，last 是一个指针，在进程页表都切换了的情况下，prev 能正确指向 prev 的 task_struct 么？
+1. 为什么要设置优先级、nice 值、权重、实际运行时间（runtime）、虚拟运行时间（vruntime）？它们之间的关系是什么？
+1. 为什么要根据 vruntime 决定调度顺序？
+1. 在[关键函数context_switch](#关键函数context_switch)中使用 last 参数来达到在 next 进程中能够处理 prev 进程的遗留问题，但是，last 是一个指针，在进程页表都切换了的情况下，prev 能正确指向 prev 的 `task_struct` 么？
 2. `thread_struct` 数据结构保存进程在上下文切换时的硬件上下文，但怎么和我想象的内容不太一样，很多寄存器没有保存，只保存了 sp 和一些段寄存器，在 X86 中其他的寄存器值都保存在栈里么？还是说就只需要保存这些？
 
 ### Reference
@@ -3005,3 +3282,7 @@ struct thread_struct {
 [3] https://blog.csdn.net/u013982161/article/details/51347944
 
 [4] https://www.cnblogs.com/LoyenWang/p/12495319.html
+
+[5] http://www.wowotech.net/process_management/PELT.html
+
+[6] http://www.wowotech.net/process_management/450.html[]
