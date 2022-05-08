@@ -1598,12 +1598,6 @@ static u64 __calc_delta(u64 delta_exec, unsigned long weight, struct load_weight
 
 	__update_inv_weight(lw);
 
-	if (unlikely(fact_hi)) {
-		fs = fls(fact_hi);
-		shift -= fs;
-		fact >>= fs;
-	}
-
 	fact = mul_u32_u32(fact, lw->inv_weight);
 
 	fact_hi = (u32)(fact >> 32);
@@ -1619,7 +1613,7 @@ static u64 __calc_delta(u64 delta_exec, unsigned long weight, struct load_weight
 
 从这个函数的计算公式可以得出，nice 越大，计算出来的 `vruntime` 就越大，而调度器是选择虚拟运行时间少的调度实体来运行，所以 nice 值越大，优先级越低。随着 `vruntime` 的增长，优先级低的进程也有机会被调度。
 
-还是不理解为什么要进入 `vruntime`。
+还是不理解为什么要引入 `vruntime`。
 
 #### 相关数据结构
 
@@ -3265,6 +3259,12 @@ struct sched_avg {
 - 调度实体在就绪队列中的时间包括两部分：
   - 正在运行时间，running；
   - 等待时间，runable，包括正在运行的时间和等待时间；
+
+### SMP负载均衡
+
+这两部分对现在的我来说都过于深入，与其花时间学习这些现在不太可能用到的东西不如先把上面这些基础的知识搞懂。所以这两部分暂时不分析，之后有需要再看。下一步把内存管理和进程调度没有搞懂的地方用 gdb + qemu 深入分析，然后再看看文件系统。
+
+### 绿色节能调度器
 
 ### 疑问
 
