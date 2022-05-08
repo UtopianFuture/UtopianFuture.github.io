@@ -353,11 +353,6 @@ Linux Daemon（守护进程）是运行在后台的一种特殊进程。它独�
 
 A **network socket** is a software structure within a [network node](https://en.wikipedia.org/wiki/Node_(networking)) of a [computer network](https://en.wikipedia.org/wiki/Computer_network) that serves as an endpoint for sending and receiving data across the network. The structure and properties of a socket are defined by an [application programming interface](https://en.wikipedia.org/wiki/Application_programming_interface) (API) for the networking architecture. Sockets are created only during the lifetime of a [process](https://en.wikipedia.org/wiki/Process_(computing)) of an application running in the node.
 
-### level-triggered vs edge-triggered
-
-- level-triggered: get a list of every file descriptor you’re interested in that is readable.
-- edge-triggered: get notifications every time a file descriptor becomes readable.
-
 ### 边沿触发和电平触发
 
 边沿触发分上升沿触发和下降沿触发，简单说就是电平变化那一瞬间进行触发。
@@ -373,7 +368,7 @@ A **network socket** is a software structure within a [network node](https://en.
 
 SMM is **a special-purpose operating mode** provided for handling system-wide functions like **power management, system hardware control, or proprietary OEM designed code**. It is intended for use only by system firmware ([BIOS](https://en.wikipedia.org/wiki/BIOS) or [UEFI](https://en.wikipedia.org/wiki/UEFI)), not by applications software or general-purpose systems software. The main benefit of SMM is that it **offers a distinct and easily isolated processor environment** that operates transparently to the operating system or executive and software applications.
 
-翻译过来就是 SMM 是一个特别的处理器工作模式，它运行在独立的空间里，具有自己独立的运行环境，与 real mode/protected mode/long mode 隔离，但是具有极高的权限。SMM 用来处理 power 管理、hardware 控制这些比较底层，比较紧急的事件。这些事件使用 SMI(System Management Interrupt) 来处理，因此进入了 SMI 处理程序也就是进入了 SMM ，SMI 是不可屏蔽的外部中断，并且不可重入（在 SMI 处理程序中不能响应另一个 SMI 请求）。
+翻译过来就是 SMM 是一个特别的处理器工作模式，它运行在独立的空间里，具有自己独立的运行环境，与 real mode/protected mode/long mode 隔离，但是具有极高的权限。**SMM 用来处理 power 管理、hardware 控制这些比较底层，比较紧急的事件**。这些事件使用 **SMI(System Management Interrupt)** 来处理，因此进入了 SMI 处理程序也就是进入了 SMM ，SMI 是不可屏蔽的外部中断，并且不可重入（在 SMI 处理程序中不能响应另一个 SMI 请求）。
 
 ### [微内核和宏内核](https://zhuanlan.zhihu.com/p/53612117)
 
@@ -397,7 +392,7 @@ The sequence of instructions executed in Kernel Mode to handle a kernel request 
 
 ### ASCII
 
-![ascii](/home/guanshun/gitlab/UFuture.github.io/image/ascii.gif)
+![ascii.gif](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/ascii.gif?raw=true)
 
 ### [ret_from_fork](https://www.oreilly.com/library/view/understanding-the-linux/0596002130/ch04s08.html)
 
@@ -425,7 +420,7 @@ The sequence of instructions executed in Kernel Mode to handle a kernel request 
 
 下面是处理流程。
 
-![Returning from interrupts and exceptions](/home/guanshun/gitlab/UFuture.github.io/image/ret_from_fork.png)
+![ret_from_fork.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/ret_from_fork.png?raw=true)
 
 Initially, the `ebx` register stores **the address of the descriptor of the process being replaced by the child** (usually the parent’s process descriptor); this value is passed to the `schedule_tail()` function as a parameter. When that function returns, `ebx` is reloaded with the `current`’s process descriptor address. Then the `ret_from_fork()` function checks the value of the `ptrace` field of the `current` (at offset 24 of the process descriptor). If the field is not null, the `fork( )`, `vfork( )`, or `clone( )` system call is traced, so the `syscall_trace( )` function is invoked to notify the debugging process.
 
@@ -702,3 +697,11 @@ RCU（Read-Copy Update）是数据同步的一种方式，在当前的Linux内�
 - %rbx，%rbp，%r12，%r13，%14，%15 用作数据存储，遵循被调用者使用规则，简单说就是随便用，调用子函数之前要备份它，以防被修改；
 
 - %r10，%r11 用作数据存储，遵循调用者使用规则，简单说就是使用之前要先保存原值；
+
+### X86/64 的权限
+
+- CPL(Current Privilege Level)：当前的权限级别，CPL 的值放在 CS 寄存器的 Selector 域的 RPL，CS.Selector.RPL 与 SS 寄存器的 Selector.RPL 总是相等的，因此 SS.Selector.RPL 也是 CPL。
+- DPL(Descriptor Privilege Level)：DPL 存放在 Descriptor（包括 Segment Descriptor 和 Gate Descriptor）里的 DPL 域，它指示访问这些 segment 所需要的权限。
+- RPL(Requested Privilege Level)：和 CPL 一样。
+
+当 CPL > DPL 时，表示当前运行的程序权限不足，无法访问 segment 或 gate。
