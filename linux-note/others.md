@@ -705,3 +705,9 @@ RCU（Read-Copy Update）是数据同步的一种方式，在当前的Linux内�
 - RPL(Requested Privilege Level)：和 CPL 一样。
 
 当 CPL > DPL 时，表示当前运行的程序权限不足，无法访问 segment 或 gate。
+
+### x86 模式切换
+
+x86 架构中 CPU 的模式众多，幸好手册给出了它们之间的关系。不过还有一个 Long Mode 是啥，好吧 intel 中 IA-32e 就是 Long Mode。
+
+![x86-modes.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/x86-modes.png?raw=true)
