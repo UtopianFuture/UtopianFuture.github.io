@@ -699,6 +699,22 @@ SYSCALL_DEFINE5(clone, unsigned long, clone_flags, unsigned long, newsp,
 }
 ```
 
+进程创建时会用到很多标志位，这里列出几个常用的：
+
+| 标志位         | 含义                                                         |
+| -------------- | ------------------------------------------------------------ |
+| CLONE_VM       | 父、子进程共享进程地址空间                                   |
+| CLONE_FS       | 父、子进程共享文件系统信息                                   |
+| CLONE_FILES    | 父、子进程共享打开的文件                                     |
+| CLONE_SIGHAND  | 父、子进程共享信号处理函数以及被阻塞的信号                   |
+| CLONE_VFORK    | 在创建子进程时启用内核的完成量机制，wait_for_completion 会使父进程进入睡眠状态，直到子进程调用execve 或exit 释放内存 |
+| CLONE_IO       | 复制 I/O 上下文                                              |
+| CLONE_PTRACE   | 父进程被跟踪、子进程也会被跟踪                               |
+| CLONE_PARENT   | 父、子进程拥有同一个父亲                                     |
+| CLONE_THREAD   | 父、子进程在同一个线程组                                     |
+| CLONE_NEWNS    | 为子进程创建新的命名空间                                     |
+| CLONE_UNTRACED | 保证没有进程可以跟踪这个新进程                               |
+
 ##### 关键函数 kernel_clone
 
 在 5.15 的内核中，这些创建用户态进程和内核线程的接口最后都是调用 `kernel_clone`，只是传入的参数不一样。和书中介绍的不一样，5.15 的内核传入 `kernel_clone` 的参数是 `kernel_clone_args`，而不是之前的多个型参。
@@ -1415,16 +1431,16 @@ int copy_thread(unsigned long clone_flags, unsigned long sp, unsigned long arg,
 |   CFS    | SCHED_NORMAL、 SCHED_BATCH、 SCHED_IDLE |         普通进程。优先级为 100 ~ 139         |                        由 CFS 来调度                         |
 |   idle   |                   无                    |               最低优先级的进程               | 当继续队列中没有其他进程时进入 idle 调度类。idle 调度类会让 CPU 进入低功耗模式 |
 
-- `SCHED_DEADLINE`：限期进程调度策略，使 task 选择`Deadline调度器`来调度运行；
+- `SCHED_DEADLINE`：限期进程调度策略，使 task 选择Deadline调度器来调度运行；
 - `SCHED_FIFO`：实时进程调度策略，先进先出调度没有时间片，没有更高优先级的情况下，只能等待主动让出 CPU；
 - `SCHED_RR`：实时进程调度策略，时间片轮转，进程用完时间片后加入优先级对应运行队列的尾部，把 CPU 让给同优先级的其他进程；
-- `SCHED_NORMAL`：普通进程调度策略，使 task 选择`CFS调度器`来调度运行；
-- `SCHED_BATCH`：普通进程调度策略，批量处理，使 task 选择`CFS调度器`来调度运行；
-- `SCHED_IDLE`：普通进程调度策略，使 task 以最低优先级选择`CFS调度器`来调度运行；
+- `SCHED_NORMAL`：普通进程调度策略，使 task 选择CFS调度器来调度运行；
+- `SCHED_BATCH`：普通进程调度策略，批量处理，使 task 选择CFS调度器来调度运行；
+- `SCHED_IDLE`：普通进程调度策略，使 task 以最低优先级选择CFS调度器来调度运行；
 
 #### 经典调度算法
 
-现代操作系统的进程调度器的设计大多受多级反馈队列算法的影响。多级反馈队列算法的核心是把进程按优先级分成多个队列，相同优先级的进程在同一个队列。它最大的特点再与能够根据判断正在运行的进程属于哪种进程，如 I/O 消耗型或 CPU 消耗型，作出不同的反馈，然后动态的修改进程的优先级。
+现代操作系统的进程调度器的设计大多受多级反馈队列算法的影响。多级反馈队列算法的核心是**把进程按优先级分成多个队列，相同优先级的进程在同一个队列**。它最大的特点再与能够根据判断正在运行的进程属于哪种进程，如 I/O 消耗型或 CPU 消耗型，作出不同的反馈，然后**动态的修改进程的优先级**。
 
 其有如下几条基本规则：
 
