@@ -712,6 +712,20 @@ x86 架构中 CPU 的模式众多，幸好手册给出了它们之间的关系�
 
 ![x86-modes.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/x86-modes.png?raw=true)
 
-### 描述符表
+### __randomize_layout
 
-Segment Selector 用于在 Descriptor Table（描述符表）中查找 descriptor（描述符），在 X86 中有三类描述符表：GDT(Global Descriptor Talbe), LDT(Local Descripotr), IDT(Interrupt Descriptor Table)。
+结构体随机化。不管是地址随机化，还是结构体随机化，其目的都是增强内核安全性。结构体随机化也是GCC编译器的一个重要特性，使能后将在编译时随机排布结构体中元素的顺序，从而使攻击者无法通过地址偏移进行攻击。
+
+在内核中，结构体中存在函数指针的部分是攻击者重点关注的对象。因此，只存储函数指针的结构体，是默认开启结构体随机化的，如果不需要，需要添加`__no_randomize_layout`进行排除。另一方面，如果特定结构体希望主动开启保护，需要添加`__randomize_layout`标识。
+
+结构体随机化后的差异
+
+- 既然已经开启了结构体随机化，在进行赋值或初始化时，就需要按照元素名称进行赋值，否则会出现非预期结果。
+
+- 不要对开启了随机化的结构体指针或对象进行强制数据转换，因为内存排布是不可预测的。
+
+- 涉及到远程调用的结构体，如果需要保证结构体内容的一致性，需要添加例外。
+
+- 调试时，根据dump推算结构体内容将极为麻烦，因为每个版本、每个平台的布局都将不同。
+
+- 部分以模块形式添加到内核中的驱动，为保持结构体一致性，在编译时需要采用与内核相同的随机数种子，这带来了极大的安全风险。
