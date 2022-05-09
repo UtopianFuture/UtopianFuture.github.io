@@ -17,18 +17,6 @@
 - [kthreadd in kernel](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/kthreadd.md)
 - [workqueue in kernel](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/workqueue.md)
 
-## linux
-
-- [linux notes](https://github.com/UtopianFuture/UtopianFuture.github.io/tree/master/linux-note)
-
-## binary translation
-
-- [paper](https://github.com/UtopianFuture/UtopianFuture.github.io/tree/master/BinaryTranslation/papers)
-
-- [反汇编技术](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/BinaryTranslation/%E5%8F%8D%E6%B1%87%E7%BC%96%E6%8A%80%E6%9C%AF.md)
-
-- [论文中涉及的问题](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/BinaryTranslation/%E8%AE%BA%E6%96%87%E4%B8%AD%E6%B6%89%E5%8F%8A%E7%9A%84%E9%97%AE%E9%A2%98.md)
-
 ## virtualization
 
 - [bmbt virtualization](./virtualization/bmbt-virtualization.md)
@@ -44,6 +32,22 @@
 - [QEMU Timer](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/QEMU-timer.md)
 - [Seabios source code analysis](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Analysis-Seabios.md)
 - [Port serial to BMBT](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/port-serial.md)
+
+## linux
+
+- [linux notes](https://github.com/UtopianFuture/UtopianFuture.github.io/tree/master/linux-note)
+
+## binary translation
+
+- [paper](https://github.com/UtopianFuture/UtopianFuture.github.io/tree/master/BinaryTranslation/papers)
+
+- [反汇编技术](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/BinaryTranslation/%E5%8F%8D%E6%B1%87%E7%BC%96%E6%8A%80%E6%9C%AF.md)
+
+- [论文中涉及的问题](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/BinaryTranslation/%E8%AE%BA%E6%96%87%E4%B8%AD%E6%B6%89%E5%8F%8A%E7%9A%84%E9%97%AE%E9%A2%98.md)
+
+## x86
+
+- [段式管理的数据结构](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/X86/Segment-data-structure.md)
 
 ## others
 
