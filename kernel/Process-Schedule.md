@@ -82,10 +82,7 @@ struct task_struct {
 #endif
 	unsigned int			__state // 表示进程的状态
 
-#ifdef CONFIG_PREEMPT_RT
-	/* saved state for "spinlock sleepers" */
-	unsigned int			saved_state;
-#endif
+    ...
 
 	/*
 	 * This begins the randomizable portion of task_struct. Only
@@ -120,9 +117,9 @@ struct task_struct {
 	int				recent_used_cpu;
 	int				wake_cpu; // 进程上次运行在哪个 CPU 上
 #endif
-	int				on_rq; // 设置进程的状态
+	int				on_rq; // 设置进程的状态，on_rq = 1 表示进程处于可运行状态
 
-	int				prio; // 进程的动态优先级。这是调度类考（？）虑的优先级
+	int				prio; // 进程的动态优先级。这是调度类考虑的优先级
 	int				static_prio; // 静态优先级，再进程启动时分配
 	int				normal_prio; // 基于 static_prio 和调度策略计算出来的优先级，子进程初始化时继承该优先级
 	unsigned int			rt_priority; // 实时进程的优先级
@@ -270,7 +267,7 @@ struct task_struct {
 	struct restart_block		restart_block;
 
 	pid_t				pid; // 进程 id
-	pid_t				tgid; // 那这个表示啥
+	pid_t				tgid; // 进程组 id，和该组第一个进程的 pid 一样
 
 #ifdef CONFIG_STACKPROTECTOR
 	/* Canary value for the -fstack-protector GCC feature: */
@@ -321,21 +318,8 @@ struct task_struct {
 	/* PF_IO_WORKER */
 	void				*pf_io_worker;
 
-	u64				utime;
-	u64				stime;
-#ifdef CONFIG_ARCH_HAS_SCALED_CPUTIME
-	u64				utimescaled;
-	u64				stimescaled;
-#endif
-	u64				gtime;
-	struct prev_cputime		prev_cputime;
-#ifdef CONFIG_VIRT_CPU_ACCOUNTING_GEN
-	struct vtime			vtime;
-#endif
+    ...
 
-#ifdef CONFIG_NO_HZ_FULL
-	atomic_t			tick_dep_mask;
-#endif
 	/* Context switch counts: */
 	unsigned long			nvcsw;
 	unsigned long			nivcsw;
@@ -350,12 +334,7 @@ struct task_struct {
 	unsigned long			min_flt;
 	unsigned long			maj_flt;
 
-	/* Empty if CONFIG_POSIX_CPUTIMERS=n */
-	struct posix_cputimers		posix_cputimers;
-
-#ifdef CONFIG_POSIX_CPU_TIMERS_TASK_WORK
-	struct posix_cputimers_work	posix_cputimers_work;
-#endif
+    ...
 
 	/* Process credentials: */
 
@@ -402,73 +381,8 @@ struct task_struct {
 	struct io_uring_task		*io_uring;
 #endif
 
-	/* Namespaces: */
-	struct nsproxy			*nsproxy;
-
-	/* Signal handlers: */
-	struct signal_struct		*signal;
-	struct sighand_struct __rcu		*sighand;
-	sigset_t			blocked;
-	sigset_t			real_blocked;
-	/* Restored if set_restore_sigmask() was used: */
-	sigset_t			saved_sigmask;
-	struct sigpending		pending;
-	unsigned long			sas_ss_sp;
-	size_t				sas_ss_size;
-	unsigned int			sas_ss_flags;
-
-	struct callback_head		*task_works;
-
-#ifdef CONFIG_AUDIT
-#ifdef CONFIG_AUDITSYSCALL
-	struct audit_context		*audit_context;
-#endif
-	kuid_t				loginuid;
-	unsigned int			sessionid;
-#endif
-	struct seccomp			seccomp;
-	struct syscall_user_dispatch	syscall_dispatch;
-
-	/* Thread group tracking: */
-	u64				parent_exec_id;
-	u64				self_exec_id;
-
-	/* Protection against (de-)allocation: mm, files, fs, tty, keyrings, mems_allowed, mempolicy: */
-	spinlock_t			alloc_lock;
-
-	/* Protection of the PI data structures: */
-	raw_spinlock_t			pi_lock;
-
-	struct wake_q_node		wake_q;
-
-	...
-
-	/* VM state: */
-	struct reclaim_state		*reclaim_state;
-
-	struct backing_dev_info		*backing_dev_info;
-
-	struct io_context		*io_context;
-
-#ifdef CONFIG_COMPACTION
-	struct capture_control		*capture_control;
-#endif
-	/* Ptrace state: */
-	unsigned long			ptrace_message;
-	kernel_siginfo_t		*last_siginfo;
-
-	struct task_io_accounting	ioac;
-
     ...
 
-#ifdef CONFIG_CPUSETS
-	/* Protected by ->alloc_lock: */
-	nodemask_t			mems_allowed;
-	/* Sequence number to catch updates: */
-	seqcount_spinlock_t		mems_allowed_seq;
-	int				cpuset_mem_spread_rotor;
-	int				cpuset_slab_spread_rotor;
-#endif
 #ifdef CONFIG_CGROUPS
 	/* Control Group info protected by css_set_lock: */
 	struct css_set __rcu		*cgroups;
@@ -630,13 +544,13 @@ struct task_struct {
 
 - TASK_RUNNING（可运行态或就绪态或正在运行态）：内核对当前正在运行的进程没有给出一个明确的状态。
 - TASK_INTERRUPTIBLE：进程进入睡眠状态来等待某些条件达成或某个资源被释放，一旦条件满足，内核将该状态的进程设置为 TASK_RUNNING 队列。
-- TASK_UNINTERRUPTIBLE：进程在睡眠时不受干扰，对信号不做任何反映。
+- TASK_UNINTERRUPTIBLE：进程在睡眠时不受干扰，对信号不做任何反应（那怎样唤醒它？）。
 - __TASK_STOPPED：进程已停止运行。
 - EXIT_ZOMBIE：进程已消亡，但对应的 `task_struct` 还没有释放。子进程退出时，父进程可以通过 `wait` 和 `waitpid` 来获取子进程消亡的原因。
 
 #### 进程标识
 
-在[轻量级进程](#轻量级进程)中介绍了，内核中没有专门用来描述线程的数据结构，而是使用线程组来表示多线程的进程。一个线程组中的线程的 pid 表示唯一的表示，而 tgid 则和该组中第一个进程的 pid 相同。因为根据 POSIX 标准中的规定，一个多线程应用程序中所有的线程必须拥有相同的 PID，这样可以把指定信号发送给组里所有的线程，通过 tgid 的方式就可以完成这一规定。通过如下两个接口可以获取当前线程对应的 pid 和 tgid。
+在[轻量级进程](#轻量级进程)中介绍了，内核中没有专门用来描述线程的数据结构，而是使用线程组来表示多线程的进程。一个线程组中的线程的 pid 是唯一的表示，而 **tgid 则和该组中第一个进程的 pid 相同**。因为根据 POSIX 标准中的规定，**一个多线程应用程序中所有的线程必须拥有相同的 PID，这样可以把指定信号发送给组里所有的线程，通过 tgid 的方式就可以完成这一规定**。通过如下两个接口可以获取当前线程对应的 pid 和 tgid。
 
 ```c
 /* Get the process ID of the calling process.  */
@@ -678,7 +592,7 @@ asmlinkage __visible void __init start_kernel(void)
 	.static_prio	= MAX_PRIO-20,					\
 	.normal_prio	= MAX_PRIO-20,					\
 	.policy		= SCHED_NORMAL,					\
-	.cpus_allowed	= CPU_MASK_ALL,					\ // 该进程可以在哪个 CPU 上运行
+	.cpus_allowed	= CPU_MASK_ALL,					\
 	.nr_cpus_allowed= NR_CPUS,					\
 	.mm		= NULL,						\
 	.active_mm	= &init_mm,					\
@@ -703,11 +617,11 @@ static __always_inline struct task_struct *get_current(void)
 #define current get_current()
 ```
 
-好吧，这个我不懂。
+好吧，这个我不懂。X86 中有专门的指针来指向 `task_struct` 么？
 
 #### 内核线程
 
-内核线程就是运行在内核地址空间的进程，它**没有独立的进程地址空间**，所有的内核线程都共享内核地址空间，即 `task_struct` 结构中的 `mm_struct` 指针设为  null。但内核线程也和普通进程一样参与系统调度。
+内核线程就是运行在内核地址空间的进程，它**没有独立的进程地址空间**，所有的内核线程都共享内核地址空间，即 `task_struct` 结构中的 `mm_struct` 指针设为 null。但内核线程也和普通进程一样参与系统调度。
 
 ### 进程创建与终止
 
@@ -735,7 +649,7 @@ SYSCALL_DEFINE0(fork)
 #endif
 ```
 
-通过 COW 技术创建子进程，子进程只会复制父进程的页表，而不会复制页面内容。当它们开始执行各自的程序时，它们的进程地址空间才开始分道扬镳。
+通过 COW 技术创建子进程，子进程**只会复制父进程的页表，而不会复制页面内容**。当它们开始执行各自的程序时，它们的进程地址空间才开始分道扬镳。
 
 `fork` 函数会有两次返回，一次在父进程中，一次在子进程中。如果返回值为 0，说明这是子进程；如果返回值为正数，说明这是父进程，父进程会返回子进程的 pid；如果返回 -1，表示创建失败。
 
@@ -743,7 +657,7 @@ SYSCALL_DEFINE0(fork)
 
 ##### vfork
 
-和  `fork` 类似，但是 `vfork` 的父进程会一直阻塞，知道子进程调用 `exit` 或 `execve` 为止，其可以避免复制父进程的页表项。
+和  `fork` 类似，但是 `vfork` 的**父进程会一直阻塞**，直到子进程调用 `exit` 或 `execve` 为止，其可以避免复制父进程的页表项。
 
 ```c
 #ifdef __ARCH_WANT_SYS_VFORK
@@ -956,10 +870,12 @@ static __latent_entropy struct task_struct *copy_process(
 	retval = copy_files(clone_flags, p); // 复制父进程打开文件信息
 	if (retval)
 		goto bad_fork_cleanup_semundo;
-	retval = copy_fs(clone_flags, p); // 复制父进程 fs_struct 数据结构
+    // 复制父进程 fs_struct 数据结构，copy_files 和 copy_fs 有什么区别么
+    // 或者说打开文件信息和 fs_struct 有什么关系？
+	retval = copy_fs(clone_flags, p);
 	if (retval)
 		goto bad_fork_cleanup_files;
-	retval = copy_sighand(clone_flags, p); // 复制父进程的信号处理函数（？）
+	retval = copy_sighand(clone_flags, p); // 复制父进程的信号处理函数
 	if (retval)
 		goto bad_fork_cleanup_fs;
 	retval = copy_signal(clone_flags, p); // 复制父进程的信号系统
@@ -968,7 +884,7 @@ static __latent_entropy struct task_struct *copy_process(
 	retval = copy_mm(clone_flags, p); // 复制父进程的页表信息
 	if (retval)
 		goto bad_fork_cleanup_signal;
-	retval = copy_namespaces(clone_flags, p); // 复制父进程的命名空间
+	retval = copy_namespaces(clone_flags, p); // 复制父进程的命名空间，命名空间也很重要，需要深入了解
 	if (retval)
 		goto bad_fork_cleanup_mm;
 	retval = copy_io(clone_flags, p); // I/O 相关
@@ -980,7 +896,7 @@ static __latent_entropy struct task_struct *copy_process(
 
 	stackleak_task_init(p);
 
-	if (pid != &init_struct_pid) {
+	if (pid != &init_struct_pid) { // 从 kernel_clone 传入的 pid 是 null，所以这里要分配 pid
 		pid = alloc_pid(p->nsproxy->pid_ns_for_children, args->set_tid,
 				args->set_tid_size);
 		if (IS_ERR(pid)) {
@@ -992,13 +908,13 @@ static __latent_entropy struct task_struct *copy_process(
 	...
 
 	/* ok, now we should be set up.. */
-	p->pid = pid_nr(pid);
-	if (clone_flags & CLONE_THREAD) {
-		p->group_leader = current->group_leader;
+	p->pid = pid_nr(pid); // 设置 pid
+	if (clone_flags & CLONE_THREAD) { // 不是以当前进程为组长创建一个进程组的子进程
+		p->group_leader = current->group_leader; // 而是创建当前进程的兄弟进程
 		p->tgid = current->tgid;
 	} else {
-		p->group_leader = p;
-		p->tgid = p->pid;
+		p->group_leader = p; // 以当前进程为组长创建子线程
+		p->tgid = p->pid; // 这里前面介绍过，tgid 等于进程组的第一个进程的 pid
 	}
 
 	p->nr_dirtied = 0;
@@ -1036,7 +952,7 @@ static __latent_entropy struct task_struct *copy_process(
 
 	klp_copy_process(p);
 
-	sched_core_fork(p);
+	sched_core_fork(p); // 这些内容暂时不懂
 
 	spin_lock(&current->sighand->siglock);
 
@@ -1062,6 +978,7 @@ static __latent_entropy struct task_struct *copy_process(
 
     // 这段代码不懂
 	init_task_pid_links(p);
+    // 成功分配了 pid，这里是对 pid 进行一些列的操作，不理解，还有 pid_type 也不理解
 	if (likely(p->pid)) {
 		ptrace_init_task(p, (clone_flags & CLONE_PTRACE) || trace);
 
@@ -1164,6 +1081,9 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 	 * functions again.
 	 */
 	tsk->stack = stack;
+#ifdef CONFIG_VMAP_STACK
+	tsk->stack_vm_area = stack_vm_area;
+#endif
 
 	...
 
@@ -1202,9 +1122,9 @@ static int copy_mm(unsigned long clone_flags, struct task_struct *tsk)
 	/* initialize the new vmacache entries */
 	vmacache_flush(tsk);
 
-	if (clone_flags & CLONE_VM) { // 如果是 fork，那么共用地址空间
-		mmget(oldmm);
-		mm = oldmm;
+	if (clone_flags & CLONE_VM) { // 如果是 vfork，那么共用地址空间
+		mmget(oldmm); // 将 mm->mm_users 计算器加 1
+		mm = oldmm; // 共用是怎么个共用法，都是只读么，如果需要修改再复制页表项？COW 的激进版么
 	} else { // 不然需要复制父进程的地址空间描述符及页表
 		mm = dup_mm(tsk, current->mm);
 		if (!mm)
@@ -1212,7 +1132,7 @@ static int copy_mm(unsigned long clone_flags, struct task_struct *tsk)
 	}
 
 	tsk->mm = mm;
-	tsk->active_mm = mm;
+	tsk->active_mm = mm; // 可能是内核线程，需要借用 mm_struct
 	return 0;
 }
 ```
@@ -1394,7 +1314,7 @@ static __latent_entropy int dup_mmap(struct mm_struct *mm,
 
 ##### 关键函数copy_thread
 
-这里设置些架构相关的寄存器，涉及到 clone, vfork, fork 等系统调用返回用户态的寄存器状态以及返回到哪个处理函数进行系统态 - 用户态的切换，现在知道这个函数是 `ret_from_fork` 。
+这里设置些架构相关的寄存器，涉及到 `clone`, `vfork`, `fork` 等系统调用返回用户态的寄存器状态以及返回到哪个处理函数进行系统态 - 用户态的切换，现在知道这个函数是 `ret_from_fork` 。
 
 ```c
 int copy_thread(unsigned long clone_flags, unsigned long sp, unsigned long arg,
@@ -3269,9 +3189,16 @@ struct sched_avg {
 ### 疑问
 
 1. 为什么要设置优先级、nice 值、权重、实际运行时间（runtime）、虚拟运行时间（vruntime）？它们之间的关系是什么？
-1. 为什么要根据 vruntime 决定调度顺序？
-1. 在[关键函数context_switch](#关键函数context_switch)中使用 last 参数来达到在 next 进程中能够处理 prev 进程的遗留问题，但是，last 是一个指针，在进程页表都切换了的情况下，prev 能正确指向 prev 的 `task_struct` 么？
-2. `thread_struct` 数据结构保存进程在上下文切换时的硬件上下文，但怎么和我想象的内容不太一样，很多寄存器没有保存，只保存了 sp 和一些段寄存器，在 X86 中其他的寄存器值都保存在栈里么？还是说就只需要保存这些？
+
+2. 为什么要根据 vruntime 决定调度顺序？
+
+3. 在[关键函数context_switch](#关键函数context_switch)中使用 last 参数来达到在 next 进程中能够处理 prev 进程的遗留问题，但是，last 是一个指针，在进程页表都切换了的情况下，prev 能正确指向 prev 的 `task_struct` 么？
+
+4. `thread_struct` 数据结构保存进程在上下文切换时的硬件上下文，但怎么和我想象的内容不太一样，很多寄存器没有保存，只保存了 sp 和一些段寄存器，在 X86 中其他的寄存器值都保存在栈里么？还是说就只需要保存这些？
+
+   其实这些信息的保存在[关键函数copy_thread](#关键函数copy_thread)中已经保存了。
+
+5. [关键函数copy_thread](#关键函数copy_thread)进程创建过程还涉及到很多模块的初始化不懂，之后需要不断深入理解。
 
 ### Reference
 
