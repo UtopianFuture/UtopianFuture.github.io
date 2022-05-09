@@ -119,8 +119,10 @@ struct task_struct {
 #endif
 	int				on_rq; // 设置进程的状态，on_rq = 1 表示进程处于可运行状态
 
-	int				prio; // 进程的动态优先级。这是调度类考虑的优先级
-	int				static_prio; // 静态优先级，再进程启动时分配
+    // 进程的动态优先级。这是调度类考虑的优先级，这就是 nice 值，不就是优先级么
+    // 它是 static_prio - MAX_RT_PRIO(100)得到的
+	int				prio;
+	int				static_prio; // 静态优先级，在进程启动时分配。其范围是 0 ~ 139
 	int				normal_prio; // 基于 static_prio 和调度策略计算出来的优先级，子进程初始化时继承该优先级
 	unsigned int			rt_priority; // 实时进程的优先级
 
@@ -483,39 +485,14 @@ struct task_struct {
 	atomic_t			tracing_graph_pause;
 #endif
 
-	...
-
-#ifdef CONFIG_MEMCG
-	struct mem_cgroup		*memcg_in_oom;
-	gfp_t				memcg_oom_gfp_mask;
-	int				memcg_oom_order;
-
-	/* Number of pages to reclaim on returning to userland: */
-	unsigned int			memcg_nr_pages_over_high;
-
-	/* Used by memcontrol for targeted memcg charge: */
-	struct mem_cgroup		*active_memcg;
-#endif
-
     ...
 
-	int				pagefault_disabled;
-#ifdef CONFIG_MMU
-	struct task_struct		*oom_reaper_list;
-#endif
 #ifdef CONFIG_VMAP_STACK
 	struct vm_struct		*stack_vm_area;
 #endif
 #ifdef CONFIG_THREAD_INFO_IN_TASK
 	/* A live task holds one reference: */
 	refcount_t			stack_refcount;
-#endif
-#ifdef CONFIG_LIVEPATCH
-	int patch_state;
-#endif
-#ifdef CONFIG_SECURITY
-	/* Used by LSM modules for access restriction: */
-	void				*security;
 #endif
 
     ...
@@ -900,7 +877,10 @@ static __latent_entropy struct task_struct *copy_process(
 	retval = copy_mm(clone_flags, p); // 复制父进程的页表信息
 	if (retval)
 		goto bad_fork_cleanup_signal;
-	retval = copy_namespaces(clone_flags, p); // 复制父进程的命名空间，命名空间也很重要，需要深入了解
+    // 复制父进程的命名空间，命名空间也很重要，需要深入了解
+    // 命名空间技术主要用于访问隔离，其原理是针对一类资源进程抽象，并将其封装在一起以供一个容器使用
+    // 每个容器都有自己的抽象资源，它们之间彼此之间不可见，因此访问是隔离的
+	retval = copy_namespaces(clone_flags, p);
 	if (retval)
 		goto bad_fork_cleanup_mm;
 	retval = copy_io(clone_flags, p); // I/O 相关
@@ -1460,16 +1440,16 @@ int copy_thread(unsigned long clone_flags, unsigned long sp, unsigned long arg,
 
 为了解决以上问题，多级反馈队列算法提出了改良方案：
 
-- 每个时间周期 S 后，将系统中所有进程的优先级都提到最高，相当于每隔一段时间重启一次系统；
+- 每个时间周期 S 后，将系统中所有进程的优先级都提到最高，相当于**每隔一段时间重启一次系统**；
 - 当一个进程使用完时间片后，不管它是否在时间片最末位发生 I/O 请求，都将其优先级降低；
 
 虽说算法思想不难，但是在实际工程中最难的是参数如何确定和优化，如时间间隔 S。
 
 ### CFS
 
-`Completely Fair Scheduler`，完全公平调度器，用于内核中普通进程的调度。
+Completely Fair Scheduler，完全公平调度器，用于内核中普通进程的调度。
 
-`CFS` 采用了红黑树算法来管理所有的调度实体`sched_entity`，算法效率为 `O(log(n))`。`CFS` 跟踪调度实体 `sched_entity` 的虚拟运行时间 `vruntime`，平等对待运行队列中的调度实体，将执行时间少的调度实体排列到红黑树的左边。调度实体通过 `enqueue_entity()` 和 `dequeue_entity()` 来进行红黑树的出队入队。每个 `sched_latency` 周期内，根据各个任务的权重值，可以计算出运行时间 `runtime`，运行时间可以转换成虚拟运行时间 `vruntime`。根据虚拟运行时间的大小，插入到 CFS 红黑树中，虚拟运行时间少的调度实体放置到左边，在下一次任务调度的时候，**选择虚拟运行时间少的调度实体来运行**。
+CFS 采用了红黑树算法来管理所有的调度实体 `sched_entity`，算法效率为 `O(log(n))`。`CFS` 跟踪调度实体 `sched_entity` 的虚拟运行时间 `vruntime`，平等对待运行队列中的调度实体，**将执行时间少的调度实体排列到红黑树的左边**。调度实体通过 `enqueue_entity` 和 `dequeue_entity` 来进行红黑树的出队入队。每个 `sched_latency` 周期内，根据各个任务的权重值，可以计算出运行时间 `runtime`，运行时间可以转换成虚拟运行时间 `vruntime`。根据虚拟运行时间的大小，插入到 CFS 红黑树中，虚拟运行时间少的调度实体放置到左边，在下一次任务调度的时候，**选择虚拟运行时间少的调度实体来运行**。
 
 #### vruntime
 
@@ -1507,9 +1487,11 @@ const u32 sched_prio_to_wmult[40] = {
 
 那么这个表有何用途？
 
-前面讲到 `CFS` 跟踪调度实体 `sched_entity` 的虚拟运行时间 `vruntime`，平等对待运行队列中的调度实体，将执行时间少的调度实体排列到红黑树的左边，在下一次任务调度的时候，选择虚拟运行时间少的调度实体来运行。也就是说 `vruntime` 是决定进程调度次序的关键变量，但为何要设计 `vruntime`，而不是直接使用 `runtime`？
+根据 nice 值直接得到 `load_weight->inv_weight`。
 
-在 `CFS` 中有一个计算 `vruntime` 的核心函数 `calc_delta_fair`，其调用 `__calc_delta`，
+前面讲到 CFS 跟踪调度实体 `sched_entity` 的虚拟运行时间 `vruntime`，平等对待运行队列中的调度实体，将执行时间少的调度实体排列到红黑树的左边，在下一次任务调度的时候，选择虚拟运行时间少的调度实体来运行。也就是说 `vruntime` 是决定进程调度次序的关键变量，但为何要设计 `vruntime`，而不是直接使用 `runtime`？
+
+在 CFS 中有一个计算 `vruntime` 的核心函数 `calc_delta_fair`，其调用 `__calc_delta`，
 
 ```c
 /*
@@ -1592,14 +1574,14 @@ struct sched_entity {
 	 * Put into separate cache line so it does not
 	 * collide with read-mostly values above.
 	 */
-	struct sched_avg		avg;
+	struct sched_avg		avg; // 用于负载均衡，这里暂时不分析
 #endif
 };
 ```
 
 ##### rq
 
-这个数据结构是每个 CPU 通用就绪队列的描述符。它包含了多个调度策略的就绪队列，可以理解为一个 CPU 总的就绪队列，所有相关的信息都可以在里面找到。
+这个数据结构是每个 CPU 通用就绪队列的描述符。它包含了多个调度策略的就绪队列，可以理解为一个 CPU 总的就绪队列，所有相关的信息都可以在里面找到。其中有很多负载均衡方面的变量，这个暂时不分析。
 
 ```c
 struct rq {
@@ -1636,12 +1618,6 @@ struct rq {
 	struct list_head	*tmp_alone_branch;
 #endif /* CONFIG_FAIR_GROUP_SCHED */
 
-	/*
-	 * This is part of a global counter where only the total sum
-	 * over all CPUs matters. A task can increase this counter on
-	 * one CPU and if it got migrated afterwards it may decrease
-	 * it on another CPU. Always updated under the runqueue lock:
-	 */
 	unsigned int		nr_uninterruptible; // 不可中断状态的进程进入就绪队列的数量
 
 	struct task_struct __rcu	*curr; // 正在运行的进程
@@ -1734,32 +1710,7 @@ struct rq {
 	unsigned int		ttwu_local;
 #endif
 
-#ifdef CONFIG_CPU_IDLE
-	/* Must be inspected within a rcu lock section */
-	struct cpuidle_state	*idle_state;
-#endif
-
-#ifdef CONFIG_SMP
-	unsigned int		nr_pinned;
-#endif
-	unsigned int		push_busy;
-	struct cpu_stop_work	push_work;
-
-#ifdef CONFIG_SCHED_CORE
-	/* per rq */
-	struct rq		*core;
-	struct task_struct	*core_pick;
-	unsigned int		core_enabled;
-	unsigned int		core_sched_seq;
-	struct rb_root		core_tree;
-
-	/* shared state -- careful with sched_core_cpu_deactivate() */
-	unsigned int		core_task_seq;
-	unsigned int		core_pick_seq;
-	unsigned long		core_cookie;
-	unsigned char		core_forceidle;
-	unsigned int		core_forceidle_seq;
-#endif
+	...
 };
 ```
 
@@ -1922,14 +1873,15 @@ static __latent_entropy struct task_struct *copy_process(
 ##### 关键函数sched_fork
 
 ```c
-
+/*
  * fork()/clone()-time setup:
  */
 int sched_fork(unsigned long clone_flags, struct task_struct *p)
 {
 	unsigned long flags;
 
-     // 和之前的情况不同，这个看似关键的函数只是初始化 task_struct 中进程调度相关的数据结构
+    // 和之前的情况不同，这个看似关键的函数只是初始化 task_struct 中进程调度相关的数据结构
+    // 这里没有初始化优先级
 	__sched_fork(clone_flags, p);
 	/*
 	 * We mark the process as NEW here. This guarantees that
@@ -1941,7 +1893,7 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 	/*
 	 * Make sure we do not leak PI boosting priority to the child.
 	 */
-	p->prio = current->normal_prio; // 设置优先级
+	p->prio = current->normal_prio; // 继承优先级
 
 	uclamp_fork(p);
 
@@ -1954,7 +1906,7 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 	else
 		p->sched_class = &fair_sched_class; // 普通进程使用 CFS 调度类
 
-	init_entity_runnable_average(&p->se); //
+	init_entity_runnable_average(&p->se);
 
 	/*
 	 * The child is not yet in the pid-hash so no cgroup attach races,
@@ -2007,7 +1959,7 @@ static void task_fork_fair(struct task_struct *p)
 	curr = cfs_rq->curr;
 	if (curr) {
 		update_curr(cfs_rq);
-		se->vruntime = curr->vruntime;
+		se->vruntime = curr->vruntime; // 调度的优先级和父进程一样
 	}
 	place_entity(cfs_rq, se, 1); // 根据情况对进程虚拟时间进行一些惩罚（？）
 
@@ -2020,7 +1972,7 @@ static void task_fork_fair(struct task_struct *p)
 		resched_curr(rq);
 	}
 
-	se->vruntime -= cfs_rq->min_vruntime;
+	se->vruntime -= cfs_rq->min_vruntime; // 后面会加回来
 	rq_unlock(rq, &rf);
 }
 ```
@@ -2041,16 +1993,18 @@ static void update_curr(struct cfs_rq *cfs_rq)
 
 	delta_exec = now - curr->exec_start; // 哦，这才是执行时间
 
-	curr->exec_start = now; // 现在就更新么，新进程不是还没有放入到调度器中？
+    // 现在就更新么，新进程不是还没有放入到调度器中？
+    // 看清楚了，这是当前进程的执行时间更新
+	curr->exec_start = now;
 
 	schedstat_set(curr->statistics.exec_max,
 		      max(delta_exec, curr->statistics.exec_max));
 
-	curr->sum_exec_runtime += delta_exec;
+	curr->sum_exec_runtime += delta_exec; // 总的执行时间是一段段计算的
 	schedstat_add(cfs_rq->exec_clock, delta_exec);
 
 	curr->vruntime += calc_delta_fair(delta_exec, curr); // 前面有说明，根据实际执行时间和 nice 值计算 vruntime
-	update_min_vruntime(cfs_rq);
+	update_min_vruntime(cfs_rq); // 更新最小 vruntime
 
 	account_cfs_rq_runtime(cfs_rq, delta_exec);
 }
@@ -2085,7 +2039,92 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
 
 上面两个函数都是确定子进程的 `vruntime` 的。
 
+##### 关键函数sched_slice
+
+`sched_vslice` -> `sched_slice`
+
+该函数计算就绪队列中每个可执行进程能够得到多少虚拟时间。
+
+```c
+static u64 sched_slice(struct cfs_rq *cfs_rq, struct sched_entity *se)
+{
+	unsigned int nr_running = cfs_rq->nr_running; // 当前就绪队列中的可运行进程数
+	u64 slice;
+
+	if (sched_feat(ALT_PERIOD))
+		nr_running = rq_of(cfs_rq)->cfs.h_nr_running;
+
+	slice = __sched_period(nr_running + !se->on_rq); // 计算就绪队列中一个调度周期的长度
+
+	for_each_sched_entity(se) { // 应该就是遍历一个调度实体
+		struct load_weight *load;
+		struct load_weight lw;
+
+		cfs_rq = cfs_rq_of(se);
+		load = &cfs_rq->load;
+
+		...
+
+		slice = __calc_delta(slice, se->load.weight, load); // 根据权重计算能够得到多少 vruntime
+	}
+
+	if (sched_feat(BASE_SLICE))
+		slice = max(slice, (u64)sysctl_sched_min_granularity);
+
+	return slice;
+}
+```
+
+`__sched_period` 会计算就绪队列中一个调度周期的长度，可以理解为一个调度周期的总时间片，它根据当前运行的进程数量来计算。CFS 有一个默认调度时间片 `sysctl_sched_latency`，而当就绪队列中的进程数大于 8 时，按照进程最小的调度延时 `sysctl_sched_min_granularity` 乘以就绪队列中的进程数来计算调度周期时间片。
+
+```c
+static unsigned int sched_nr_latency = 8;
+unsigned int sysctl_sched_min_granularity			= 750000ULL;
+unsigned int sysctl_sched_latency			= 6000000ULL;
+```
+
+```c
+/*
+ * The idea is to set a period in which each task runs once.
+ *
+ * When there are too many tasks (sched_nr_latency) we have to stretch
+ * this period because otherwise the slices get too small.
+ *
+ * p = (nr <= nl) ? l : l*nr/nl
+ */
+static u64 __sched_period(unsigned long nr_running)
+{
+	if (unlikely(nr_running > sched_nr_latency))
+		return nr_running * sysctl_sched_min_granularity;
+	else
+		return sysctl_sched_latency;
+}
+```
+
+确定就绪队列的调度周期时间片后 `sched_slice` 就根据当前进程的权重来计算在 CFS 就绪队列总权重中可以分到的调度时间，这个调度时间是物理时间，`sched_vslice` 则根据物理时间计算 `vruntime`。
+
 #### 进程加入调度器
+
+整个添加过程是这样的：
+
+```plain
+#0  enqueue_entity (cfs_rq=cfs_rq@entry=0xffff888237c29040, se=se@entry=0xffff888100264680, flags=8) at kernel/sched/fair.c:4283
+#1  0xffffffff810f0a74 in enqueue_task_fair (rq=0xffff888237c28f40, p=<optimized out>, flags=<optimized out>) at kernel/sched/fair.c:5620
+#2  0xffffffff810dcfa4 in enqueue_task (rq=0xffff888237c28f40, p=0xffff8881002645c0, flags=8) at kernel/sched/core.c:1976
+#3  0xffffffff810e4099 in activate_task (flags=8, p=0xffff8881002645c0, rq=0xffff888237c28f40) at kernel/sched/core.c:2001
+#4  wake_up_new_task (p=p@entry=0xffff8881002645c0) at kernel/sched/core.c:4463
+#5  0xffffffff810a2106 in kernel_clone (args=args@entry=0xffffffff82e03e38) at kernel/fork.c:2608
+#6  0xffffffff810a2705 in kernel_thread (fn=<optimized out>, arg=arg@entry=0x0 <fixed_percpu_data>, flags=flags@entry=1536)
+    at kernel/fork.c:2636
+#7  0xffffffff81c0b2b0 in rest_init () at init/main.c:711
+#8  0xffffffff831b9f7c in arch_call_rest_init () at init/main.c:886
+#9  0xffffffff831ba949 in start_kernel () at init/main.c:1141
+#10 0xffffffff831b95a0 in x86_64_start_reservations (
+    real_mode_data=real_mode_data@entry=0x2e3a920 <error: Cannot access memory at address 0x2e3a920>) at arch/x86/kernel/head64.c:525
+#11 0xffffffff831b962d in x86_64_start_kernel (real_mode_data=0x2e3a920 <error: Cannot access memory at address 0x2e3a920>)
+    at arch/x86/kernel/head64.c:506
+#12 0xffffffff81000107 in secondary_startup_64 () at arch/x86/kernel/head_64.S:283
+```
 
 在[关键函数kernel_clone](#关键函数kernel_clone)中我们知道进程创建完后需要将其加入到就绪队列接受调度、运行，这里我们进一步分析 `wake_up_new_task`。
 
@@ -2102,7 +2141,7 @@ pid_t kernel_clone(struct kernel_clone_args *args)
 
 	...
 
-	return nr;
+	return nr; // 返回新进程的 pid
 }
 ```
 
@@ -2125,7 +2164,7 @@ void wake_up_new_task(struct task_struct *p)
 	 * Use __set_task_cpu() to avoid calling sched_class::migrate_task_rq,
 	 * as we're not fully set-up yet.
 	 */
-    // 初始化为上次使用的 CPU，不过 p 是新进程，还没有使用，怎么搞？
+    // 初始化上次使用的 CPU，不过 p 是新进程，还没有使用，怎么搞？
     // 应该是初始化时设置为父进程使用的 CPU
 	p->recent_used_cpu = task_cpu(p);
 	rseq_migrate(p);
@@ -2162,7 +2201,7 @@ void wake_up_new_task(struct task_struct *p)
 
 `activate_task` -> `enqueue_task`
 
-这个函数是在 sched_class 中设置的回调函数，用于将调度实体加入到就绪队列的红黑树中。
+这个函数是在 [sched_class](#sched_class) 中设置的回调函数，用于将调度实体加入到就绪队列的红黑树中。
 
 ```c
 static void
@@ -2176,6 +2215,7 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 	...
 
     // 这个调度实体应该只有一个吧，为何要用 for 循环来遍历？
+    // 其实就是遍历一个实体
 	for_each_sched_entity(se) {
 		if (se->on_rq)
 			break;
@@ -2183,7 +2223,9 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 		enqueue_entity(cfs_rq, se, flags);
 
 		cfs_rq->h_nr_running++;
-		cfs_rq->idle_h_nr_running += idle_h_nr_running; // 为何 idle 数量也要增加
+        // 为何 idle 数量也要增加
+        // 因为前面重新检查了 idle 线程
+		cfs_rq->idle_h_nr_running += idle_h_nr_running;
 
 		...
 
@@ -2191,7 +2233,8 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 	}
 
     // 为何要遍历 2 次？
-    // 貌似上面那次是插入到红黑树中，这里是开始调度，根据 se_update_runnable 猜的
+    // 而且 h_nr_running，idle_h_nr_running 重复增加了，不会有问题么
+    // 并不是遍历 2 次，上面遍历完后 se 就是空指针了，这里不会执行
 	for_each_sched_entity(se) {
 		cfs_rq = cfs_rq_of(se);
 
@@ -2240,7 +2283,7 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	 * fairness detriment of existing tasks.
 	 */
 	if (renorm && !curr)
-		se->vruntime += cfs_rq->min_vruntime;
+		se->vruntime += cfs_rq->min_vruntime; // 这个新进程的 vruntime 我真是搞糊涂了
 
 	/*
 	 * When enqueuing a sched_entity, we must:
@@ -2278,7 +2321,7 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 }
 ```
 
-我们将整个添加过程用框图的方式整理一下，
+我们将整个添加过程用框图的方式将 `enqueue_entity` 整理一下，
 
 ![enqueue_entity.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/enqueue_entity.png?raw=true)
 
@@ -2286,11 +2329,11 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 
 以下 3 种情况可能会发起进程调度：
 
-- 在阻塞操作中，如使用互斥量（mutex）、信号量（semaphore）、等待队列（waitqueue）等；
-- 在中断返回前和系统调用返回用户空间时，检查 `TIF_NEED_RESCHED` 标志位以判断是否需要调度；
+- 在**阻塞操作**中，如使用互斥量（mutex）、信号量（semaphore）、等待队列（waitqueue）等；
+- 在**中断返回前和系统调用返回用户空间时**，检查 `TIF_NEED_RESCHED` 标志位以判断是否需要调度；
 - 将要被唤醒的进程不会马上调用 `schedule`，而是会将其调度实体被添加到 CFS 的就绪队列中（这在前面就已经分析了），并且设置 `TIF_NEED_RESCHED` 标志位；
 
-而被唤醒的进程的调度时机根据内核是否可以被抢占可分成两种情况：
+而被唤醒的进程（加入的调度时机根据内核是否可以被抢占可分成两种情况：
 
 - 内核可抢占
   - 如果唤醒动作（何为唤醒动作，将进程插入到就绪队列么）发生在系统调用或异常处理上下文中，在下一次调用 `preempt_enable` 时会检查是否需要抢占调度；
@@ -2391,7 +2434,7 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 	}
 
 	next = pick_next_task(rq, prev, &rf); // 选择下一个执行的进程
-	clear_tsk_need_resched(prev); // 清楚当前进程的 TIF_NEED_RESCHED 标志位
+	clear_tsk_need_resched(prev); // 清除当前进程的 TIF_NEED_RESCHED 标志位
 	clear_preempt_need_resched();
 #ifdef CONFIG_SCHED_DEBUG
 	rq->last_seen_need_resched_ns = 0;
@@ -2499,7 +2542,6 @@ context_switch(struct rq *rq, struct task_struct *prev,
 
     // 这些是根据不同的切换要求选择不同的切换方式
     // lazy_tlb 是啥
-    // mmgrab 又是啥
 	/*
 	 * kernel -> kernel   lazy + transfer active
 	 *   user -> kernel   lazy + mmgrab() active
@@ -2937,6 +2979,84 @@ struct thread_struct {
 };
 ```
 
+##### 关键函数finish_task_switch
+
+这个函数是在 next 进程上下文中为 prev 进程收尾的，大概了解以下它做了哪些工作。
+
+```C
+/**
+ * finish_task_switch - clean up after a task-switch
+ * @prev: the thread we just switched away from.
+ *
+ * finish_task_switch must be called after the context switch, paired
+ * with a prepare_task_switch call before the context switch.
+ * finish_task_switch will reconcile locking set up by prepare_task_switch,
+ * and do any other architecture-specific cleanup actions.
+ *
+ * Note that we may have delayed dropping an mm in context_switch(). If
+ * so, we finish that here outside of the runqueue lock. (Doing it
+ * with the lock held can cause deadlocks; see schedule() for
+ * details.)
+ *
+ * The context switch have flipped the stack from under us and restored the
+ * local variables which were saved when this task called schedule() in the
+ * past. prev == current is still correct but we need to recalculate this_rq
+ * because prev may have moved to another CPU.
+ */
+static struct rq *finish_task_switch(struct task_struct *prev)
+	__releases(rq->lock)
+{
+	struct rq *rq = this_rq();
+	struct mm_struct *mm = rq->prev_mm;
+	long prev_state;
+
+	...
+
+	rq->prev_mm = NULL;
+
+	/*
+	 * A task struct has one reference for the use as "current".
+	 * If a task dies, then it sets TASK_DEAD in tsk->state and calls
+	 * schedule one last time. The schedule call will never return, and
+	 * the scheduled task must drop that reference.
+	 *
+	 * We must observe prev->state before clearing prev->on_cpu (in
+	 * finish_task), otherwise a concurrent wakeup can get prev
+	 * running on another CPU and we could rave with its RUNNING -> DEAD
+	 * transition, resulting in a double drop.
+	 */
+	prev_state = READ_ONCE(prev->__state);
+	vtime_task_switch(prev);
+	perf_event_task_sched_in(prev, current);
+	finish_task(prev); // 将 on_cpu 置为 0
+
+    ...
+
+	/*
+	 * When switching through a kernel thread, the loop in
+	 * membarrier_{private,global}_expedited() may have observed that
+	 * kernel thread and not issued an IPI. It is therefore possible to
+	 * schedule between user->kernel->user threads without passing though
+	 * switch_mm(). Membarrier requires a barrier after storing to
+	 * rq->curr, before returning to userspace, so provide them here:
+	 *
+	 * - a full memory barrier for {PRIVATE,GLOBAL}_EXPEDITED, implicitly
+	 *   provided by mmdrop(),
+	 * - a sync_core for SYNC_CORE.
+	 */
+	if (mm) {
+		membarrier_mm_sync_core_before_usermode(mm);
+		mmdrop(mm);
+	}
+
+	...
+
+	return rq;
+}
+```
+
+
+
 ### 负载计算
 
 这章的内容是探究如何更好的描述一个调度实体和就绪队列的工作负载。大部分内容都是从[这里](#http://www.wowotech.net/process_management/450.html)复制过来的，它讲的很清楚，我就省的再敲一遍。然后对于计算公式我能够理解，然后内核代码也贴出来了，可以说对于 PELT 算法我知道怎样算工作负载，但对于其要怎样使用还不懂，比如  `sched_avg` 中的 `load_avg`, `runnable_avg`, `util_avg` 变量我就不知道怎么用。这里就当个记录吧，之后有需要再深入理解。
@@ -3205,6 +3325,58 @@ struct sched_avg {
 ### 疑问
 
 1. 为什么要设置优先级、nice 值、权重、实际运行时间（runtime）、虚拟运行时间（vruntime）？它们之间的关系是什么？
+
+   我们来看一个函数，
+
+   ```c
+   static void set_load_weight(struct task_struct *p, bool update_load)
+   {
+   	int prio = p->static_prio - MAX_RT_PRIO; // MAX_RT_PRIO = 100
+   	struct load_weight *load = &p->se.load;
+
+   	/*
+   	 * SCHED_IDLE tasks get minimal weight:
+   	 */
+   	if (task_has_idle_policy(p)) {
+   		load->weight = scale_load(WEIGHT_IDLEPRIO);
+   		load->inv_weight = WMULT_IDLEPRIO;
+   		return;
+   	}
+
+   	/*
+   	 * SCHED_OTHER tasks have to update their load when changing their
+   	 * weight
+   	 */
+   	if (update_load && p->sched_class == &fair_sched_class) {
+   		reweight_task(p, prio);
+   	} else {
+   		load->weight = scale_load(sched_prio_to_weight[prio]);
+   		load->inv_weight = sched_prio_to_wmult[prio];
+   	}
+   }
+   ```
+
+   从这个函数中我们可以清晰的确定 nice 其实就是优先级，而每个优先级对应一个权重，这个对应关系只有普通进程，即优先级 100 ~ 139 的进程才有。也就是说实时进程没有权重这一说法，直接按照优先级顺序执行么？
+
+   在 `task_struct` 中有一个和优先级相关的变量，
+
+   ```c
+   struct task_struct {
+       ...
+
+   	// 进程的动态优先级。这是调度类考虑的优先级，即 nice 值，
+       // 它是 static_prio - MAX_RT_PRIO(100)得到的，范围是 100 ~ 139
+   	int				prio;
+   	int				static_prio; // 静态优先级，在进程启动时分配。它的范围是 0 ~ 139
+   	int				normal_prio; // 基于 static_prio 和调度策略计算出来的优先级，子进程初始化时继承该优先级
+   	unsigned int	rt_priority; // 实时进程的优先级
+
+       ...
+
+   }
+   ```
+
+   而 `vruntime` 则是根据 `runtime` 和进程权重计算出来的，进程的权重又由 nice（优先级）确定。
 
 2. 为什么要根据 vruntime 决定调度顺序？
 
