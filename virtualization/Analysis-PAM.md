@@ -10,22 +10,22 @@ PAM 对我来说是痛苦面具般的存在了，边写边理解吧。
 >
 > Each PAM register is split into two nibbles. The nibbles then have two reserved bits and then a read-enable and write-enabled bit. Each nibble corresponds to 16k of ROM space except for PAM[0] which refers to 32k.
 
-也就是说，PAM 寄存器能够将对 BIOS ROM 的读写操作重定向到内存地址中。这样可以提高 BIOS 在裸机上的执行速度，因为直接在 ROM 上执行速度非常慢。这其中还涉及 shadow RAM 技术，需要解释一下。
+也就是说，**PAM 寄存器能够将对 BIOS ROM 的读写操作重定向到内存地址中**。这样可以提高 BIOS 在裸机上的执行速度，因为直接在 ROM 上执行速度非常慢。这其中还涉及 shadow RAM 技术，需要解释一下。
 
 #### Shadow RAM
 
-在 32 根地址线的 PC 中（即 32 位系统），BIOS 固件是放在内存的 `00000000fffc0000-00000000ffffffff (prio 0, rom): pc.bios` 中的，即 4G 内存的最后 256KB。但为了保持向前兼容性（16 位系统），机器启动的时候会自动**将 ROM 的 BIOS 复制到 RAM 的 BIOS ROM 区域当中**。所以，当开机后的第一条跳转指令 `ljmpw` 执行之后，因为系统已经将 BIOS 复制到 RAM 中了，在 RAM 当中也有 BIOS 固件代码，这样 16 位系统也能在 32 bit 的机器上执行。
+在 32 根地址线的 PC 中（即 32 位系统），BIOS 固件是放在内存的 `0x00000000fffc0000 - 0x00000000ffffffff (prio 0, rom): pc.bios` 中的，即 **4G 内存的最后 256KB**。但为了保持向前兼容性（16 位系统），机器启动的时候会自动**将 ROM 的 BIOS 复制到 RAM 的 BIOS ROM 区域当中**。所以，当开机后的第一条跳转指令 `ljmpw` 执行之后，因为系统已经将 BIOS 复制到 RAM 中了，**在 RAM 当中也有 BIOS 固件代码，这样 16 位系统也能在 32 bit 的机器上执行**。
 
-**这个复制高地址处的 ROM 到低地址处的过程被称为 Shadow RAM 技术**。然而，在这个过程后，这段内存会被保护起来，无法进行写入（也就是说呈现给 16 位系统的是一个 ROM 空间，不过这个 ROM 空间是在 RAM 中的，所以我们要将其定义为只读）。那么 Seabios 需要让这段内存可读，从而便于更改一些静态分配的全局变量值，Seabios 中通过 `make_bios_writable` 函数来完成这一工作。
+**这个复制高地址处的 ROM 到低地址处的过程被称为 Shadow RAM 技术**。然而，在这个过程后，这段内存会被保护起来，无法进行写入（也就是说呈现给 16 位系统的是一个 ROM 空间，不过这个 ROM 空间是在 RAM 中的，所以我们要将其定义为只读）。但是 Seabios 在初始化的过程中需要让这段内存可写，从而便于更改一些静态分配的全局变量值，Seabios 中通过 `make_bios_writable` 来完成这一工作。
 
 ### QEMU 处理 PAM
 
 然后每个 PAM 寄存器分为两个半字节，半字节有两个保留位，一个读使能和写使能位。每个半字节对应 16k 的 ROM 空间，但 PAM[0] 对应的是 32k。
 
-在 `i440fx_init` 初始化的时候, 来初始化所有 `PAMMemoryRegion`, 一共 13 个
+在 `i440fx_init` 初始化的时候, 初始化所有 `PAMMemoryRegion`，一共 13 个
 
 - 第一个映射: System BIOS Area Memory Segments, 也即映射 `0xf0000 ~ 0xfffff`（这不是 64K 么，为什么文档中说是 32K）
-- 后面的 12 个映射 `0xc0000 ~ 0xeffff`, 每一个映射 0x4000 的地址空间
+- 后面的 12 个映射 `0xc0000 ~ 0xeffff`, 每一个映射 `0x4000` 的地址空间
 
 ```c
 /*
@@ -63,7 +63,39 @@ typedef struct PAMMemoryRegion {
 
 当然，QEMU 目前的实现和这个存在一点点差异，参考 `init_pam`。
 
-当想要修改 PAM 寄存器的属性，最后会调用下面的函数，将原来的映射 disable 掉，启用新的映射
+```c
+void init_pam(DeviceState *dev, MemoryRegion *ram_memory,
+              MemoryRegion *system_memory, MemoryRegion *pci_address_space,
+              PAMMemoryRegion *mem, uint32_t start, uint32_t size)
+{
+    int i;
+
+    /* RAM */
+    memory_region_init_alias(&mem->alias[3], OBJECT(dev), "pam-ram", ram_memory,
+                             start, size);
+    /* ROM (XXX: not quite correct) */
+    memory_region_init_alias(&mem->alias[1], OBJECT(dev), "pam-rom", ram_memory,
+                             start, size);
+    memory_region_set_readonly(&mem->alias[1], true);
+
+    /* XXX: should distinguish read/write cases */
+    memory_region_init_alias(&mem->alias[0], OBJECT(dev), "pam-pci", pci_address_space,
+                             start, size);
+    memory_region_init_alias(&mem->alias[2], OBJECT(dev), "pam-pci", ram_memory,
+                             start, size);
+
+    memory_region_transaction_begin();
+    for (i = 0; i < 4; ++i) {
+        memory_region_set_enabled(&mem->alias[i], false);
+        memory_region_add_subregion_overlap(system_memory, start,
+                                            &mem->alias[i], 1);
+    }
+    memory_region_transaction_commit();
+    mem->current = 0;
+}
+```
+
+当想要修改 PAM 寄存器的属性，最后会调用下面的函数，**将原来的映射 disable 掉**，启用新的映射，
 
 ```c
 void pam_update(PAMMemoryRegion *pam, int idx, uint8_t val)
@@ -76,11 +108,13 @@ void pam_update(PAMMemoryRegion *pam, int idx, uint8_t val)
 }
 ```
 
-那么总结起来是这样的，前 1M 的地址空间中，在系统的不同阶段会映射为不同的内存类型：
+那么总结起来是这样的，前 1M 的地址空间中，**在系统的不同阶段会映射为不同的内存类型**：
 
 - 在 PAM 完全没有打开的时候，映射的 PCI
 - 然后映射为 RAM
 - 最后映射为 ROM
+
+而 BMBT 的实现是初始化时就相当于 PAM 打开，映射 ROM。
 
 ### 32 位系统的地址空间布局
 
@@ -244,5 +278,3 @@ make_bios_readonly_intel(u16 bdf, u32 pam0)
 [1] https://wiki.qemu.org/Documentation/Platforms/PC
 
 [2] https://martins3.github.io/qemu/bios-memory.html
-
-[3]

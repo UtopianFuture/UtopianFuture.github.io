@@ -642,39 +642,8 @@ static int load_elf_binary(struct linux_binprm *bprm)
 				MAP_FIXED | MAP_PRIVATE, 0);
 	}
 
-#ifdef ELF_PLAT_INIT
-	/*
-	 * The ABI may specify that certain registers be set up in special
-	 * ways (on i386 %edx is the address of a DT_FINI function, for
-	 * example.  In addition, it may also specify (eg, PowerPC64 ELF)
-	 * that the e_entry field is the address of the function descriptor
-	 * for the startup routine, rather than the address of the startup
-	 * routine itself.  This macro performs whatever initialization to
-	 * the regs structure is required as well as any relocations to the
-	 * function descriptor entries when executing dynamically links apps.
-	 */
-	ELF_PLAT_INIT(regs, reloc_func_desc);
-#endif
+	...
 
-	start_thread(regs, elf_entry, bprm->p);
-	retval = 0;
-out:
-	kfree(loc);
-out_ret:
-  printk("binfmt_elf.c:12.ret: %d\n", retval);
-	return retval;
-
-	/* error cleanup */
-out_free_dentry:
-	kfree(interp_elf_phdata);
-	allow_write_access(interpreter);
-	if (interpreter)
-		fput(interpreter);
-out_free_interp:
-	kfree(elf_interpreter);
-out_free_ph:
-	kfree(elf_phdata);
-	goto out;
 }
 ```
 
@@ -705,8 +674,6 @@ static int exec_binprm(struct linux_binprm *bprm)
 	return ret;
 }
 ```
-
-
 
 ### Reference
 

@@ -3055,8 +3055,6 @@ static struct rq *finish_task_switch(struct task_struct *prev)
 }
 ```
 
-
-
 ### 负载计算
 
 这章的内容是探究如何更好的描述一个调度实体和就绪队列的工作负载。大部分内容都是从[这里](#http://www.wowotech.net/process_management/450.html)复制过来的，它讲的很清楚，我就省的再敲一遍。然后对于计算公式我能够理解，然后内核代码也贴出来了，可以说对于 PELT 算法我知道怎样算工作负载，但对于其要怎样使用还不懂，比如  `sched_avg` 中的 `load_avg`, `runnable_avg`, `util_avg` 变量我就不知道怎么用。这里就当个记录吧，之后有需要再深入理解。
