@@ -1,5 +1,36 @@
 ## Seabios in QEMU
 
+### 目录
+
+- [执行过程](#执行过程)
+- [加电自检阶段](#加电自检阶段)
+- [启动A20总线](#启动A20总线)
+- [从实模式进入32位保护模式](#从实模式进入32位保护模式)
+  - [恢复段描述符高速缓冲寄存器](#恢复段描述符高速缓冲寄存器)
+  - [代码段寄存器的恢复](#代码段寄存器的恢复)
+  - [关闭PE](#关闭PE)
+- [进入handle_post函数](#进入handle_post函数)
+  - [关于make_bios_writable](#关于make_bios_writable)
+  - [进入dopost](#进入dopost)
+  - [初始化中断向量表IVT](#初始化中断向量表IVT)
+  - [实模式下发起中断](#实模式下发起中断)
+  - [初始化BIOS数据区域BDA](#初始化BIOS数据区域BDA)
+    - [BOOT阶段前最后的准备](#BOOT阶段前最后的准备)
+  - [PCI设备](#PCI设备)
+    - [pci_device](#pci_device)
+    - [关键函数pci_setup](#关键函数pci_setup)
+    - [关键函数pci_bios_check_devices](#关键函数pci_bios_check_devices)
+    - [关键函数pci_probe_devices](#关键函数pci_probe_devices)
+    - [关键函数pci_bios_map_devices](#关键函数pci_bios_map_devices)
+    - [pci_region](#pci_region)
+    - [关键函数pci_region_map_one_entry](#关键函数pci_region_map_one_entry)
+  - [startBoot](#startBoot)
+- [引导阶段](#引导阶段)
+  - [读取主引导扇区](#读取主引导扇区)
+- [接近尾声](#接近尾声)
+- [问题](#问题)
+- [注意](#注意)
+
 ### 执行过程
 
 ![Seabios-structure.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/Seabios-structure.png?raw=true)
@@ -134,7 +165,7 @@ transition32_nmi_off:
 
 首先，先屏蔽中断，并清空方向标志位。然后通过向一个端口写入 `NMI_DISABLE_BIT` 的方式屏蔽 NMI（这里具体的不探究）。然后这一点是非常重要的——启动 A20 Gate。
 
-### 启动 A20 总线
+### 启动A20总线
 
 首先将介绍 A20 总线。我们知道，8086/8088 系列的 CPU，在实模式下，按照**段地址:偏移地址**的方式来寻址。这种方式可以访问的最大内存地址为 `0xFFFF:0xFFFF`，转换为物理地址 `0x10FFEF`。而这个物理地址是 21bit 的，所以为了表示出这个最大的物理地址，至少需要 21 根地址线才能表示。
 
@@ -144,7 +175,7 @@ transition32_nmi_off:
 
 控制 A20 总线的端口被称为 A20-Gate。使用 in/out 指令控制，即可控制 A20 总线是否打开。A20 Gate 是 0x92 端口的第二个 bit。先获得 0x92 端口的值并存放在 al 寄存器中，然后通过 or 将该寄存器的第二个 bit 设置为 1。然后再将 al 的值写入 0x92 端口即可。这就是上面的 enable a20 部分的原理。
 
-### 从实模式进入 32 位保护模式
+### 从实模式进入32位保护模式
 
 在 16bit 实模式下，最多访问 20 根地址线。且段内偏移不能超过 64KB（16 位）。而 32 位保护模式下，则没有了最多访问 20 根地址线的限制，且段内偏移可以达到 4GB（32 位）。
 
@@ -310,11 +341,11 @@ SeaBIOS 的实现是，创建了一个 `SEG32_MODE16_CS` 表项。然后通过�
 ljmpw $SEG32_MODE16_CS, $1f
 ```
 
-#### 关闭 PE
+#### 关闭PE
 
 在上面代码的 “Disable protected mode” 部分，将 CR0 寄存器的 PE 位置 0 即刻关闭保护模式。然后，和前面一样，通过一个 ljmp 刷新流水线。确保后面的指令都是在实模式中运行。
 
-### 进入 handle_post 函数
+### 进入handle_post函数
 
 通过 `ENTRY_INTO32 _cfunc32flat_handle_post` 语句，即先进入保护模式，然后完成对 C 函数 `handle_post` 的调用。
 
@@ -346,7 +377,7 @@ handle_post(void)
 
 首先是一些基本的准备工作，比如启动串口调试等等，这些细节我们就忽略了。从 `make_bios_writable` 开始。
 
-#### 关于 make_bios_writable
+#### 关于make_bios_writable
 
 该函数的作用是允许更改 RAM 中的 BIOS ROM 区域。在介绍 `make_bios_writable` 之前，首先对 Shadow RAM 做一些介绍。实际上，尽管在启动的时候，是从 `F000:FFF0` 加载第一条指令的，你可能会觉得在启动的时候代码段段基址是 `0xF0000`。其实，并不是这样的。在计算机启动的时候，代码段段基地址实际上是是 `0xFFFF0000`（这里就不符合那个乘 16 的计算方式了）。笔者猜测这一一点的实现方式是通过段描述符高速缓冲寄存器实现的（实模式下也是通过查询这个寄存器来获得段基址的），开机的时候代码段的对应基址项被设置成 `0xFFFF0000`。
 
@@ -401,7 +432,7 @@ __make_bios_writable_intel(u16 bdf, u32 pam0)
 
 从代码中清晰的看到，Seabios 通过 `memcpy`  将 `VSYMBOL(code32flat_start) + BIOS_SRC_OFFSET` 的 bios 复制到 `VSYMBOL(code32flat_start)`。而前面的 pam 操作则是对 `0xc0000 ~ 0xfffff` 内存空间的读写操作的重定向定义。
 
-#### 进入 dopost
+#### 进入dopost
 
 刚才已经做好了准备。然后，就可以进入 `dopost` 函数了。这个函数是 POST 过程的主体。`depost` 会调用 `maininit` 函数。
 
@@ -523,7 +554,7 @@ interface_init(void)
 
 这个函数用于加载内部的一些接口。下面是其步骤。
 
-#### 初始化中断向量表 IVT
+#### 初始化中断向量表IVT
 
 中断向量表（Interrupt Vector Table）是一张在实模式下使用的表。顾名思义，这个表将中断号映射到中断过程的一个列表。中断向量表必须存储在低地址区域（也就是从 0x00000000）开始，大小一般是 0x400 字节，是一块由很多个项组成的连续的内存空间。每一项，就对应了一个中断，如下所示（[出处](https://wiki.osdev.org/Interrupt_Vector_Table)）：
 
@@ -756,7 +787,7 @@ handle_15e8(struct bregs *regs)
 
 Seabios 支持多种内存格式。
 
-#### 初始化 BIOS 数据区域 BDA
+#### 初始化BIOS数据区域BDA
 
 BDA（BIOS Data Area），是存放计算机当前一些状态的位置。在 SeaBIOS 中，其定义如下：
 
@@ -842,7 +873,7 @@ struct bios_data_area_s {
 
 `bda_init` 就是初始化该区域的函数。这里不多介绍。
 
-##### BOOT 阶段前最后的准备
+##### BOOT阶段前最后的准备
 
 然后是一些其他的接口，比如键盘、鼠标接口的加载。在 `interface_init` 函数的最后部分定义。这里不再介绍。在 `maininit` 函数中，
 
@@ -892,7 +923,7 @@ maininit(void)
 
 用于加载 VGA 设备、初始化硬件、为用户提供更改启动顺序的界面。然后，将刚才被设置为可写的 RAM 中的 BIOS ROM 部分，重新保护起来。然后，通过一个 `startBoot` 函数，调用 `INT19` 中断，进入 Boot 状态。
 
-#### PCI 设备
+#### PCI设备
 
 由于 BMBT 需要直通 PCI 设备，所以需要了解 [QEMU 是怎样模拟 PCI 设备的](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Device-Virtualization.md#pci%E8%AE%BE%E5%A4%87%E6%A8%A1%E6%8B%9F)，而这又涉及到 Seabios 对 PCI 设备的支持，故在这里深入分析一下 PCI 设备的探测。
 
