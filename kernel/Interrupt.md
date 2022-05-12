@@ -5,13 +5,13 @@
 运行环境：qemu_la（在 la 机器上直接 sudo apt install qemu） + 3a5000
 运行命令：
 
-```
+```plain
 qemu-system-loongarch64 -nographic -m 2G -cpu Loongson-3A5000 -serial mon:stdio -bios ~/research/bmbt/qemu-la/pc-bios/loongarch_bios.bin -M loongson7a,kernel_irqchip=off -kernel ~/gitlab/timer-interrupt/hello_period.elf
 ```
 
 调试命令：
 
-```
+```plain
 qemu-system-loongarch64 -nographic -m 2G -cpu Loongson-3A5000 -serial mon:stdio -bios ~/research/bmbt/qemu-la/pc-bios/loongarch_bios.bin -M loongson7a,kernel_irqchip=off -kernel ~/gitlab/timer-interrupt/hello_period.elf -gdb tcp::5678 -S
 ```
 
@@ -23,7 +23,7 @@ qemu-system-loongarch64 -nographic -m 2G -cpu Loongson-3A5000 -serial mon:stdio 
 
 loongarch 的中断处理过程如下。
 
-```
+```plain
 #0  serial8250_tx_chars (up=0x9000000001696850 <serial8250_ports>) at drivers/tty/serial/8250/8250_port.c:1805
 #1  0x90000000009f1198 in serial8250_handle_irq (port=0x9000000001696850 <serial8250_ports>, iir=194) at drivers/tty/serial/8250/8250_port.c:1924
 #2  0x90000000009f1320 in serial8250_handle_irq (iir=<optimized out>, port=<optimized out>) at drivers/tty/serial/8250/8250_port.c:1897
@@ -57,7 +57,7 @@ void do_vi(int irq)
 }
 ```
 
-`struct irq_domain`与中断控制器对应，完成的工作是硬件中断号到 `Linux irq` 的映射，时钟中断的硬件中断号为 11，`linux irq` 为61。
+`struct irq_domain`与中断控制器对应，完成的工作是硬件中断号到 `Linux irq` 的映射，时钟中断的硬件中断号为 11，`linux irq` 为 61。
 
 ```c
 asmlinkage void __weak plat_irq_dispatch(int irq)
@@ -71,7 +71,7 @@ asmlinkage void __weak plat_irq_dispatch(int irq)
 
 中断号 irq 是用 a0 寄存器传递的，发现在进入 `except_vec_vi_handler` 时中断号就已经是 11 了，所以 `except_vec_vi_handler` 还不是最开始处理中断的地方。发现在 `except_vec_vi_handler` 可以使用 backtrace 。
 
-```
+```plain
 #0  0x90000000002035c8 in except_vec_vi_handler () at arch/loongarch/kernel/genex.S:45
 #1  0x90000000010154a4 in csr_xchgl (reg=<optimized out>, mask=<optimized out>, val=<optimized out>) at arch/loongarch/include/asm/loongarchregs.h:341
 #2  arch_local_irq_enable () at arch/loongarch/include/asm/irqflags.h:22
@@ -171,7 +171,7 @@ static void configure_exception_vector(void)
 
 发现在设置 `LOONGARCH_CSR_EBASE` 时 ebase 的值明明是 20070 ，但写入到 `LOONGARCH_CSR_EBASE` 的值却是 30070，用于写入的寄存器不一样。
 下面是内核的设置过程，是正常的，记录下来做个对比。
-```
+```plain
 0x900000000020a438 <per_cpu_trap_init+16>       pcaddu12i $r14,5110(0x13f6)
 0x900000000020a43c <per_cpu_trap_init+20>       addi.d $r14,$r14,-1072(0xbd0)
 0x900000000020a440 <per_cpu_trap_init+24>       lu12i.w $r13,10(0xa)
