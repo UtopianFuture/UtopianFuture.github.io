@@ -117,7 +117,11 @@ struct vring_used {
 6d:00.0 Network controller: Intel Corporation Wi-Fi 6 AX200 (rev 1a)
 ```
 
-都是熟悉的设备啊！为什么有 5 个雷电 3 总线？
+都是熟悉的设备啊！
+
+- 为什么有 5 个雷电 3 总线？
+
+- `0x00` 号总线到底是低速总线还是高速总线啊？为什么即有 RAM memory 这个高速内存挂载，又有 PCH 这个低速设备集成芯片挂载，还有 serial。奇怪。
 
 每个 PCI 设备在系统中的位置由总线号（Bus Number）、设备号（Device Number）和功能号（Function Number）唯一确定，上面的设备信息中前 3 组数字应该分别对应总线号、设备号、功能号。我们可以看到有不同的总线号，按理来说不都是挂载在 HOST-PCI 桥上，总线号应该是一样的。是这样的，可以在 PCI 总线上挂一个桥设备，之后在该桥上再挂载一个 PCI 总线或其他总线。比如我们看看 usb 设备的挂载情况：
 
@@ -138,23 +142,23 @@ Bus 001 Device 002: ID 062a:5918 MosArt Semiconductor Corp. 2.4G Keyboard Mouse
 Bus 001 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
 ```
 
-这里的位置信息就更清晰了。哦，原来不是所有的雷电 3 接口都是我能看到的。但是 U 盘是挂载在 0x04 总线上，不是 PCI 总线？
+这里的位置信息就更清晰了。哦，原来不是所有的雷电 3 接口都是我能看到的。但是 U 盘是挂载在 `0x04` 总线上，不是 PCI 总线？`0x04` 总线是什么？
 
 ![PCI-bus.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/PCI-bus.png?raw=true)
 
 PCI 设备有自己的地址空间，叫做 PCI 地址空间，HOST-PCI 桥完成 CPU 访问的内存地址到 PCI 总线地址的转换。每个 PCI 设备都有一个配置空间，该空间至少有 256 字节，前 64 字节是标准化的，所有的设备都是这个格式，后面的内容由设备自己决定。
 
-![PCI-config-space](/home/guanshun/gitlab/UFuture.github.io/image/PCI-config-space.png)
+![PCI-config-space.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/PCI-config-space.png?raw=true)
 
-Vendor ID, Device ID, Class Code 用来表明设备的身份，有时还会配置 Subsystem Vendor ID 和 Subsystem Device ID。6 个 Base Address 表示 PCI 设备的 I/O 地址空间（这么大么），还可能有一个 ROM 的 BAR。两个与中断设置相关的域，IRQ Line 表示该设备使用哪个中断号（BIOS 中注册的 IVT），IRQ Line 表示使用哪条引脚连接中断控制器，PCI 总线上可以通过 4 根中断引脚 INTA ~ D# 向中断控制器提交中断请求（不懂）。
+Vendor ID, Device ID, Class Code 用来表明设备的身份，有时还会配置 Subsystem Vendor ID 和 Subsystem Device ID。6 个 Base Address 表示 PCI 设备的 I/O 地址空间（这么大么），还可能有一个 ROM 的 BAR。两个与中断设置相关的域，IRQ Line 表示该设备使用哪个中断号（BIOS 中注册的 IVT），如传统的 8259 中断控制器，有 0 ~ 15 号 line，IRQ Line 表示的是用哪根线。而 IRQ Pin 表示使用哪个引脚连接中断控制器，PCI 总线上的设备可以通过 4 根中断引脚 INTA ~ D# 向中断控制器提交中断请求。
 
 #### PCI设备的模拟
+
+##### PCIDevice
 
 老规矩，先看看数据结构。在我看来，虚拟化无非就是定义设备对应的数据结构，初始化它，然后完成对应的操作函数。
 
 QEMU 用 `PCIDevice` 来完成 PCI 设备的虚拟化。在分析的时候如果觉得 QOM 过于复杂可以忽视它，也不影响对某个模块的模拟，当然最好的方式是[理解它](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/QEMU-qom.md)，战胜它。
-
-##### PCIDevice
 
 ```c
 struct PCIDevice {
@@ -179,20 +183,20 @@ struct PCIDevice {
     uint8_t *used;
 
     /* the following fields are read only */
-    int32_t devfn; // 这个是干嘛的，功能号么
+    int32_t devfn; // 这个是干嘛的？功能号
     /* Cached device to fetch requester ID from, to avoid the PCI
      * tree walking every time we invoke PCI request (e.g.,
      * MSI). For conventional PCI root complex, this field is
      * meaningless. */
     PCIReqIDCache requester_id_cache;
     char name[64];
-    PCIIORegion io_regions[PCI_NUM_REGIONS];
+    PCIIORegion io_regions[PCI_NUM_REGIONS]; // 这个应该是该设备映射到地址空间的 memory region
     AddressSpace bus_master_as;
     MemoryRegion bus_master_container_region;
     MemoryRegion bus_master_enable_region;
 
     /* do not access the following fields */
-    PCIConfigReadFunc *config_read;
+    PCIConfigReadFunc *config_read; // 对应的回调幻术
     PCIConfigWriteFunc *config_write;
 
     /* Legacy PCI VGA regions */
@@ -206,7 +210,7 @@ struct PCIDevice {
     uint32_t cap_present;
 
     /* Offset of MSI-X capability in config space */
-    uint8_t msix_cap;
+    uint8_t msix_cap; // MSI 中断方式也需要了解啊
 
     /* MSI-X entries */
     int msix_entries_nr;
@@ -236,7 +240,7 @@ struct PCIDevice {
     SHPCDevice *shpc;
 
     /* Location of option rom */
-    char *romfile;
+    char *romfile; // 设备的 ROM 空间用来干嘛？ cache？
     uint32_t romsize;
     bool has_rom;
     MemoryRegion rom;
@@ -258,7 +262,7 @@ struct PCIDevice {
 
 ##### 关键函数pci_qdev_realize
 
-这个函数完成 PCI 设备的初始化，可以在这个函数中设置断点，就会发现上文中出现的设备会一一调用它进行初始化。下面给出南桥芯片的初始化，从上文的图中可以直到南桥芯片也是挂载在 PCI 根总线上的一个 PCI 设备。
+这个函数完成 PCI 设备的初始化，可以在这个函数中设置断点，就会发现上文中出现的设备会一一调用它进行初始化。下面给出南桥芯片—— piix 的初始化，从上文的图中可以直到南桥芯片也是挂载在 PCI 根总线上的一个 PCI 设备。
 
 ```c
 static void pci_qdev_realize(DeviceState *qdev, Error **errp)
@@ -278,13 +282,9 @@ static void pci_qdev_realize(DeviceState *qdev, Error **errp)
                                      pci_dev->devfn, errp);
 
     // 而这具体的设备的回调函数，应该是用于初始化 64 字节后的数据
+    // 后面以南桥芯片的初始化为例分析
     if (pc->realize) {
         pc->realize(pci_dev, &local_err);
-        if (local_err) {
-            error_propagate(errp, local_err);
-            do_pci_unregister_device(pci_dev);
-            return;
-        }
     }
 
 	...
@@ -375,7 +375,7 @@ static PCIDevice *do_pci_register_device(PCIDevice *pci_dev,
         for(devfn = bus->devfn_min ; devfn < ARRAY_SIZE(bus->devices);
             devfn += PCI_FUNC_MAX) {
             if (pci_bus_devfn_available(bus, devfn) &&
-                   !pci_bus_devfn_reserved(bus, devfn)) {
+                   !pci_bus_devfn_reserved(bus, devfn)) { // 分配设备号
                 goto found;
             }
         }
@@ -772,9 +772,208 @@ void pci_host_config_write_common(PCIDevice *pci_dev, uint32_t addr,
 #13 0x00007ffff6678163 in clone () from /lib/x86_64-linux-gnu/libc.so.6
 ```
 
+OK，但是这里还有一个问题，通过 `pci_default_write_config` 访问设备时是怎样知道不同设备的配置空间的地址？也就是说 PCI-HOST 怎样将读写请求转发到对应的 PCI 设备？
 
+这个工作是 Seabios 完成的，可以看[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/Analysis-Seabios.md#pci-%E8%AE%BE%E5%A4%87)的分析。总的来说是 BIOS 会探测 PCI 设备，然后按照将各个 PCI 设备的总线号、设备号、功能号（？）将 BAR 地址写入 i440fx 的配置空间（`0xcfc`），之后 QEMU 就能根据这些信息建立地址映射。
+
+##### 关键函数pci_default_write_config
+
+```c
+void pci_default_write_config(PCIDevice *d, uint32_t addr, uint32_t val_in, int l)
+{
+    int i, was_irq_disabled = pci_irq_disabled(d);
+    uint32_t val = val_in;
+
+    assert(addr + l <= pci_config_size(d));
+
+    for (i = 0; i < l; val >>= 8, ++i) {
+        uint8_t wmask = d->wmask[addr + i];
+        uint8_t w1cmask = d->w1cmask[addr + i];
+        assert(!(wmask & w1cmask));
+        d->config[addr + i] = (d->config[addr + i] & ~wmask) | (val & wmask);
+        d->config[addr + i] &= ~(val & w1cmask); /* W1C: Write 1 to Clear */
+    }
+    if (ranges_overlap(addr, l, PCI_BASE_ADDRESS_0, 24) ||
+        ranges_overlap(addr, l, PCI_ROM_ADDRESS, 4) ||
+        ranges_overlap(addr, l, PCI_ROM_ADDRESS1, 4) ||
+        range_covers_byte(addr, l, PCI_COMMAND))
+        pci_update_mappings(d);
+
+    if (range_covers_byte(addr, l, PCI_COMMAND)) {
+        pci_update_irq_disabled(d, was_irq_disabled);
+        memory_region_set_enabled(&d->bus_master_enable_region,
+                                  (pci_get_word(d->config + PCI_COMMAND)
+                                   & PCI_COMMAND_MASTER) && d->has_power);
+    }
+
+    msi_write_config(d, addr, val_in, l);
+    msix_write_config(d, addr, val_in, l);
+}
+```
+
+然后在 `i440fx_init` 就会调用 `pci_update_mappings` 建立对应 memory region。建立起 memory region 之后 guest 访问这些 memory region 就是访问对应的 PCI 设备。
+
+```
+#0  pci_update_mappings (d=0x555556c01e80) at ../hw/pci/pci.c:1375
+#1  0x0000555555a38d7c in pci_set_power (d=0x555556c01e80, state=true) at ../hw/pci/pci.c:2868
+#2  0x0000555555a370b1 in pci_qdev_realize (qdev=0x555556c01e80, errp=0x7fffffffd610)
+    at ../hw/pci/pci.c:2189
+/*
+ * QOM 相关
+ */
+#11 0x0000555555a371d9 in pci_create_simple_multifunction (bus=0x555556bc9df0, devfn=0,
+    multifunction=false, name=0x5555560616fd "i440FX") at ../hw/pci/pci.c:2218
+#12 0x0000555555a37211 in pci_create_simple (bus=0x555556bc9df0, devfn=0,
+    name=0x5555560616fd "i440FX") at ../hw/pci/pci.c:2224
+#13 0x0000555555a4a68f in i440fx_init (host_type=0x555556061704 "i440FX-pcihost",
+    pci_type=0x5555560616fd "i440FX", pi440fx_state=0x7fffffffd9f8,
+    address_space_mem=0x5555568220c0, address_space_io=0x555556821fb0, ram_size=8589934592,
+    below_4g_mem_size=3221225472, above_4g_mem_size=5368709120,
+    pci_address_space=0x555556a5a030, ram_memory=0x5555569a2af0)
+    at ../hw/pci-host/i440fx.c:266
+#14 0x0000555555b44298 in pc_init1 (machine=0x555556a2f000,
+    host_type=0x555556061704 "i440FX-pcihost", pci_type=0x5555560616fd "i440FX")
+    at ../hw/i386/pc_piix.c:200
+
+    ...
+```
+
+`pci_update_mappings` 之后有需要再分析。
 
 #### PCI设备中断模拟
+
+接下来我们看看 PCI 设备是怎样发起中断的。前面讲到每个 PCI 设备有 4 个中断引脚，单功能设备都用 INTA 触发中断，之后多功能设备会用到 INTB、INTC、INTD。PCI 设备配置空间的 IRQ Pin 域表示使用哪个引脚，这在每个设备初始化的时候会设置。如 e1000，
+
+```c
+static void pci_e1000_realize(PCIDevice *pci_dev, Error **errp)
+{
+    ...
+
+    pci_dev->config_write = e1000_write_config;
+
+    pci_conf = pci_dev->config;
+
+    /* TODO: RST# value should be 0, PCI spec 6.2.4 */
+    pci_conf[PCI_CACHE_LINE_SIZE] = 0x10;
+
+    pci_conf[PCI_INTERRUPT_PIN] = 1; /* interrupt pin A */
+
+	...
+}
+```
+
+PCI 总线上能够挂载多个设备，而通常中断控制器的中断线是有限的，加上一些中断线已经分配给其他设备，所以通常留给 PCI 设备的中断线只有 4 个或 8 个。将 PCI 设备使用的中断引脚与中断控制器的中断线关联起来，通常叫做 PCI 设备的中断路由。
+
+PCI 设备中断路由涉及 3 个概念：
+
+- PCI 设备的中断引脚；
+
+- 中断控制器的中断线，i440fx 主板模拟给 PCI 设备的中断线有 4 条；
+
+- PCI 链接设备（PCI Linking device, LNK），其可以理解为将 PCI 总线与中断线连接起来的设备，通常有 LNKA、LNKB、LNKC
+
+  LNKD 4 个链接设备。
+
+包括 2 个部分：
+
+- PCI 设备的中断引脚到 LNK 的连接，这个由 QEMU 完成；
+- LNK 路由到具体的 IRQ 线上，这个由 Seabios 完成，可以看[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/Analysis-Seabios.md#PCI%E8%AE%BE%E5%A4%87%E4%B8%AD%E6%96%AD)的分析。总的来说就是每个 PCI 设备的配置空间在 `0x60` 偏移处就是 LNK，将中断控制器的引脚号写入该配置空间即可完成路由配置。
+
+##### 触发中断
+
+接下来看看 QEMU 是怎样触发 PCI 中断的。
+
+`pc_init1` -> `piix3_create`
+
+```c
+PIIX3State *piix3_create(PCIBus *pci_bus, ISABus **isa_bus)
+{
+    PIIX3State *piix3;
+    PCIDevice *pci_dev;
+
+    if (xen_enabled()) {
+
+        ...
+
+    } else {
+        pci_dev = pci_create_simple_multifunction(pci_bus, -1, true,
+                                                  TYPE_PIIX3_DEVICE);
+        piix3 = PIIX3_PCI_DEVICE(pci_dev);
+        pci_bus_irqs(pci_bus, piix3_set_irq, pci_slot_get_pirq,
+                     piix3, PIIX_NUM_PIRQS); // PCI 总线的中断路由设置
+        pci_bus_set_route_irq_fn(pci_bus, piix3_route_intx_pin_to_irq);
+    }
+    *isa_bus = ISA_BUS(qdev_get_child_bus(DEVICE(piix3), "isa.0"));
+
+    return piix3;
+}
+```
+
+这里有些问题，为什么只有 piix3 会设置中断，i440fx 没有呢？很多设备共用一条中断线，中断控制器怎样识别是哪个 PCI 设备发起中断的呢？看来不只是拉高电平，还有其他的信息。对 PCI 的掌握还不全面，昨天觉得就是这么回事，今天再看，有些地方又模糊了。
+
+```c
+static void piix3_set_irq_pic(PIIX3State *piix3, int pic_irq)
+{
+    qemu_set_irq(piix3->pic[pic_irq], // 最终通过 qemu_set_irq 发起中断
+                 !!(piix3->pic_levels &
+                    (((1ULL << PIIX_NUM_PIRQS) - 1) <<
+                     (pic_irq * PIIX_NUM_PIRQS))));
+}
+
+static void piix3_set_irq_level_internal(PIIX3State *piix3, int pirq, int level)
+{
+    int pic_irq;
+    uint64_t mask;
+
+    pic_irq = piix3->dev.config[PIIX_PIRQCA + pirq];
+    if (pic_irq >= PIIX_NUM_PIC_IRQS) {
+        return;
+    }
+
+    mask = 1ULL << ((pic_irq * PIIX_NUM_PIRQS) + pirq);
+    piix3->pic_levels &= ~mask;
+    piix3->pic_levels |= mask * !!level;
+}
+
+static void piix3_set_irq_level(PIIX3State *piix3, int pirq, int level)
+{
+    int pic_irq;
+
+    pic_irq = piix3->dev.config[PIIX_PIRQCA + pirq];
+    if (pic_irq >= PIIX_NUM_PIC_IRQS) {
+        return;
+    }
+
+    piix3_set_irq_level_internal(piix3, pirq, level);
+
+    piix3_set_irq_pic(piix3, pic_irq);
+}
+
+static void piix3_set_irq(void *opaque, int pirq, int level) // 这个是 piix 触发中断
+{
+    PIIX3State *piix3 = opaque;
+    piix3_set_irq_level(piix3, pirq, level);
+}
+```
+
+##### 获取LNK
+
+该函数得到设备连接到的  PCI 链接设备（LNK），然后再通过上面的 `piix3_set_irq` 触发中断。
+
+```c
+/*
+ * Return the global irq number corresponding to a given device irq
+ * pin. We could also use the bus number to have a more precise mapping.
+ */
+static int pci_slot_get_pirq(PCIDevice *pci_dev, int pci_intx)
+{
+    int slot_addend;
+    slot_addend = PCI_SLOT(pci_dev->devfn) - 1;
+    return (pci_intx + slot_addend) & 3;
+}
+```
+
+
 
 ### 网卡模拟
 
