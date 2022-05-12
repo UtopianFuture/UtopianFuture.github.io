@@ -2,7 +2,7 @@
 
 ### 执行过程
 
-![seabios.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/seabios.png?raw=true)
+![Seabios-structure](/home/guanshun/gitlab/UFuture.github.io/image/Seabios-structure.png)
 
 SeaBIOS 是一个 16bit 的 x86 BIOS 的开源实现，常用于 QEMU 等仿真器中使用。本文将结合[SeaBIOS Execution and code flow](https://www.seabios.org/Execution_and_code_flow)和[SeaBIOS 的源码](https://github.com/coreboot/seabios/)对 SeaBIOS 的全过程进行简单分析。需要注意，本文不是深入的分析，对于一些比较复杂和繁琐的部分直接跳过了。
 
@@ -405,7 +405,7 @@ __make_bios_writable_intel(u16 bdf, u32 pam0)
 
 刚才已经做好了准备。然后，就可以进入 `dopost` 函数了。这个函数是 POST 过程的主体。`depost` 会调用 `maininit` 函数。
 
-### maininit 过程
+maininit 过程
 
 `dopost` 函数定义如下
 
@@ -650,7 +650,7 @@ void main(void)
 
 物理内存在硬件上可能连续也可能不连续，连续的物理内存就是一整块的区域，而不连续的两块内存中间存在的空间称为内存空洞，或者称为 Hole。 这些 Hole 要么是系统预留给某些特定的硬件设备使用，要么没有真实的物理内存。 由于物理内存的布局关系，物理内存会被分作很多区块，BIOS 在启动过程中探测到这些 物理内存区域之后，使用 Entry 为单位维护内存区块， Entry 的结构布局如下:
 
-```
+```plain
 Offset  Size    Description
 00h     QWORD   base address
 08h     QWORD   length in bytes
@@ -659,7 +659,7 @@ Offset  Size    Description
 
 Entry 结构中，”Base address” 字段表示一个物理内存区域的起始物理地址，其长度 是一个 64 bit 的数据； “length” 字段表示一个物理内存区域的长度，其长度是一个 64 bit 的数据；“type” 字段表示物理内存区域的类型，其长度是一个 32 bit 的数据。BIOS 支持识别的物理内存类型如下表：
 
-```
+```plain
 Values for System Memory Map address type:
 01h    memory, available to OS
 02h    reserved, not available (e.g. system ROM, memory-mapped device)
@@ -728,7 +728,7 @@ static int detect_memory_e820(void)
 
  e820 系统调用(`int 0x15`)如下:
 
-```
+```plain
 AX  = E820h
 INT 0x15
 EAX = 0000E820h
@@ -844,38 +844,466 @@ struct bios_data_area_s {
 
 ##### BOOT 阶段前最后的准备
 
-然后是一些其他的接口，比如键盘、鼠标接口的加载。在 `interface_init` 函数的最后部分定义。这里不再介绍。在 `maininit` 函数中，剩余的部分
+然后是一些其他的接口，比如键盘、鼠标接口的加载。在 `interface_init` 函数的最后部分定义。这里不再介绍。在 `maininit` 函数中，
 
 ```C
-// Run vga option rom
-vgarom_setup();
-sercon_setup();
-enable_vga_console();
+// Main setup code.
+static void
+maininit(void)
+{
+    // Initialize internal interfaces.
+    interface_init();
 
-// Do hardware initialization (if running synchronously)
-if (!threads_during_optionroms()) {
-  device_hardware_setup();
-  wait_threads();
+    // Setup platform devices.
+    platform_hardware_setup();
+
+    // Start hardware initialization (if threads allowed during optionroms)
+    if (threads_during_optionroms())
+        device_hardware_setup();
+
+    // Run vga option rom
+    vgarom_setup();
+    sercon_setup();
+    enable_vga_console();
+
+    // Do hardware initialization (if running synchronously)
+    if (!threads_during_optionroms()) {
+        device_hardware_setup();
+        wait_threads();
+    }
+
+    // Run option roms
+    optionrom_setup();
+
+    // Allow user to modify overall boot order.
+    interactive_bootmenu();
+    wait_threads();
+
+    // Prepare for boot.
+    prepareboot();
+
+    // Write protect bios memory.
+    make_bios_readonly();
+
+    // Invoke int 19 to start boot process.
+    startBoot();
 }
-
-// Run option roms
-optionrom_setup();
-
-// Allow user to modify overall boot order.
-interactive_bootmenu();
-wait_threads();
-
-// Prepare for boot.
-prepareboot();
-
-// Write protect bios memory.
-make_bios_readonly();
-
-// Invoke int 19 to start boot process.
-startBoot();
 ```
 
 用于加载 VGA 设备、初始化硬件、为用户提供更改启动顺序的界面。然后，将刚才被设置为可写的 RAM 中的 BIOS ROM 部分，重新保护起来。然后，通过一个 `startBoot` 函数，调用 `INT19` 中断，进入 Boot 状态。
+
+#### PCI 设备
+
+由于 BMBT 需要直通 PCI 设备，所以需要了解 [QEMU 是怎样模拟 PCI 设备的](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Device-Virtualization.md#pci%E8%AE%BE%E5%A4%87%E6%A8%A1%E6%8B%9F)，而这又涉及到 Seabios 对 PCI 设备的支持，故在这里深入分析一下 PCI 设备的探测。
+
+##### pci_device
+
+Seabios 中用 `pci_device` 表示 PCI 设备。
+
+```c
+struct pci_device {
+    u16 bdf; // 这个很好理解 bus, device, func 号
+    u8 rootbus;
+    struct hlist_node node; // 所有的 PCI 设备组成一个链表
+    struct pci_device *parent;
+
+    // Configuration space device information
+    u16 vendor, device;
+    u16 class;
+    u8 prog_if, revision;
+    u8 header_type;
+    u8 secondary_bus;
+
+    // Local information on device.
+    int have_driver;
+};
+```
+
+##### 关键函数pci_setup
+
+`platform_hardware_setup` -> `qemu_platform_setup` -> `pci_setup`
+
+```c
+void
+pci_setup(void)
+{
+    if (!CONFIG_QEMU)
+        return;
+
+    dprintf(3, "pci setup\n");
+
+    dprintf(1, "=== PCI bus & bridge init ===\n");
+    if (pci_probe_host() != 0) { // 设置配置寄存器的最高位为 1，这样才能读取配置寄存器
+        return;
+    }
+    pci_bios_init_bus(); // 设置 PCI 总线的配置空间，如 PCI-ISA 总线
+
+    dprintf(1, "=== PCI device probing ===\n");
+    pci_probe_devices();
+
+    pcimem_start = RamSize;
+    pci_bios_init_platform(); // 进一步设置配置空间的信息
+
+    dprintf(1, "=== PCI new allocation pass #1 ===\n");
+    struct pci_bus *busses = malloc_tmp(sizeof(*busses) * (MaxPCIBus + 1));
+    if (!busses) {
+        warn_noalloc();
+        return;
+    }
+    memset(busses, 0, sizeof(*busses) * (MaxPCIBus + 1));
+    if (pci_bios_check_devices(busses))
+        return;
+
+    dprintf(1, "=== PCI new allocation pass #2 ===\n");
+    pci_bios_map_devices(busses);
+
+    pci_bios_init_devices();
+
+    free(busses);
+
+    pci_enable_default_vga();
+}
+```
+
+##### 关键函数pci_bios_check_devices
+
+这个函数应该是探测所有 PCI 设备的 BAR 信息。暂时记录一下，不分析。
+
+```c
+static int pci_bios_check_devices(struct pci_bus *busses)
+{
+    dprintf(1, "PCI: check devices\n");
+
+    // Calculate resources needed for regular (non-bus) devices.
+    struct pci_device *pci;
+    foreachpci(pci) {
+        if (pci->class == PCI_CLASS_BRIDGE_PCI)
+            busses[pci->secondary_bus].bus_dev = pci;
+
+        struct pci_bus *bus = &busses[pci_bdf_to_bus(pci->bdf)];
+        if (!bus->bus_dev)
+            /*
+             * Resources for all root busses go in busses[0]
+             */
+            bus = &busses[0];
+        int i;
+        for (i = 0; i < PCI_NUM_REGIONS; i++) {
+            if ((pci->class == PCI_CLASS_BRIDGE_PCI) &&
+                (i >= PCI_BRIDGE_NUM_REGIONS && i < PCI_ROM_SLOT))
+                continue;
+            int type, is64;
+            u64 size;
+            pci_bios_get_bar(pci, i, &type, &size, &is64);
+            if (size == 0)
+                continue;
+
+            if (type != PCI_REGION_TYPE_IO && size < PCI_DEVICE_MEM_MIN)
+                size = PCI_DEVICE_MEM_MIN;
+            struct pci_region_entry *entry = pci_region_create_entry(
+                bus, pci, i, size, size, type, is64);
+            if (!entry)
+                return -1;
+
+            if (is64)
+                i++;
+        }
+    }
+
+    // Propagate required bus resources to parent busses.
+    int secondary_bus;
+    for (secondary_bus=MaxPCIBus; secondary_bus>0; secondary_bus--) {
+        struct pci_bus *s = &busses[secondary_bus];
+        if (!s->bus_dev)
+            continue;
+        struct pci_bus *parent = &busses[pci_bdf_to_bus(s->bus_dev->bdf)];
+        if (!parent->bus_dev)
+            /*
+             * Resources for all root busses go in busses[0]
+             */
+            parent = &busses[0];
+        int type;
+        u16 bdf = s->bus_dev->bdf;
+        u8 pcie_cap = pci_find_capability(bdf, PCI_CAP_ID_EXP, 0);
+        u8 qemu_cap = pci_find_resource_reserve_capability(bdf);
+
+        int hotplug_support = pci_bus_hotplug_support(s, pcie_cap);
+        for (type = 0; type < PCI_REGION_TYPE_COUNT; type++) {
+            u64 align = (type == PCI_REGION_TYPE_IO) ?
+                PCI_BRIDGE_IO_MIN : PCI_BRIDGE_MEM_MIN;
+            if (!pci_bridge_has_region(s->bus_dev, type))
+                continue;
+            u64 size = 0;
+            if (qemu_cap) {
+                u32 tmp_size;
+                u64 tmp_size_64;
+                switch(type) {
+                case PCI_REGION_TYPE_IO:
+                    tmp_size_64 = (pci_config_readl(bdf, qemu_cap + RES_RESERVE_IO) |
+                            (u64)pci_config_readl(bdf, qemu_cap + RES_RESERVE_IO + 4) << 32);
+                    if (tmp_size_64 != (u64)-1) {
+                        size = tmp_size_64;
+                    }
+                    break;
+                case PCI_REGION_TYPE_MEM:
+                    tmp_size = pci_config_readl(bdf, qemu_cap + RES_RESERVE_MEM);
+                    if (tmp_size != (u32)-1) {
+                        size = tmp_size;
+                    }
+                    break;
+                case PCI_REGION_TYPE_PREFMEM:
+                    tmp_size = pci_config_readl(bdf, qemu_cap + RES_RESERVE_PREF_MEM_32);
+                    tmp_size_64 = (pci_config_readl(bdf, qemu_cap + RES_RESERVE_PREF_MEM_64) |
+                            (u64)pci_config_readl(bdf, qemu_cap + RES_RESERVE_PREF_MEM_64 + 4) << 32);
+                    if (tmp_size != (u32)-1 && tmp_size_64 == (u64)-1) {
+                        size = tmp_size;
+                    } else if (tmp_size == (u32)-1 && tmp_size_64 != (u64)-1) {
+                        size = tmp_size_64;
+                    } else if (tmp_size != (u32)-1 && tmp_size_64 != (u64)-1) {
+                        dprintf(1, "PCI: resource reserve cap PREF32 and PREF64"
+                                " conflict\n");
+                    }
+                    break;
+                default:
+                    break;
+                }
+            }
+            if (pci_region_align(&s->r[type]) > align)
+                 align = pci_region_align(&s->r[type]);
+            u64 sum = pci_region_sum(&s->r[type]);
+            int resource_optional = pcie_cap && (type == PCI_REGION_TYPE_IO);
+            if (!sum && hotplug_support && !resource_optional)
+                sum = align; /* reserve min size for hot-plug */
+            if (size > sum) {
+                dprintf(1, "PCI: QEMU resource reserve cap: "
+                        "size %08llx type %s\n",
+                        size, region_type_name[type]);
+                if (type != PCI_REGION_TYPE_IO) {
+                    size = ALIGN(size, align);
+                }
+            } else {
+                size = ALIGN(sum, align);
+            }
+            int is64 = pci_bios_bridge_region_is64(&s->r[type],
+                                            s->bus_dev, type);
+            // entry->bar is -1 if the entry represents a bridge region
+            struct pci_region_entry *entry = pci_region_create_entry(
+                parent, s->bus_dev, -1, size, align, type, is64);
+            if (!entry)
+                return -1;
+            dprintf(1, "PCI: secondary bus %d size %08llx type %s\n",
+                      entry->dev->secondary_bus, size,
+                      region_type_name[entry->type]);
+        }
+    }
+    return 0;
+}
+```
+
+##### 关键函数pci_probe_devices
+
+```c
+// Find all PCI devices and populate PCIDevices linked list.
+void
+pci_probe_devices(void)
+{
+    dprintf(3, "PCI probe\n");
+    struct pci_device *busdevs[256];
+    memset(busdevs, 0, sizeof(busdevs));
+    struct hlist_node **pprev = &PCIDevices.first;
+    int extraroots = romfile_loadint("etc/extra-pci-roots", 0);
+    int bus = -1, lastbus = 0, rootbuses = 0, count=0;
+    // 这个探测过程很好理解，遍历所有的 bus，以及 bus 中的 device，至于 bus 中的 device 哪里来的
+    // 应该是 pci_bios_init_bus 中初始化的，或者是设备插上时硬件自动完成的，这里就不再继续深入了
+    while (bus < 0xff && (bus < MaxPCIBus || rootbuses < extraroots)) {
+        bus++;
+        int bdf;
+        foreachbdf(bdf, bus) {
+            // Create new pci_device struct and add to list.
+            struct pci_device *dev = malloc_tmp(sizeof(*dev));
+            if (!dev) {
+                warn_noalloc();
+                return;
+            }
+            memset(dev, 0, sizeof(*dev));
+            hlist_add(&dev->node, pprev);
+            pprev = &dev->node.next;
+            count++;
+
+            // Find parent device.
+            int rootbus;
+            struct pci_device *parent = busdevs[bus];
+            if (!parent) {
+                if (bus != lastbus)
+                    rootbuses++;
+                lastbus = bus;
+                rootbus = rootbuses;
+                if (bus > MaxPCIBus)
+                    MaxPCIBus = bus;
+            } else {
+                rootbus = parent->rootbus;
+            }
+
+            // 初始化过程，很好理解
+            // Populate pci_device info.
+            dev->bdf = bdf;
+            dev->parent = parent;
+            dev->rootbus = rootbus;
+            u32 vendev = pci_config_readl(bdf, PCI_VENDOR_ID);
+            dev->vendor = vendev & 0xffff;
+            dev->device = vendev >> 16;
+            u32 classrev = pci_config_readl(bdf, PCI_CLASS_REVISION);
+            dev->class = classrev >> 16;
+            dev->prog_if = classrev >> 8;
+            dev->revision = classrev & 0xff;
+            dev->header_type = pci_config_readb(bdf, PCI_HEADER_TYPE);
+            u8 v = dev->header_type & 0x7f;
+            if (v == PCI_HEADER_TYPE_BRIDGE || v == PCI_HEADER_TYPE_CARDBUS) {
+                u8 secbus = pci_config_readb(bdf, PCI_SECONDARY_BUS);
+                dev->secondary_bus = secbus;
+                if (secbus > bus && !busdevs[secbus])
+                    busdevs[secbus] = dev;
+                if (secbus > MaxPCIBus)
+                    MaxPCIBus = secbus;
+            }
+            dprintf(4, "PCI device %pP (vd=%04x:%04x c=%04x)\n"
+                    , dev, dev->vendor, dev->device, dev->class);
+        }
+    }
+    dprintf(1, "Found %d PCI devices (max PCI bus is %02x)\n", count, MaxPCIBus);
+}
+```
+
+##### 关键函数pci_bios_map_devices
+
+传入的参数 `busses` 是在 `pci_bios_check_devices` 中配置的，所以这些基址信息也是在其中初始化的。
+
+```c
+static void pci_bios_map_devices(struct pci_bus *busses)
+{
+    if (pci_bios_init_root_regions_io(busses)) // 计算 I/O BAR 的基址
+        panic("PCI: out of I/O address space\n");
+
+    dprintf(1, "PCI: 32: %016llx - %016llx\n", pcimem_start, pcimem_end);
+    if (pci_bios_init_root_regions_mem(busses)) { // 计算 mem BAR 的基址
+
+        ...
+
+    } else {
+        // no bars mapped high -> drop 64bit window (see dsdt)
+        pcimem64_start = 0;
+    }
+    // Map regions on each device.
+    int bus;
+    for (bus = 0; bus<=MaxPCIBus; bus++) {
+        int type;
+        for (type = 0; type < PCI_REGION_TYPE_COUNT; type++)
+            // 设置每个 BAR 的地址，然后将这些地址信息传递给系统，这样 QEMU 才能正确访问每个设备的 BAR
+            pci_region_map_entries(busses, &busses[bus].r[type]);
+    }
+}
+```
+
+##### pci_region
+
+`pci_region` 表示该虚拟机所有设备的某一类 BAR（如 `PCI_REGION_TYPE_MEM` 表示 mem BAR），
+
+```c
+struct pci_region {
+    /* pci region assignments */
+    u64 base; // 表示这类设备的 BAR 的起始地址
+    struct hlist_head list; // 所有这类设备的 BAR
+};
+```
+
+为什么要分这几种 PCI 设备？
+
+```c
+enum pci_region_type {
+    PCI_REGION_TYPE_IO,
+    PCI_REGION_TYPE_MEM,
+    PCI_REGION_TYPE_PREFMEM,
+    PCI_REGION_TYPE_COUNT,
+};
+```
+
+##### 关键函数pci_region_map_one_entry
+
+这个函数设备每个 PCI 设备的 BAR 地址。
+
+```c
+static void
+pci_region_map_one_entry(struct pci_region_entry *entry, u64 addr)
+{
+    if (entry->bar >= 0) {
+        dprintf(1, "PCI: map device bdf=%pP"
+                "  bar %d, addr %08llx, size %08llx [%s]\n",
+                entry->dev,
+                entry->bar, addr, entry->size, region_type_name[entry->type]);
+
+        pci_set_io_region_addr(entry->dev, entry->bar, addr, entry->is64);
+        return;
+    }
+
+    u16 bdf = entry->dev->bdf;
+    u64 limit = addr + entry->size - 1;
+    // 将设备 BAR 的基址写入 PCI-HOST 中，之后 PCI-HOST 就可以根据这些信息找到对应的设备的 BAR
+    if (entry->type == PCI_REGION_TYPE_IO) {
+        pci_config_writeb(bdf, PCI_IO_BASE, addr >> PCI_IO_SHIFT);
+        pci_config_writew(bdf, PCI_IO_BASE_UPPER16, 0);
+        pci_config_writeb(bdf, PCI_IO_LIMIT, limit >> PCI_IO_SHIFT);
+        pci_config_writew(bdf, PCI_IO_LIMIT_UPPER16, 0);
+    }
+    if (entry->type == PCI_REGION_TYPE_MEM) {
+        pci_config_writew(bdf, PCI_MEMORY_BASE, addr >> PCI_MEMORY_SHIFT);
+        pci_config_writew(bdf, PCI_MEMORY_LIMIT, limit >> PCI_MEMORY_SHIFT);
+    }
+    if (entry->type == PCI_REGION_TYPE_PREFMEM) {
+        pci_config_writew(bdf, PCI_PREF_MEMORY_BASE, addr >> PCI_PREF_MEMORY_SHIFT);
+        pci_config_writew(bdf, PCI_PREF_MEMORY_LIMIT, limit >> PCI_PREF_MEMORY_SHIFT);
+        pci_config_writel(bdf, PCI_PREF_BASE_UPPER32, addr >> 32);
+        pci_config_writel(bdf, PCI_PREF_LIMIT_UPPER32, limit >> 32);
+    }
+}
+```
+
+```c
+void pci_config_writel(u16 bdf, u32 addr, u32 val)
+{
+    if (!MODESEGMENT && mmconfig) {
+        writel(mmconfig_addr(bdf, addr), val);
+    } else {
+        outl(ioconfig_cmd(bdf, addr), PORT_PCI_CMD);
+        outl(val, PORT_PCI_DATA); // PORT_PCI_DATA = 0xcfc
+    }
+}
+```
+
+这是 Seabios 初始化 PCI 设备的过程。有个问题，BMBT 没有挂载其他的 PCI 总线么？需要深入理解 BMBT 的实现。
+
+```
+=== PCI bus & bridge init ===
+PCI: pci_bios_init_bus_rec bus = 0x0
+=== PCI device probing ===
+Found 4 PCI devices (max PCI bus is 00)
+=== PCI new allocation pass #1 ===
+PCI: check devices
+=== PCI new allocation pass #2 ===
+PCI: IO: c000 - c01f
+PCI: 32: 0000000080000000 - 00000000fec00000
+PCI: map device bdf=00:01.0  bar 0, addr 0000c000, size 00000020 [io]
+PCI: map device bdf=00:01.0  bar 1, addr febfe000, size 00001000 [mem]
+PCI: map device bdf=00:02.0  bar 1, addr febff000, size 00001000 [mem]
+PCI: map device bdf=00:02.0  bar 0, addr fc000000, size 02000000 [prefmem]
+PCI: map device bdf=00:01.0  bar 4, addr fe000000, size 00004000 [prefmem]
+PCI: init bdf=00:00.0 id=8086:1237
+disable i440FX memory mappings
+PCI: init bdf=00:01.0 id=1af4:1000
+PCI: init bdf=00:02.0 id=1013:00b8
+PCI: init bdf=00:1f.0 id=8086:7000
+PIIX3/PIIX4 init: elcr=00 0c
+disable PIIX3 memory mappings
+PCI: Using 00:02.0 for primary VGA
+```
 
 #### startBoot
 
@@ -896,7 +1324,7 @@ startBoot(void)
 
 当前，CPU 处于保护模式。但是**在引导至 OS Bootloader 之前，需要告别保护模式，回到实模式**。`call16_int` 使用之前提到的 `trainsition16` 回到实模式之后，调用 INT 19H 中断，进入 BOOT 状态。
 
-## 引导阶段
+### 引导阶段
 
 boot 阶段的代码，是从 `handle_19`，也就是的 `0x19` 中断处理程序开始。
 
@@ -997,7 +1425,7 @@ boot_disk(u8 bootdrv, int checksig)
 }
 ```
 
-### 读取主引导扇区
+#### 读取主引导扇区
 
 首先，通过调用 0x13 中断读取主引导扇区。读扇区的参数定义如下：
 
@@ -1057,9 +1485,9 @@ struct mbr_s {
     bootseg &= 0xf000;
 ```
 
-这个操作实际上是为了调用 OS Loader 的时候，段为 0x0000，而偏移为 0x7C00。而不是段为 0x07C0，而偏移为 0x0000。
+这个操作实际上是为了调用 OS Loader 的时候，段为 `0x0000`，而偏移为 0x7C00。而不是段为 `0x07C0`，而偏移为 `0x0000`。
 
-最后，通过一个 call_boot_entry 函数，转移到 OS Loader。此时，**系统处于实模式下**。
+最后，通过一个 `call_boot_entry` 函数，转移到 OS Loader。此时，**系统处于实模式下**。
 
 ```C
 static void
@@ -1112,6 +1540,8 @@ call_boot_entry(struct segoff_s bootsegip, u8 bootdrv)
     init_ram_block("pc.bios", PC_BIOS_INDEX, true, 4 * GiB - PC_BIOS_IMG_SIZE,
                    PC_BIOS_IMG_SIZE);
   ```
+
+这个问题可以看这篇[文章](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/QEMU-pam.md)。
 
 ### 注意
 
