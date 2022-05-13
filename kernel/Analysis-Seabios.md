@@ -82,7 +82,7 @@ QEMU 仿真器会将 SeaBIOS 加电自检阶段的第一条指令放置在`F000:
 +------------------+  <- 0x00000000
 ```
 
-这是从 MIT 6.828 Lab1 当中截取下来的一个图。PC 的物理地址空间根据人们长期实践下来的约定，往往被按照上面的方式来划分。而 BIOS 固件，将会被放置在 BIOS ROM 的区域当中。这一块区域的范围是`F000:0000～F000:FFFF`。刚好是 64KB。而为什么放在这 64KB 区域的顶部？因为英特尔设计 8088 处理器的时候，就设计成了上电启动时，**将指令指针寄存器 IP 设置为 0xFFF0**，将代码段寄存器 CS 设置为 0xF000（指向 BIOS ROM 这一段）。所以，将第一条指令放在 F000:FFF0 位置，启动后它将立刻被执行。（实际上，这么说不是很严谨。其实 CPU 是从 0xFFFFFFF0，也就是 32bit 地址线可寻址空间的最后 16 字节位置开始执行代码的。在刚开机的时候虽然 CS 为 0xF000，但是它的段基址实际上是 0xFFFF0000，而不是按照*16 方法计算出来的 0xF0000。这一点的原因在后面的“关于 `make_bios_writable`”部分介绍）。也就是说，处理器初始化后 CS 段的 base 值为 `FFFF0000H`, IP 为 `0000FFF0H`，第一条指令将会在物理地址 `FFFFFFF0H` 上，ROM 设备会映射到物理地址空间中的这个位置上。然而在 bus 的解码上 `FFFFFFF0H` 这个地址还是会被转发到 `F000:FFF0H` 上。当跳转到 `F000:E05B` 后，CS.base 会接着被刷新为 `F0000H`(F000H << 4)，这是真正的是模式基地址。
+这是从 MIT 6.828 Lab1 当中截取下来的一个图。PC 的物理地址空间根据人们长期实践下来的约定，往往被按照上面的方式来划分。而 BIOS 固件，将会被放置在 BIOS ROM 的区域当中。这一块区域的范围是`F000:0000～F000:FFFF`。刚好是 64KB。而为什么放在这 64KB 区域的顶部？因为英特尔设计 8088 处理器的时候，就设计成了上电启动时，**将指令指针寄存器 IP 设置为 0xFFF0**，将代码段寄存器 CS 设置为 0xF000（指向 BIOS ROM 这一段）。所以，将第一条指令放在 F000:FFF0 位置，启动后它将立刻被执行。（实际上，这么说不是很严谨。其实 CPU 是从 0xFFFFFFF0，也就是 32bit 地址线可寻址空间的最后 16 字节位置开始执行代码的。在刚开机的时候虽然 CS 为 0xF000，但是它的段基址实际上是 0xFFFF0000，而不是按照 *16 方法计算出来的 0xF0000。这一点的原因在后面的“关于 `make_bios_writable`”部分介绍）。也就是说，处理器初始化后 CS 段的 base 值为 `FFFF0000H`, IP 为 `0000FFF0H`，第一条指令将会在物理地址 `FFFFFFF0H` 上，ROM 设备会映射到物理地址空间中的这个位置上。然而在 bus 的解码上 `FFFFFFF0H` 这个地址还是会被转发到 `F000:FFF0H` 上。当跳转到 `F000:E05B` 后，CS.base 会接着被刷新为 `F0000H`(F000H << 4)，这是真正的是模式基地址。
 
 这个 SeaBIOS 里的“第一条指令”就在 romlayout.S 的 `reset_vector` 中。
 
@@ -383,7 +383,7 @@ handle_post(void)
 
 该函数的作用是允许更改 RAM 中的 BIOS ROM 区域。在介绍 `make_bios_writable` 之前，首先对 Shadow RAM 做一些介绍。实际上，尽管在启动的时候，是从 `F000:FFF0` 加载第一条指令的，你可能会觉得在启动的时候代码段段基址是 `0xF0000`。其实，并不是这样的。在计算机启动的时候，代码段段基地址实际上是是 `0xFFFF0000`（这里就不符合那个乘 16 的计算方式了）。笔者猜测这一一点的实现方式是通过段描述符高速缓冲寄存器实现的（实模式下也是通过查询这个寄存器来获得段基址的），开机的时候代码段的对应基址项被设置成 `0xFFFF0000`。
 
-为什么从这里开始呢？我们知道 BIOS 是存储在 ROM 当中的。而 Intel 有一个习惯，**将 BIOS 固件代码从 ROM 中映射到可寻址地址的末端（最后 64K 内）**。这里的“映射”，并不是复制，而是当读取这个地址的时候，就直接读取 ROM 存储器当中的值。在 8086 时期，可寻址的地址为 0x00000-0xFFFFF，所以说它的“末端”确实是从我们理解的 0xF0000 开始的。所以在 8086 时期，硬件设备会将原本存储于 ROM 的 BIOS 映射到 F000:0000-F000:FFFF。然而，到了后面有 32 根地址线，实际上末端应该是 `0xFFFF0000-0xFFFFFFFF` 这一部分。此时的计算机，实际上是将 BIOS 固件代码映射到 `0xFFFF0000-0xFFFFFFFF` 中。
+为什么从这里开始呢？我们知道 BIOS 是存储在 ROM 当中的。而 Intel 有一个习惯，**将 BIOS 固件代码从 ROM 中映射到可寻址地址的末端（最后 64K 内）**。这里的“映射”，并不是复制，而是当读取这个地址的时候，就直接读取 ROM 存储器当中的值。在 8086 时期，可寻址的地址为 `0x00000-0xFFFFF`，所以说它的“末端”确实是从我们理解的 `0xF0000` 开始的。所以在 8086 时期，硬件设备会将原本存储于 ROM 的 BIOS 映射到 `F000:0000-F000:FFFF`。然而，到了后面有 32 根地址线，实际上末端应该是 `0xFFFF0000-0xFFFFFFFF` 这一部分。此时的计算机，实际上是将 BIOS 固件代码映射到 `0xFFFF0000-0xFFFFFFFF` 中。
 
 所以，实际上 SeaBIOS 的这一行指令：
 
@@ -392,7 +392,7 @@ reset_vector:
         ljmpw $SEG_BIOS, $entry_post
 ```
 
-是位于 `0xFFFFFFF0` 的物理地址位置的。但是我们注意到这是一个 Long jump 指令，这个指令会使 CPU 重新计算代码段寄存器，原本的 `0xFFFF0000` 基地址，在这一个指令执行之后，就会变成符合乘 16 计算方式的 0xF0000！
+是位于 `0xFFFFFFF0` 的物理地址位置的。但是我们注意到这是一个 Long jump 指令，这个指令会使 CPU 重新计算代码段寄存器，原本的 `0xFFFF0000` 基地址，在这一个指令执行之后，就会变成符合乘 16 计算方式的 `0xF0000`！
 
 读者可能会想，这不就出问题了吗？32 根地址线的 PC，BIOS 固件明明在最后呀！实际上，为了保持向前兼容性，机器启动的时候会自动**将 ROM 的 BIOS 复制到 RAM 的 BIOS ROM 区域当中**。所以，通过 `ljmpw` 指令跳转之后，因为已经复制了，在 RAM 当中也有 BIOS 固件代码。所以是不会有问题的。
 
@@ -434,13 +434,13 @@ __make_bios_writable_intel(u16 bdf, u32 pam0)
 
 从代码中清晰的看到，Seabios 通过 `memcpy`  将 `VSYMBOL(code32flat_start) + BIOS_SRC_OFFSET` 的 bios 复制到 `VSYMBOL(code32flat_start)`。而前面的 pam 操作则是对 `0xc0000 ~ 0xfffff` 内存空间的读写操作的重定向定义。
 
+好吧，不是他分析错了，是我理解错了，确实是 long jump 指令执行前就完成复制了，那这里只是将这段内存空间变成可写。
+
 #### 进入dopost
 
 刚才已经做好了准备。然后，就可以进入 `dopost` 函数了。这个函数是 POST 过程的主体。`depost` 会调用 `maininit` 函数。
 
-maininit 过程
-
-`dopost` 函数定义如下
+`dopost` 函数定义如下：
 
 ```c
 // Setup for code relocation and then relocate.
@@ -1561,6 +1561,18 @@ call_boot_entry(struct segoff_s bootsegip, u8 bootdrv)
   ```
 
 这个问题可以看这篇[文章](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/QEMU-pam.md)。
+
+### 补充
+
+其实 BIOS 也并不是开机后最开始执行的代码，在此之前还有一些固件代码要执行，包括如下几个步骤：
+
+- Preparation for memory initialization. In this stage there are usually three steps carried out by the platform firmware code:
+  - CPU microcode update. In this step the platform firmware loads the CPU microcode update to the CPU.
+  - CPU-specific initialization. In x86/x64 CPUs since (at least) the Pentium III and AMD Athlon era, part of the code in this stage usually sets up a temporary stack known as cache-as-RAM (CAR), i.e., the CPU cache acts as temporary (writeable) RAM because at this point of execution there is no writable memory—the RAM hasn’t been initialized yet. Complex code in the platform firmware requires the use of a stack. In old BIOS, there is some sort of assembler macro trick for return address handling because by default the return address from a function call in x86/x64 is stored in a “read only” stack, but no writeable memory variable can be used. However, this old trick is not needed anymore, because all present-day CPUs support CAR. If you want to know more about CAR, you can consult the BIOS and Kernel Developer Guide (BKDG) for AMD Family 10h over at http://support.amd.com/us/Processor_TechDocs/31116.pdf. Section 2.3.3 of that document explains how to use the CPU L2 cache as general storage on boot. CAR is required because main memory (RAM) initialization is a complex task and requires the use of complex code as well. The presence of CAR is an invaluable help here. Aside from CAR setup, certain CPUs need to initialize some of its machine-specific registers (MSRs); the initialization is usually carried out in this step.
+  - Chipset initialization. In this step the chipset registers are initialized, particularly the chipset base address register (BAR). We’ll have a look deeper into BAR later. For the time being, it’s sufficient that you know BAR controls how the chip registers and memory (if the device has its own memory) are mapped to the system address map. In some chipsets, there is a watch dog timer that must be disabled before memory initialization because it could randomly reset the system. In that case, disabling the watch dog timer is carried out in this step.
+- Main memory (RAM) initialization. In this step, the memory controller initialization happens. In the past, the memory controller was part of the chipset. Today, that’s no longer the case. The memory controller today is integrated into the CPU. The memory controller initialization and RAM initialization happens together as complementary code, because the platform firmware code must figure out the correct parameters supported by both the memory controller and the RAM modules installed on the system and then initialize both of the components into the “correct” setup.
+
+更加详细的分析可以看看[这篇](https://resources.infosecinstitute.com/topic/system-address-map-initialization-in-x86x64-architecture-part-1-pci-based-systems/)文章，写的很好。
 
 ### 注意
 
