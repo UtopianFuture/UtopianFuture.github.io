@@ -1,4 +1,4 @@
-## Seabios in QEMU
+Seabios in QEMU
 
 ### 目录
 
@@ -927,9 +927,19 @@ maininit(void)
 
 #### PCI设备
 
-由于 BMBT 需要直通 PCI 设备，所以需要了解 [QEMU 是怎样模拟 PCI 设备的](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Device-Virtualization.md#pci%E8%AE%BE%E5%A4%87%E6%A8%A1%E6%8B%9F)，而这又涉及到 Seabios 对 PCI 设备的支持，故在这里深入分析一下 PCI 设备的探测和初始化。
+由于 BMBT 需要直通 PCI 设备，所以需要了解 [QEMU 是怎样模拟 PCI 设备的](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Device-Virtualization.md#pci%E8%AE%BE%E5%A4%87%E6%A8%A1%E6%8B%9F)，而这又涉及到 Seabios 对 PCI 设备的支持，故在这里深入分析一下 PCI 设备的探测和初始化。PCIe 的官方文档有上千页，不可能也不需要对 PCIe 了解的那么深入，只需要搞懂 Seabios 中关于 PCI 的初始化就足够完成项目了。
 
-![PCI-config-space.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/PCI-config-space.png?raw=true)
+##### 配置空间布局
+
+下面分别是 PCI device 和 PCI Bus 的配置空间布局。其中的 BAR 表示该设备需要占用的物理空间大小（有个问题，为什么需要这么多的 BAR），使用设备厂商直接写入固件的。
+
+![PCI-DEVICE-config-space](/home/guanshun/gitlab/UFuture.github.io/image/PCI-DEVICE-config-space.png)
+
+这里对出现的一些域解释一下：
+
+Vendor ID, Device ID, Class Code（在 src/hw/pci_ids.h 中有所有类型的硬编码）用来表明设备的身份，有时还会配置 Subsystem Vendor ID 和 Subsystem Device ID。6 个 Base Address （BAR）表示 PCI 设备需要的地址空间大小和映射到系统内存空间的基址，还可能有一个 ROM 的 BAR。两个与中断设置相关的域，IRQ Line 表示该设备使用哪个中断号（BIOS 中注册的 IVT），如传统的 8259 中断控制器，有 0 ~ 15 号 line，IRQ Line 表示的是用哪根线。而 IRQ Pin 表示使用哪个引脚连接中断控制器，PCI 总线上的设备可以通过 4 根中断引脚 INTA ~ D# 向中断控制器提交中断请求。
+
+![PCI-BUS-config-space](/home/guanshun/gitlab/UFuture.github.io/image/PCI-BUS-config-space.png)
 
 ##### pci_device
 
@@ -977,17 +987,14 @@ pci_setup(void)
     pci_probe_devices();
 
     pcimem_start = RamSize;
-    // 进一步设置配置空间的信息
-    // 其会调用回调函数 i440fx_mem_addr_setup
+    // 其会调用回调函数 i440fx_mem_addr_setup 并设置回调函数 piix_pci_slot_get_irq
+    // 这个和 pci 设备的中断有关，后面会分析
     // 注意不要和下面的 pci_bios_init_devices 弄混了
     pci_bios_init_platform();
 
     dprintf(1, "=== PCI new allocation pass #1 ===\n");
     struct pci_bus *busses = malloc_tmp(sizeof(*busses) * (MaxPCIBus + 1));
-    if (!busses) {
-        warn_noalloc();
-        return;
-    }
+
     memset(busses, 0, sizeof(*busses) * (MaxPCIBus + 1));
     if (pci_bios_check_devices(busses))
         return;
@@ -1003,7 +1010,55 @@ pci_setup(void)
 }
 ```
 
+##### 关键函数pci_bios_init_bus
+
+`pci_bios_init_bus` -> `pci_bios_init_bus_rec`
+
+```c
+/****************************************************************
+ * Bus initialization
+ ****************************************************************/
+
+static void
+pci_bios_init_bus_rec(int bus, u8 *pci_bus)
+{
+    int bdf;
+    u16 class;
+
+    dprintf(1, "PCI: %s bus = 0x%x\n", __func__, bus);
+
+    ...
+
+    foreachbdf(bdf, bus) { // 这个宏遍历该总线下所有的设备，其实就是不断的将 bdf + 8
+        class = pci_config_readw(bdf, PCI_CLASS_DEVICE);
+        if (class != PCI_CLASS_BRIDGE_PCI) { // 这里会找到挂载的 PCI-to-PCI bridge
+            continue; // 如果不是 PCI-to-PCI bridge 的话就不需要 DFS 遍历
+        }
+        dprintf(1, "PCI: %s bdf = 0x%x\n", __func__, bdf);
+
+        u8 pribus = pci_config_readb(bdf, PCI_PRIMARY_BUS);
+
+        ...
+
+        u8 secbus = pci_config_readb(bdf, PCI_SECONDARY_BUS);
+        (*pci_bus)++; // 遍历该 PCI-to-PCI bridge
+        if (*pci_bus != secbus) {
+            dprintf(1, "PCI: secondary bus = 0x%x -> 0x%x\n",
+                    secbus, *pci_bus);
+            secbus = *pci_bus;
+            pci_config_writeb(bdf, PCI_SECONDARY_BUS, secbus);
+        } else {
+            dprintf(1, "PCI: secondary bus = 0x%x\n", secbus);
+        }
+
+        ...
+    }
+}
+```
+
 ##### 关键函数pci_probe_devices
+
+探测所有的 pci 设备，根据配置空间中的信息初始化对应的 pci_device 数据结构。
 
 ```c
 // Find all PCI devices and populate PCIDevices linked list.
@@ -1016,8 +1071,8 @@ pci_probe_devices(void)
     struct hlist_node **pprev = &PCIDevices.first;
     int extraroots = romfile_loadint("etc/extra-pci-roots", 0);
     int bus = -1, lastbus = 0, rootbuses = 0, count=0;
-    // 这个探测过程很好理解，遍历所有的 bus，以及 bus 中的 device，至于 bus 中的 device 哪里来的
-    // 应该是 pci_bios_init_bus 中初始化的，或者是设备插上时硬件自动完成的，这里就不再继续深入了
+    // 这个探测过程很好理解，遍历所有的 bus，以及 bus 中的 device，而 bus 中的 device 是
+    // 系统上电后 fireware 自动完成的，这里就不再继续深入了
     while (bus < 0xff && (bus < MaxPCIBus || rootbuses < extraroots)) {
         bus++;
         int bdf;
@@ -1033,19 +1088,7 @@ pci_probe_devices(void)
             pprev = &dev->node.next;
             count++;
 
-            // Find parent device.
-            int rootbus;
-            struct pci_device *parent = busdevs[bus];
-            if (!parent) {
-                if (bus != lastbus)
-                    rootbuses++;
-                lastbus = bus;
-                rootbus = rootbuses;
-                if (bus > MaxPCIBus)
-                    MaxPCIBus = bus;
-            } else {
-                rootbus = parent->rootbus;
-            }
+            ...
 
             // 初始化过程，很好理解
             // Populate pci_device info.
@@ -1055,22 +1098,8 @@ pci_probe_devices(void)
             u32 vendev = pci_config_readl(bdf, PCI_VENDOR_ID);
             dev->vendor = vendev & 0xffff;
             dev->device = vendev >> 16;
-            u32 classrev = pci_config_readl(bdf, PCI_CLASS_REVISION);
-            dev->class = classrev >> 16;
-            dev->prog_if = classrev >> 8;
-            dev->revision = classrev & 0xff;
-            dev->header_type = pci_config_readb(bdf, PCI_HEADER_TYPE);
-            u8 v = dev->header_type & 0x7f;
-            if (v == PCI_HEADER_TYPE_BRIDGE || v == PCI_HEADER_TYPE_CARDBUS) {
-                u8 secbus = pci_config_readb(bdf, PCI_SECONDARY_BUS);
-                dev->secondary_bus = secbus;
-                if (secbus > bus && !busdevs[secbus])
-                    busdevs[secbus] = dev;
-                if (secbus > MaxPCIBus)
-                    MaxPCIBus = secbus;
-            }
-            dprintf(4, "PCI device %pP (vd=%04x:%04x c=%04x)\n"
-                    , dev, dev->vendor, dev->device, dev->class);
+
+           	...
         }
     }
     dprintf(1, "Found %d PCI devices (max PCI bus is %02x)\n", count, MaxPCIBus);
@@ -1088,7 +1117,7 @@ static int pci_bios_check_devices(struct pci_bus *busses)
 
     // Calculate resources needed for regular (non-bus) devices.
     struct pci_device *pci;
-    foreachpci(pci) {
+    foreachpci(pci) { // 和 pci_bios_init_bus 中的 foreachbdf 一样，遍历所有的 PCI 设备
         if (pci->class == PCI_CLASS_BRIDGE_PCI)
             busses[pci->secondary_bus].bus_dev = pci;
 
