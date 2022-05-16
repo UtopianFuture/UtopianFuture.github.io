@@ -44,9 +44,29 @@ APIC 包含两个部分：`LAPIC`和`I/O APIC`， LAPIC 位于处理器一端，
 
 当 guest 发送 IPI 时，虚拟 LAPIC 确定目的 VCPU，向目的 VCPU 发送 IPI，实际上是向目的 VCPU 对应的虚拟 LAPIC 发送核间中断，再由目标虚拟 LAPIC 完成中断注入过程。
 
-#### 1.4. MSI(X)虚拟化（没怎么懂）
+#### 1.4. MSI(X)虚拟化
 
-不基于管脚，而是基于消息。中断信息从设备直接发送到 LAPIC，不用通过 I/O LAPIC。
+不基于管脚，而是基于消息。中断信息从设备直接发送到 LAPIC，不用通过 I/O LAPIC。之前当某个管脚有信号时，OS 需要逐个调用共享这个管脚的回调函数去试探是否可以处理这个中断，直到某个回调函数可以正确处理，而基于消息的 MSI 就没有共享引脚这个问题。同样因为不受引脚的约束，MSI 能够支持的中断数也大大增加。
+
+MSI 是在 PCIe 的基础上设计的中断方式，关于 PCIe 的介绍可以看[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Device-Virtualization.md#pci%E8%AE%BE%E5%A4%87%E6%A8%A1%E6%8B%9F)。从 PCI 2.1 开始，如果设备需要扩展某种特性，可以向配置空间中的 Capabilities List 中增加一个 Capability，MSI 利用这个特性，将 I/O APIC 中的功能扩展到设备自身。我们来看看 MSI Capability 有哪些域。
+
+![MSI-capability.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/MSI-capability.png?raw=true)
+
+- `Next Pointer`、`Capability ID` 这两个 field 是 PCI 的任何 Capability 都具有的 field，分别表示下一个 Capability 在配置空间的位置、以及当前 Capability 的 ID；
+
+- `Message Address` 和 `Message Data` 是 MSI 的关键，**只要将 Message Data 中的内容写入到 Message Address 中，就会产生一个 MSI 中断；**
+
+- `Message Control` 用于系统软件对 MSI 的控制，如 enable MSI、使能 64bit 地址等；
+
+- `Mask Bits`  用于在 CPU 处理某中断时可以屏蔽其它同样的中断。类似 PIC 中的 IMR，其中每一位对应一种 MSI 中断请求；
+
+- `Pending Bits` 用于指示当前正在等待的 MSI 中断，类似于 PIC 中的 IRR。
+
+为了支持多个中断，MSI-X 的 Capability Structure 在 MSI 的基础上增加了 table，其中 Table Offset 和 BIR(BAR Indicator Registor) 定义了 table 所在的位置，即指定使用哪个 BAR 寄存器（PCI 配置空间有 6 个 BAR 和 1 个 XROMBAR），然后从指定的这个 BAR 寄存器中取出 table 映射在 CPU 地址空间的基址，加上 Table Offset 就定位了 entry 的位置。
+
+![MSIX-Capability.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/MSIX-Capability.png?raw=true)
+
+当外设准备发送中断信息时，其从 Capability Structure 中提取相关信息，信息地址取自 Message Address，其中 bits 20 - 31 是一个固定值 `0x0FEEH`。PCI 总线根据信息地址得知这是一个中断信息，会将其发送给 PCI-HOST 桥，PCI-HOST 桥将其发送到目的 CPU（LAPIC），信息体取自 message data，主要部分是中断向量。
 
 #### 1.5. 硬件虚拟化支持
 
@@ -1368,3 +1388,9 @@ struct kvm_ioapic {
 #### 2.4. MSI 中断模拟
 
 ### 3. APIC 虚拟化
+
+### Reference
+
+[1] 深入探索 Linux 系统虚拟化 王柏生 谢广军 机械工业出版社
+
+[2] https://www.cnblogs.com/haiyonghao/p/14440424.html
