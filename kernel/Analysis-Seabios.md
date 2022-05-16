@@ -1118,9 +1118,6 @@ static int pci_bios_check_devices(struct pci_bus *busses)
     // Calculate resources needed for regular (non-bus) devices.
     struct pci_device *pci;
     foreachpci(pci) { // 和 pci_bios_init_bus 中的 foreachbdf 一样，遍历所有的 PCI 设备
-        if (pci->class == PCI_CLASS_BRIDGE_PCI)
-            busses[pci->secondary_bus].bus_dev = pci;
-
         struct pci_bus *bus = &busses[pci_bdf_to_bus(pci->bdf)];
         if (!bus->bus_dev)
             /*
@@ -1128,12 +1125,18 @@ static int pci_bios_check_devices(struct pci_bus *busses)
              */
             bus = &busses[0];
         int i;
+        // PCI_NUM_REGIONS = 7，因为每个设备有 6 个 BAR，还有一个 XROMBAR
         for (i = 0; i < PCI_NUM_REGIONS; i++) {
             if ((pci->class == PCI_CLASS_BRIDGE_PCI) &&
                 (i >= PCI_BRIDGE_NUM_REGIONS && i < PCI_ROM_SLOT))
                 continue;
             int type, is64;
             u64 size;
+            // 这个函数很重要
+            // 原来获取 bar 的方法就是通过 PCI_BASE_ADDRESS_0 + region_num * 4; 获取 BAR 的偏移量
+            // 然后用 pci_config_readl
+            // 而 pci_config_readl 则根据 bdf 和 addr 计算出需要读取的地址，写入 0xcf8
+            // 计算需要读取的地址 0x80000000 | (bdf << 8) | (addr & 0xfc);
             pci_bios_get_bar(pci, i, &type, &size, &is64);
             if (size == 0)
                 continue;
@@ -1156,7 +1159,63 @@ static int pci_bios_check_devices(struct pci_bus *busses)
 }
 ```
 
+##### 关键函数pci_bios_get_bar
+
+注释说的很清楚，确定该 PCI 设备需要多大的内存空间，具体过程可以看看这篇[文章](https://resources.infosecinstitute.com/topic/system-address-map-initialization-in-x86x64-architecture-part-1-pci-based-systems/)，写的很详细。
+
+```c
+/****************************************************************
+ * Bus sizing
+ ****************************************************************/
+
+static void
+pci_bios_get_bar(struct pci_device *pci, int bar,
+                 int *ptype, u64 *psize, int *pis64)
+{
+    u32 ofs = pci_bar(pci, bar);
+    u16 bdf = pci->bdf;
+    u32 old = pci_config_readl(bdf, ofs);
+    int is64 = 0, type = PCI_REGION_TYPE_MEM;
+    u64 mask;
+
+    if (bar == PCI_ROM_SLOT) { // 是否是 XROMBAR
+        mask = PCI_ROM_ADDRESS_MASK;
+        pci_config_writel(bdf, ofs, mask);
+    } else {
+        // BAR 的最后一位表示该 PCI 设备是使用 PIO 的方式还是 MMIO 的方式
+        if (old & PCI_BASE_ADDRESS_SPACE_IO) {
+            mask = PCI_BASE_ADDRESS_IO_MASK;
+            type = PCI_REGION_TYPE_IO;
+        } else {
+            mask = PCI_BASE_ADDRESS_MEM_MASK;
+            if (old & PCI_BASE_ADDRESS_MEM_PREFETCH)
+                type = PCI_REGION_TYPE_PREFMEM;
+            is64 = ((old & PCI_BASE_ADDRESS_MEM_TYPE_MASK)
+                    == PCI_BASE_ADDRESS_MEM_TYPE_64);
+        }
+        pci_config_writel(bdf, ofs, ~0); // 这就是确定该 PCI 设备需要多大的内存空间
+    }
+    u64 val = pci_config_readl(bdf, ofs);
+    pci_config_writel(bdf, ofs, old);
+    if (is64) {
+        u32 hold = pci_config_readl(bdf, ofs + 4);
+        pci_config_writel(bdf, ofs + 4, ~0);
+        u32 high = pci_config_readl(bdf, ofs + 4);
+        pci_config_writel(bdf, ofs + 4, hold);
+        val |= ((u64)high << 32);
+        mask |= ((u64)0xffffffff << 32);
+        *psize = (~(val & mask)) + 1;
+    } else {
+        *psize = ((~(val & mask)) + 1) & 0xffffffff;
+    }
+    *ptype = type;
+    *pis64 = is64;
+}
+```
+
 ##### 关键函数pci_bios_map_devices
+
+上一个函数计算了每个 PCI 需要多大的内存空间，这里根据计算结果和基址建立地址映射表。
 
 传入的参数 `busses` 是在 `pci_bios_check_devices` 中配置的，所以这些基址信息也是在其中初始化的。
 
@@ -1180,7 +1239,8 @@ static void pci_bios_map_devices(struct pci_bus *busses)
     for (bus = 0; bus<=MaxPCIBus; bus++) {
         int type;
         for (type = 0; type < PCI_REGION_TYPE_COUNT; type++)
-            // 设置每个 BAR 的地址，然后将这些地址信息传递给系统，这样 QEMU 才能正确访问每个设备的 BAR
+            // 设置每个 BAR 的地址，即将该 PCI 设备映射到系统内存中的基地值写入到 BAR 中
+            // 然后将这些地址信息传递给系统，这样 QEMU 才能正确访问每个设备的 BAR
             pci_region_map_entries(busses, &busses[bus].r[type]);
     }
 }
@@ -1212,6 +1272,24 @@ enum pci_region_type {
 ##### 关键函数pci_region_map_one_entry
 
 这个函数设备每个 PCI 设备的 BAR 地址。
+
+```c
+static void pci_region_map_entries(struct pci_bus *busses, struct pci_region *r)
+{
+    struct hlist_node *n;
+    struct pci_region_entry *entry;
+    hlist_for_each_entry_safe(entry, n, &r->list, node) {
+        u64 addr = r->base; // 计算基址
+        r->base += entry->size;
+        if (entry->bar == -1)
+            // Update bus base address if entry is a bridge region
+            busses[entry->dev->secondary_bus].r[entry->type].base = addr;
+        pci_region_map_one_entry(entry, addr);
+        hlist_del(&entry->node);
+        free(entry);
+    }
+}
+```
 
 ```c
 static void
