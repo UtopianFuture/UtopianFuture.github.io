@@ -2,7 +2,7 @@
 
 PAM 对我来说是痛苦面具般的存在了，边写边理解吧。
 
-### why PAM?
+### why PAM
 
 首先要明白为什么需要 PAM，下面是 QEMU 的官方文档给出的定义。
 
@@ -118,7 +118,7 @@ void pam_update(PAMMemoryRegion *pam, int idx, uint8_t val)
 
 ### 32 位系统的地址空间布局
 
-```
+```plain
 memory-region: memory
   0000000000000000-ffffffffffffffff (prio 0, i/o): system
     0000000000000000-00000000bfffffff (prio 0, i/o): alias ram-below-4g @pc.ram 0000000000000000-00000000bfffffff
