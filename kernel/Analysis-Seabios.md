@@ -925,21 +925,9 @@ maininit(void)
 
 用于加载 VGA 设备、初始化硬件、为用户提供更改启动顺序的界面。然后，将刚才被设置为可写的 RAM 中的 BIOS ROM 部分，重新保护起来。然后，通过一个 `startBoot` 函数，调用 `INT19` 中断，进入 Boot 状态。
 
-#### PCI设备
+#### PCI设备探测
 
-由于 BMBT 需要直通 PCI 设备，所以需要了解 [QEMU 是怎样模拟 PCI 设备的](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Device-Virtualization.md#pci%E8%AE%BE%E5%A4%87%E6%A8%A1%E6%8B%9F)，而这又涉及到 Seabios 对 PCI 设备的支持，故在这里深入分析一下 PCI 设备的探测和初始化。PCIe 的官方文档有上千页，不可能也不需要对 PCIe 了解的那么深入，只需要搞懂 Seabios 中关于 PCI 的初始化就足够完成项目了。
-
-##### 配置空间布局
-
-下面分别是 PCI device 和 PCI Bus 的配置空间布局。其中的 BAR 表示该设备需要占用的物理空间大小（有个问题，为什么需要这么多的 BAR），使用设备厂商直接写入固件的。
-
-![PCI-DEVICE-config-space](/home/guanshun/gitlab/UFuture.github.io/image/PCI-DEVICE-config-space.png)
-
-这里对出现的一些域解释一下：
-
-Vendor ID, Device ID, Class Code（在 src/hw/pci_ids.h 中有所有类型的硬编码）用来表明设备的身份，有时还会配置 Subsystem Vendor ID 和 Subsystem Device ID。6 个 Base Address （BAR）表示 PCI 设备需要的地址空间大小和映射到系统内存空间的基址，还可能有一个 ROM 的 BAR。两个与中断设置相关的域，IRQ Line 表示该设备使用哪个中断号（BIOS 中注册的 IVT），如传统的 8259 中断控制器，有 0 ~ 15 号 line，IRQ Line 表示的是用哪根线。而 IRQ Pin 表示使用哪个引脚连接中断控制器，PCI 总线上的设备可以通过 4 根中断引脚 INTA ~ D# 向中断控制器提交中断请求。
-
-![PCI-BUS-config-space](/home/guanshun/gitlab/UFuture.github.io/image/PCI-BUS-config-space.png)
+由于 BMBT 需要直通 PCI 设备，所以需要了解 [QEMU 是怎样模拟 PCI 设备的](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Device-Virtualization.md#pci%E8%AE%BE%E5%A4%87%E6%A8%A1%E6%8B%9F)，而这又涉及到 Seabios 对 PCI 设备的支持，故在这里深入分析一下 PCI 设备的探测和初始化。PCIe 的官方文档有上千页，不可能也不需要对 PCIe 了解的那么深入，只需要搞懂 Seabios 中关于 PCI 的初始化就足够完成项目了。关于 PCI 的一些基础知识可以看[这篇](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/X86/PCIe.md)文章。
 
 ##### pci_device
 
