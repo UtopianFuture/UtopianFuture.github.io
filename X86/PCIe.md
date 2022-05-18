@@ -116,6 +116,70 @@ PCI: Using 00:02.0 for primary VGA
 
 注意，PCI bus 不单能够从上向下转发，也能从下向上转发。DMA 就需要其从下向上转发。
 
+### MSI
+
+MSI 是在 PCIe 的基础上设计的中断方式，关于 PCIe 的介绍可以看[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Device-Virtualization.md#pci%E8%AE%BE%E5%A4%87%E6%A8%A1%E6%8B%9F)。从 PCI 2.1 开始，如果设备需要扩展某种特性，可以向配置空间中的 Capabilities List 中增加一个 Capability，MSI 利用这个特性，将 I/O APIC 中的功能扩展到设备自身。我们来看看 MSI Capability 有哪些域。MSI Capability的ID为5， 共有四种组成方式，分别是 32 和 64 位的 Message 结构，32 位和 64 位带中断Masking 的结构。
+
+![MSI-capability.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/MSI-capability.png?raw=true)
+
+- `Next Pointer`、`Capability ID` 这两个 field 是 PCI 的任何 Capability 都具有的 field，分别表示下一个 Capability 在配置空间的位置、以及当前 Capability 的 ID；
+- `Message Address` 和 `Message Data` 是 MSI 的关键，**只要将 Message Data 中的内容写入到 Message Address 指定的地址中，就会产生一个 MSI 中断，** ` Message Address` 中存放的其实就是对应 CPU 的 LAPIC 的地址；
+- `Message Control` 用于系统软件对 MSI 的控制，如 enable MSI、使能 64bit 地址等；
+- `Mask Bits` 可选，Mask Bits 字段由 32 位组成，其中每一位对应一种 MSI 中断请求。
+- `Pending Bits` 可选，需要与 Mask bits 配合使用， 可以防止中断丢失。当 Mask bits 为 1 的时候，设备发送的MSI中断请求并不会发出，会将  pending bits 置为1，当 mask bits 变为 0 时，MSI 会成功发出，pending 位会被清除。
+
+我们再深入了解一下这些寄存器每一位的功能，后面需要用到。
+
+- MSI Message Control Register
+
+| Bits    | Register Description                                         | Default Value            | Access |
+| :------ | :----------------------------------------------------------- | :----------------------- | :----- |
+| [31:25] | Not implemented                                              | 0                        | RO     |
+| [24]    | Per-Vector Masking Capable. This bit is hardwired to 1. The design always supports per-vector masking of MSI interrupts. | 1                        | RO     |
+| [23]    | 64-bit Addressing Capable. When set, the device is capable of using 64-bit addresses for MSI interrupts. | Set in Platform Designer | RO     |
+| [22:20] | Multiple Message Enable. This field defines the number of interrupt vectors for this function. The following encodings are defined:                                                                   3'b000: 1 vector                                                                                                                        3'b001: 2 vectors                                                                                                                      3'b010: 4 vectors                                                                                                                      3'b011: 8 vectors                                                                                                                      3'b100: 16 vectors                                                                                                                    3'b101: 32 vectors                                                                                                                          The Multiple Message Capable field specifies the maximum value allowed. | 0                        | RW     |
+| [19:17] | Multiple Message Capable. Defines the maximum number of interrupt vectors the function is capable of supporting. The following encodings are defined:                     3'b000: 1 vector                                                                                                                        3'b001: 2 vectors                                                                                                                      3'b010: 4 vectors                                                                                                                      3'b011: 8 vectors                                                                                                                      3'b100: 16 vectors                                                                                                                    3'b101: 32 vectors | Set inPlatform Designer  | RO     |
+| [16]    | MSI Enable. This bit must be set to enable the MSI interrupt generation. | 0                        | RW     |
+| [15:8]  | Next Capability Pointer. Points to either MSI-X or Power Management Capability. | 0x68 or 0x78             | RO     |
+| [7:0]   | Capability ID. PCI-SIG assigns this value.                   | 0x05                     | RO     |
+
+- MSI Message Address Registers
+
+| Bits   | Register Description                                         | Default Value | Access |
+| :----- | :----------------------------------------------------------- | :------------ | :----- |
+| [1:0]  | The two least significant bits of the memory address. These are hardwired to 0 to align the memory address on a Dword boundary. | 0             | RO     |
+| [31:2] | Lower address for the MSI interrupt.                         | 0             | RW     |
+| [31:0] | Upper 32 bits of the 64-bit address to be used for the MSI interrupt. If the 64-bit Addressing Capable bit in the MSI Control register is set to 1, this value is concatenated with the lower 32-bits to form the memory address for the MSI interrupt. When the 64-bit Addressing Capable bit is 0, this register always reads as 0. | 0             | RW     |
+
+- MSI Message Data Register
+
+| Bits    | Register Description                                         | Default Value | Access |
+| :------ | :----------------------------------------------------------- | :------------ | :----- |
+| [15:0]  | Data for MSI Interrupts generated by this function. This base value is written to Root Port memory to signal an MSI interrupt. When one MSI vector is allowed, this value is used directly. When 2 MSI vectors are allowed, the upper 15 bits are used. And, the least significant bit indicates the interrupt number. When 4 MSI vectors are allowed, the lower 2 bits indicate the interrupt number, and so on. | 0             | RW     |
+| [31:16] | Reserved                                                     | 0             | RO     |
+
+- MSI Mask Register
+
+| Bits | Register Description                                         | Default Value   | Access |
+| :--- | :----------------------------------------------------------- | :-------------- | :----- |
+| 31:0 | Mask bits for MSI interrupts. The number of implemented bits depends on the number of MSI vectors configured. When one MSI vectors is used , only bit 0 is RW. The other bits read as zeros. When two MSI vectors are used, bits [1:0] are RW, and so on. A one in a bit position masks the corresponding MSI interrupt. | See description | 0      |
+
+- Pending Bits for MSI Interrupts Register
+
+| Bits | Register Description                                         | Default Value | Access |
+| :--- | :----------------------------------------------------------- | :------------ | :----- |
+| 31:0 | Pending bits for MSI interrupts. A 1 in a bit position indicated the corresponding MSI interrupt is pending in the core. The number of implemented bits depends on the number of MSI vectors configured. When 1 MSI vectors is used, only bit 0 is RW. The other bits read as zeros. When 2 MSI vectors are used, bits [1:0] are RW, and so on. | RO            | 0      |
+
+### MSIX
+
+为了支持多个中断，MSI-X 的 Capability Structure 在 MSI 的基础上增加了 table，其中 Table Offset 和 BIR(BAR Indicator Registor) 定义了 table 所在的位置，即指定使用哪个 BAR 寄存器（PCI 配置空间有 6 个 BAR 和 1 个 XROMBAR），然后从指定的这个 BAR 寄存器中取出 table 映射在 CPU 地址空间的基址，加上 Table Offset 就定位了 entry 的位置。类似的，`PBA BIR` 和 `PBA offset` 分别说明 MSIX- PBA 在哪个 BAR 中，在 BAR 中的什么位置。
+
+![MSIX-capability.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/MSIX-capability.png?raw=true)
+
+MSI-X Table 中的 vector control 表示 PCIe 设备是否能够使用该 Entry 提交中断请求，类似 MSI 的 mask 位。
+
+当外设准备发送中断信息时，其从 Capability Structure 中提取相关信息，信息地址取自 Message Address，其中 bits 20 - 31 是一个固定值 `0x0FEEH`。PCI 总线根据信息地址得知这是一个中断信息，会将其发送给 PCI-HOST 桥，PCI-HOST 桥将其发送到目的 CPU（LAPIC），信息体取自 message data，主要部分是中断向量。
+
 ### 问题
 
 下面是一些我在学习 PCIe 过程中遇到的问题：
