@@ -1,8 +1,8 @@
-## Interrupt Virtualization
+Interrupt Virtualization
 
-### 1. background
+### background
 
-#### 1.1. 虚拟中断
+#### 虚拟中断
 
 物理 CPU 在执行完一条指令后，都会检查中断引脚是否有效，一旦有效，CPU 将处理中断，然后执行下一条指令。
 
@@ -12,7 +12,7 @@ guest 模式的 CPU 不能检测虚拟中断芯片的引脚，只能在 VM entry
 
 在硬件层面增加对虚拟化的支持。在 guest 模式下实现 `virtual-APIC page` 页面和虚拟中断逻辑。遇到中断时，将中断信息写入`posted-interrupt descriptor`，然后通过特殊的核间中断 `posted-interrupt notification` 通知 CPU，guest 模式下的 CPU 就可以借助虚拟中断逻辑处理中断。
 
-#### 1.2. PIC 虚拟化
+#### PIC 虚拟化
 
 PIC（可编程中断控制器，programmable interrupt controller），通过引脚向 CPU 发送中断信号。而虚拟设备请求中断是通过虚拟 8259A 芯片对外提供的一个 API。
 
@@ -34,7 +34,7 @@ guest 需要读取外设数据时，通过写 I/O 端口触发 CPU 从 guest 到
 
 VMCS 中有字段：`VM-entry interruption-information`，在 VM-entry 时 CPU 会检查这个字段。如果 CPU 正处在 guest 模式，则等待下一次 VM exit 和 VM entry；如果 VCPU 正在睡眠状态，则 kick。
 
-#### 1.3. APIC 虚拟化
+#### APIC 虚拟化
 
 APIC( Advanced Programmable Interrupt Controller)，其可以将接收到的中断按需分给不同的 processor 进行处理，而 PIC 只能应用于单核。
 
@@ -44,31 +44,69 @@ APIC 包含两个部分：`LAPIC`和`I/O APIC`， LAPIC 位于处理器一端，
 
 当 guest 发送 IPI 时，虚拟 LAPIC 确定目的 VCPU，向目的 VCPU 发送 IPI，实际上是向目的 VCPU 对应的虚拟 LAPIC 发送核间中断，再由目标虚拟 LAPIC 完成中断注入过程。
 
-#### 1.4. MSI(X)虚拟化
+#### MSI(X)虚拟化
 
 不基于管脚，而是基于消息。中断信息从设备直接发送到 LAPIC，不用通过 I/O LAPIC。之前当某个管脚有信号时，OS 需要逐个调用共享这个管脚的回调函数去试探是否可以处理这个中断，直到某个回调函数可以正确处理，而基于消息的 MSI 就没有共享引脚这个问题。同样因为不受引脚的约束，MSI 能够支持的中断数也大大增加。
 
-MSI 是在 PCIe 的基础上设计的中断方式，关于 PCIe 的介绍可以看[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Device-Virtualization.md#pci%E8%AE%BE%E5%A4%87%E6%A8%A1%E6%8B%9F)。从 PCI 2.1 开始，如果设备需要扩展某种特性，可以向配置空间中的 Capabilities List 中增加一个 Capability，MSI 利用这个特性，将 I/O APIC 中的功能扩展到设备自身。我们来看看 MSI Capability 有哪些域。
+MSI 是在 PCIe 的基础上设计的中断方式，关于 PCIe 的介绍可以看[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Device-Virtualization.md#pci%E8%AE%BE%E5%A4%87%E6%A8%A1%E6%8B%9F)。从 PCI 2.1 开始，如果设备需要扩展某种特性，可以向配置空间中的 Capabilities List 中增加一个 Capability，MSI 利用这个特性，将 I/O APIC 中的功能扩展到设备自身。我们来看看 MSI Capability 有哪些域。MSI Capability的ID为5， 共有四种组成方式，分别是 32 和 64 位的 Message 结构，32 位和 64 位带中断Masking 的结构。
 
 ![MSI-capability.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/MSI-capability.png?raw=true)
 
 - `Next Pointer`、`Capability ID` 这两个 field 是 PCI 的任何 Capability 都具有的 field，分别表示下一个 Capability 在配置空间的位置、以及当前 Capability 的 ID；
-
-- `Message Address` 和 `Message Data` 是 MSI 的关键，**只要将 Message Data 中的内容写入到 Message Address 中，就会产生一个 MSI 中断；**
-
+- `Message Address` 和 `Message Data` 是 MSI 的关键，**只要将 Message Data 中的内容写入到 Message Address 指定的地址中，就会产生一个 MSI 中断，** ` Message Address` 中存放的其实就是对应 CPU 的 LAPIC 的地址；
 - `Message Control` 用于系统软件对 MSI 的控制，如 enable MSI、使能 64bit 地址等；
+- `Mask Bits` 可选，Mask Bits 字段由 32 位组成，其中每一位对应一种 MSI 中断请求。
+- `Pending Bits` 可选，需要与 Mask bits 配合使用， 可以防止中断丢失。当 Mask bits 为 1 的时候，设备发送的MSI中断请求并不会发出，会将  pending bits 置为1，当 mask bits 变为 0 时，MSI 会成功发出，pending 位会被清除。
 
-- `Mask Bits`  用于在 CPU 处理某中断时可以屏蔽其它同样的中断。类似 PIC 中的 IMR，其中每一位对应一种 MSI 中断请求；
+我们再深入了解一下这些寄存器每一位的功能，后面需要用到。
 
-- `Pending Bits` 用于指示当前正在等待的 MSI 中断，类似于 PIC 中的 IRR。
+- MSI Message Control Register
 
-为了支持多个中断，MSI-X 的 Capability Structure 在 MSI 的基础上增加了 table，其中 Table Offset 和 BIR(BAR Indicator Registor) 定义了 table 所在的位置，即指定使用哪个 BAR 寄存器（PCI 配置空间有 6 个 BAR 和 1 个 XROMBAR），然后从指定的这个 BAR 寄存器中取出 table 映射在 CPU 地址空间的基址，加上 Table Offset 就定位了 entry 的位置。
+| Bits    | Register Description                                         | Default Value            | Access |
+| :------ | :----------------------------------------------------------- | :----------------------- | :----- |
+| [31:25] | Not implemented                                              | 0                        | RO     |
+| [24]    | Per-Vector Masking Capable. This bit is hardwired to 1. The design always supports per-vector masking of MSI interrupts. | 1                        | RO     |
+| [23]    | 64-bit Addressing Capable. When set, the device is capable of using 64-bit addresses for MSI interrupts. | Set in Platform Designer | RO     |
+| [22:20] | Multiple Message Enable. This field defines the number of interrupt vectors for this function. The following encodings are defined:                                                                   3'b000: 1 vector                                                                                                                        3'b001: 2 vectors                                                                                                                      3'b010: 4 vectors                                                                                                                      3'b011: 8 vectors                                                                                                                      3'b100: 16 vectors                                                                                                                    3'b101: 32 vectors                                                                                                                          The Multiple Message Capable field specifies the maximum value allowed. | 0                        | RW     |
+| [19:17] | Multiple Message Capable. Defines the maximum number of interrupt vectors the function is capable of supporting. The following encodings are defined:                     3'b000: 1 vector                                                                                                                        3'b001: 2 vectors                                                                                                                      3'b010: 4 vectors                                                                                                                      3'b011: 8 vectors                                                                                                                      3'b100: 16 vectors                                                                                                                    3'b101: 32 vectors | Set inPlatform Designer  | RO     |
+| [16]    | MSI Enable. This bit must be set to enable the MSI interrupt generation. | 0                        | RW     |
+| [15:8]  | Next Capability Pointer. Points to either MSI-X or Power Management Capability. | 0x68 or 0x78             | RO     |
+| [7:0]   | Capability ID. PCI-SIG assigns this value.                   | 0x05                     | RO     |
 
-![MSIX-Capability.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/MSIX-Capability.png?raw=true)
+- MSI Message Address Registers
+
+| Bits   | Register Description                                         | Default Value | Access |
+| :----- | :----------------------------------------------------------- | :------------ | :----- |
+| [1:0]  | The two least significant bits of the memory address. These are hardwired to 0 to align the memory address on a Dword boundary. | 0             | RO     |
+| [31:2] | Lower address for the MSI interrupt.                         | 0             | RW     |
+| [31:0] | Upper 32 bits of the 64-bit address to be used for the MSI interrupt. If the 64-bit Addressing Capable bit in the MSI Control register is set to 1, this value is concatenated with the lower 32-bits to form the memory address for the MSI interrupt. When the 64-bit Addressing Capable bit is 0, this register always reads as 0. | 0             | RW     |
+
+- MSI Message Data Register
+
+| Bits    | Register Description                                         | Default Value | Access |
+| :------ | :----------------------------------------------------------- | :------------ | :----- |
+| [15:0]  | Data for MSI Interrupts generated by this function. This base value is written to Root Port memory to signal an MSI interrupt. When one MSI vector is allowed, this value is used directly. When 2 MSI vectors are allowed, the upper 15 bits are used. And, the least significant bit indicates the interrupt number. When 4 MSI vectors are allowed, the lower 2 bits indicate the interrupt number, and so on. | 0             | RW     |
+| [31:16] | Reserved                                                     | 0             | RO     |
+
+- MSI Mask Register
+
+| Bits | Register Description                                         | Default Value   | Access |
+| :--- | :----------------------------------------------------------- | :-------------- | :----- |
+| 31:0 | Mask bits for MSI interrupts. The number of implemented bits depends on the number of MSI vectors configured. When one MSI vectors is used , only bit 0 is RW. The other bits read as zeros. When two MSI vectors are used, bits [1:0] are RW, and so on. A one in a bit position masks the corresponding MSI interrupt. | See description | 0      |
+
+- Pending Bits for MSI Interrupts Register
+
+| Bits | Register Description                                         | Default Value | Access |
+| :--- | :----------------------------------------------------------- | :------------ | :----- |
+| 31:0 | Pending bits for MSI interrupts. A 1 in a bit position indicated the corresponding MSI interrupt is pending in the core. The number of implemented bits depends on the number of MSI vectors configured. When 1 MSI vectors is used, only bit 0 is RW. The other bits read as zeros. When 2 MSI vectors are used, bits [1:0] are RW, and so on. | RO            | 0      |
+
+为了支持多个中断，MSI-X 的 Capability Structure 在 MSI 的基础上增加了 table，其中 Table Offset 和 BIR(BAR Indicator Registor) 定义了 table 所在的位置，即指定使用哪个 BAR 寄存器（PCI 配置空间有 6 个 BAR 和 1 个 XROMBAR），然后从指定的这个 BAR 寄存器中取出 table 映射在 CPU 地址空间的基址，加上 Table Offset 就定位了 entry 的位置。类似的，`PBA BIR` 和 `PBA offset` 分别说明MSIX-PBA在哪个BAR中，在BAR中的什么位置。
+
+![MSIX-capability.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/MSIX-capability.png?raw=true)
 
 当外设准备发送中断信息时，其从 Capability Structure 中提取相关信息，信息地址取自 Message Address，其中 bits 20 - 31 是一个固定值 `0x0FEEH`。PCI 总线根据信息地址得知这是一个中断信息，会将其发送给 PCI-HOST 桥，PCI-HOST 桥将其发送到目的 CPU（LAPIC），信息体取自 message data，主要部分是中断向量。
 
-#### 1.5. 硬件虚拟化支持
+#### 硬件虚拟化支持
 
 在基于软件虚拟中断芯片中，只能在 VM entry 时向 guest 注入中断，必须触发一次 VM exit，这是中断虚拟化的主要开销。
 
@@ -88,7 +126,7 @@ guest 模式下的 CPU 借助 VMCS 中的字段 `guest interrupt status` 评估�
 
 当 CPU 支持在 guest 模式下的中断评估逻辑后，虚拟中断芯片可以在收到中断请求后，由 guest 模式下的中断评估逻辑评估后，将中断信息更新到 posted-interrupt descriptor 中，然后向处于 guest 模式下的 CPU 发送 posted-interrupt notification，向 guest 模式下的 CPU 直接递交中断。这个通知就是 IPI，目的 CPU 在接收到这个 IPI 后，将不再触发 VM exit，而是去处理被虚拟中断芯片写在 posted-interrupt notification 中的中断。
 
-#### 1.6. 几种中断类型
+#### 几种中断类型
 
 - SCI: System Control Interrupt, A system interrupt used by hardware to notify the OS of ACPI events. The SCI is an active, low, shareable, level interrupt.
 - SMI: System Management Interrupt, An OS-transparent interrupt generated by interrupt events on legacy systems.
@@ -97,13 +135,13 @@ guest 模式下的 CPU 借助 VMCS 中的字段 `guest interrupt status` 评估�
 
 [详情](https://stackoverflow.com/questions/40583848/differences-among-various-interrupts-sci-smi-nmi-and-normal-interrupt)。
 
-#### 1.7. IRQ 号，中断向量和 GSI
+#### IRQ 号，中断向量和 GSI
 
 - IRQ 号是 PIC 时代引入的概念，由于 ISA 设备通常是直接连接到到固定的引脚，所以对于 IRQ 号描述了设备连接到了 PIC 的哪个引脚上，同 IRQ 号直接和中断优先级相关，例如 IRQ0 比 IRQ3 的中断优先级更高。
 - GSI 号是 ACPI 引入的概念，全称是 Global System Interrupt，用于为系统中每个中断源指定一个唯一的中断编号。注：ACPI Spec 规定 PIC 的 IRQ 号必须对应到 GSI0-GSI15 上。kvm 默认支持最大 1024 个 GSI。
 - 中断向量是针对逻辑 CPU 的概念，用来表示中断在 IDT 表的索引号，每个 IRQ（或者 GSI）最后都会被定向到某个 Vecotor 上。对于 PIC 上的中断，中断向量 = 32(start vector) + IRQ 号。在 IOAPIC 上的中断被分配的中断向量则是由操作系统分配。
 
-### 2. 中断模拟
+### 中断模拟
 
 与中断有关的函数，包括创建中断设备，发起中断，中断注入等等。
 
@@ -163,7 +201,7 @@ guest 模式下的 CPU 借助 VMCS 中的字段 `guest interrupt status` 评估�
 #31 0x0000555555822f2a in main (argc=6, argv=0x7fffffffe378, envp=0x7fffffffe3b0) at ../softmmu/main.c:50
 ```
 
-#### 2.1. 虚拟化环境下的中断注入
+#### 虚拟化环境下的中断注入
 
 在 KVM 模拟虚拟 CPU 的数据结构中有字段 `VM-entry interruption-information field` 即用来设定虚拟机的中断信息。物理机产生的中断要注入到这个字段中，虚拟机的虚拟中断才能处理。
 
@@ -378,9 +416,9 @@ static void vmx_queue_exception(struct kvm_vcpu *vcpu)
 }
 ```
 
-#### 2.2. PIC 中断模拟
+#### PIC 中断模拟
 
-##### 2.2.1. KVM 中 PIC 的创建
+##### KVM 中 PIC 的创建
 
 和 CPU 一样，终端设备的模拟也分 KVM 端和 QEMU 端。QEMU 端在 `kvm_init` 中通过 ioctl 向 vmfd （这个 fd 在前面介绍过）发起创建 irqchip 的请求，KVM 进行处理。
 
@@ -664,7 +702,7 @@ static int setup_routing_entry(struct kvm *kvm,
 }
 ```
 
-##### 2.2.2. QEMU 中 PIC 的初始化
+##### QEMU 中 PIC 的初始化
 
 QEMU 虚拟机的中断状态由 `GSIState` 表示。其中 `qemu_irq` 表示一个中断引脚。
 
@@ -1006,7 +1044,7 @@ void tcg_handle_interrupt(CPUState *cpu, int mask)
 
 最后就是 `qemu_cpu_kick` 通知 CPU 进行处理。
 
-##### 2.2.3. 设备使用 PIC 中断
+##### 设备使用 PIC 中断
 
 pic 设备使用 `isa_init_irq` 申请 irq 资源。每个设备都会传入一个 `isairq` 表示中断引脚号和自己的 `qemu_irq` ，根据 `isairq` 来获取 `isabus` 中对应的 `qemu_irq` ，共有 14 个设备使用 pic 中断。以键盘鼠标为例：
 
@@ -1342,7 +1380,7 @@ static void pic_unlock(struct kvm_pic *s)
 
 这就是整个中断的执行流程。
 
-#### 2.3. I/O APIC 中断模拟
+#### I/O APIC 中断模拟
 
 I/O apic 模拟的关键是这两个数据结构。`kvm_ioapic` 是 kvm 中用来表示 I/O apic 中断控制器，`kvm_ioapic_redirect_entry` 则表示重定位表项，I/O apic 有 24 个端口，且可以通过编程设置。
 
@@ -1385,12 +1423,339 @@ struct kvm_ioapic {
 
 其中断请求过程和 pic 类似，之后有需要再进一步分析。
 
-#### 2.4. MSI 中断模拟
+#### MSI 中断模拟
 
-### 3. APIC 虚拟化
+上面介绍了 MSI(X) 的基本概念，这里介绍 QEMU 是怎样模拟 MSI(X) 中断的。先看看 PCI 设备是怎样通过 MSI 发起中断的。
+
+只有下面 3 个函数会通过 MSI 发起中断，
+
+```c
+void pci_default_write_config(PCIDevice *d, uint32_t addr, uint32_t val_in, int l){};
+static void pci_bridge_dev_write_config(PCIDevice *d, uint32_t address, uint32_t val, int len){};
+static void pcie_pci_bridge_write_config(PCIDevice *d, uint32_t address, uint32_t val, int len){};
+```
+
+##### 关键函数msi_write_config
+
+该函数主要检查 MSI Message Control Register，并调用 `msi_notify`。
+
+```c
+/* Normally called by pci_default_write_config(). */
+void msi_write_config(PCIDevice *dev, uint32_t addr, uint32_t val, int len)
+{
+    // 根据 PCI capability 指针获取 MSI Message Control Register
+    uint16_t flags = pci_get_word(dev->config + msi_flags_off(dev));
+    bool msi64bit = flags & PCI_MSI_FLAGS_64BIT;
+    bool msi_per_vector_mask = flags & PCI_MSI_FLAGS_MASKBIT;
+    unsigned int nr_vectors;
+    uint8_t log_num_vecs;
+    uint8_t log_max_vecs;
+    unsigned int vector;
+    uint32_t pending;
+
+    if (!msi_present(dev) ||
+        !ranges_overlap(addr, len, dev->msi_cap, msi_cap_sizeof(flags))) {
+        return;
+    }
+
+	...
+
+    /*
+     * nr_vectors might be set bigger than capable. So clamp it.
+     * This is not legal by spec, so we can do anything we like,
+     * just don't crash the host
+     */
+    // 根据 MSI Message Control Register 中的描述，可以知道这是检查 vector 是否超过 max
+    // PCI_MSI_FLAGS_QSIZE 是现在有多少个 vector
+    // PCI_MSI_FLAGS_QMASK 是最多能有多少个 vector
+    log_num_vecs =
+        (flags & PCI_MSI_FLAGS_QSIZE) >> ctz32(PCI_MSI_FLAGS_QSIZE);
+    log_max_vecs =
+        (flags & PCI_MSI_FLAGS_QMASK) >> ctz32(PCI_MSI_FLAGS_QMASK);
+    if (log_num_vecs > log_max_vecs) {
+        flags &= ~PCI_MSI_FLAGS_QSIZE;
+        flags |= log_max_vecs << ctz32(PCI_MSI_FLAGS_QSIZE);
+        pci_set_word(dev->config + msi_flags_off(dev), flags);
+    }
+
+    nr_vectors = msi_nr_vectors(flags);
+
+    /* This will discard pending interrupts, if any. */
+    // pending 和 mask 配合
+    pending = pci_get_long(dev->config + msi_pending_off(dev, msi64bit));
+    pending &= 0xffffffff >> (PCI_MSI_VECTORS_MAX - nr_vectors);
+    pci_set_long(dev->config + msi_pending_off(dev, msi64bit), pending);
+
+    /* deliver pending interrupts which are unmasked */
+    for (vector = 0; vector < nr_vectors; ++vector) {
+        if (msi_is_masked(dev, vector) || !(pending & (1U << vector))) {
+            continue;
+        }
+
+        pci_long_test_and_clear_mask(
+            dev->config + msi_pending_off(dev, msi64bit), 1U << vector);
+        msi_notify(dev, vector);
+    }
+}
+```
+
+##### 关键函数msi_notify
+
+```c
+void msi_notify(PCIDevice *dev, unsigned int vector)
+{
+    uint16_t flags = pci_get_word(dev->config + msi_flags_off(dev));
+    bool msi64bit = flags & PCI_MSI_FLAGS_64BIT;
+    unsigned int nr_vectors = msi_nr_vectors(flags);
+    MSIMessage msg;
+
+    ...
+
+    msg = msi_get_message(dev, vector);
+
+    MSI_DEV_PRINTF(dev,
+                   "notify vector 0x%x"
+                   " address: 0x%"PRIx64" data: 0x%"PRIx32"\n",
+                   vector, msg.address, msg.data);
+    msi_send_message(dev, msg);
+}
+```
+
+##### 关键函数msi_get_message
+
+这个数据结构和理解的一样。
+
+```c
+struct MSIMessage {
+    uint64_t address;
+    uint32_t data;
+};
+```
+
+构建一个 MSIMessage。
+
+```c
+MSIMessage msi_get_message(PCIDevice *dev, unsigned int vector)
+{
+    uint16_t flags = pci_get_word(dev->config + msi_flags_off(dev));
+    bool msi64bit = flags & PCI_MSI_FLAGS_64BIT;
+    unsigned int nr_vectors = msi_nr_vectors(flags);
+    MSIMessage msg;
+
+    assert(vector < nr_vectors);
+
+    // 要注意 dev->config + msi_address_lo_off(dev) 只是获取到对应的寄存器
+    // pci_get_quad 才是获取其中存储的地址
+    if (msi64bit) { // PCI_MSI_ADDRESS_LO 和 PCI_MSI_ADDRESS_HI
+        msg.address = pci_get_quad(dev->config + msi_address_lo_off(dev));
+    } else { // PCI_MSI_ADDRESS_LO
+        msg.address = pci_get_long(dev->config + msi_address_lo_off(dev));
+    }
+
+    /* upper bit 31:16 is zero */
+    msg.data = pci_get_word(dev->config + msi_data_off(dev, msi64bit)); // 这个就很好理解了
+    if (nr_vectors > 1) {
+        msg.data &= ~(nr_vectors - 1);
+        msg.data |= vector;
+    }
+
+    return msg;
+}
+```
+
+##### 关键函数msi_send_message
+
+```c
+void msi_send_message(PCIDevice *dev, MSIMessage msg)
+{
+    MemTxAttrs attrs = {};
+
+    // 这个是干嘛的？
+    attrs.requester_id = pci_requester_id(dev);
+    // 写入
+    address_space_stl_le(&dev->bus_master_as, msg.address, msg.data,
+                         attrs, NULL);
+}
+```
+
+而 `address_space_stl_le` 会导致执行 QEMU 层 kvm-apic 设备 MMIO 写回调函数，即 `kvm_apic_mem_write`。其会封装一个 `MSIMessage` 然后调用 `kvm_send_msi`。
+
+```c
+static void kvm_send_msi(MSIMessage *msg)
+{
+    int ret;
+
+    /*
+     * The message has already passed through interrupt remapping if enabled,
+     * but the legacy extended destination ID in low bits still needs to be
+     * handled.
+     */
+    msg->address = kvm_swizzle_msi_ext_dest_id(msg->address);
+
+    ret = kvm_irqchip_send_msi(kvm_state, *msg);
+    if (ret < 0) {
+        fprintf(stderr, "KVM: injection failed, MSI lost (%s)\n",
+                strerror(-ret));
+    }
+}
+```
+
+`kvm_irqchip_send_msi` 使用 ioctl 向 host 发起 `KVM_SIGNAL_MSI` 中断，之后 host 再进行处理。
+
+```c
+int kvm_irqchip_send_msi(KVMState *s, MSIMessage msg)
+{
+    struct kvm_msi msi;
+    KVMMSIRoute *route;
+
+    if (kvm_direct_msi_allowed) {
+        msi.address_lo = (uint32_t)msg.address;
+        msi.address_hi = msg.address >> 32;
+        msi.data = le32_to_cpu(msg.data);
+        msi.flags = 0;
+        memset(msi.pad, 0, sizeof(msi.pad));
+
+        return kvm_vm_ioctl(s, KVM_SIGNAL_MSI, &msi);
+    }
+
+    ...
+}
+```
+
+#### KVM处理ioctl(KVM_SIGNAL_MSI)
+
+我们知道 KVM 会在 `kvm_vm_ioctl`, `kvm_device_ioctl`, `kvm_vcpu_ioctl` 中处理 ioctl，我们看看其是怎样处理 `KVM_SIGNAL_MSI` 的。
+
+```c
+static long kvm_vm_ioctl(struct file *filp,
+			   unsigned int ioctl, unsigned long arg)
+{
+	struct kvm *kvm = filp->private_data;
+	void __user *argp = (void __user *)arg;
+	int r;
+
+	if (kvm->mm != current->mm || kvm->vm_bugged)
+		return -EIO;
+	switch (ioctl) {
+
+    ...
+
+#ifdef CONFIG_HAVE_KVM_MSI
+	case KVM_SIGNAL_MSI: {
+		struct kvm_msi msi;
+
+		r = -EFAULT;
+		if (copy_from_user(&msi, argp, sizeof(msi))) // 将用户态参数复制到内核
+			goto out;
+		r = kvm_send_userspace_msi(kvm, &msi);
+		break;
+	}
+#endif
+
+    ...
+
+out:
+	return r;
+}
+```
+
+##### 关键函数kvm_send_userspace_msi
+
+```c
+int kvm_send_userspace_msi(struct kvm *kvm, struct kvm_msi *msi)
+{
+	struct kvm_kernel_irq_routing_entry route;
+
+	if (!irqchip_in_kernel(kvm) || (msi->flags & ~KVM_MSI_VALID_DEVID))
+		return -EINVAL;
+
+	route.msi.address_lo = msi->address_lo;
+	route.msi.address_hi = msi->address_hi;
+	route.msi.data = msi->data;
+	route.msi.flags = msi->flags;
+	route.msi.devid = msi->devid;
+
+	return kvm_set_msi(&route, kvm, KVM_USERSPACE_IRQ_SOURCE_ID, 1, false);
+}
+```
+
+`kvm_kernel_irq_routing_entry` 在前面介绍过，是 KVM 中创建的结构体，用于在内核中记录中断信息，除了基本的中断号 `gsi` ，中断类型信息 `type` ，还有用于处理中断的回调函数 `set` 。
+
+##### 关键函数kvm_irq_delivery_to_apic
+
+`kvm_set_msi` -> `kvm_irq_delivery_to_apic`
+
+这个函数之后再分析，现在不要把战线拉的过长。
+
+```c
+int kvm_irq_delivery_to_apic(struct kvm *kvm, struct kvm_lapic *src,
+		struct kvm_lapic_irq *irq, struct dest_map *dest_map)
+{
+	int i, r = -1;
+	struct kvm_vcpu *vcpu, *lowest = NULL;
+	unsigned long dest_vcpu_bitmap[BITS_TO_LONGS(KVM_MAX_VCPUS)];
+	unsigned int dest_vcpus = 0;
+
+	if (kvm_irq_delivery_to_apic_fast(kvm, src, irq, &r, dest_map))
+		return r;
+
+	if (irq->dest_mode == APIC_DEST_PHYSICAL &&
+	    irq->dest_id == 0xff && kvm_lowest_prio_delivery(irq)) {
+		printk(KERN_INFO "kvm: apic: phys broadcast and lowest prio\n");
+		irq->delivery_mode = APIC_DM_FIXED;
+	}
+
+	memset(dest_vcpu_bitmap, 0, sizeof(dest_vcpu_bitmap));
+
+	kvm_for_each_vcpu(i, vcpu, kvm) {
+		if (!kvm_apic_present(vcpu))
+			continue;
+
+		if (!kvm_apic_match_dest(vcpu, src, irq->shorthand,
+					irq->dest_id, irq->dest_mode))
+			continue;
+
+		if (!kvm_lowest_prio_delivery(irq)) {
+			if (r < 0)
+				r = 0;
+			r += kvm_apic_set_irq(vcpu, irq, dest_map);
+		} else if (kvm_apic_sw_enabled(vcpu->arch.apic)) {
+			if (!kvm_vector_hashing_enabled()) {
+				if (!lowest)
+					lowest = vcpu;
+				else if (kvm_apic_compare_prio(vcpu, lowest) < 0)
+					lowest = vcpu;
+			} else {
+				__set_bit(i, dest_vcpu_bitmap);
+				dest_vcpus++;
+			}
+		}
+	}
+
+	if (dest_vcpus != 0) {
+		int idx = kvm_vector_to_index(irq->vector, dest_vcpus,
+					dest_vcpu_bitmap, KVM_MAX_VCPUS);
+
+		lowest = kvm_get_vcpu(kvm, idx);
+	}
+
+	if (lowest)
+		r = kvm_apic_set_irq(lowest, irq, dest_map);
+
+	return r;
+}
+```
+
+
+
+### APIC 虚拟化
 
 ### Reference
 
 [1] 深入探索 Linux 系统虚拟化 王柏生 谢广军 机械工业出版社
 
 [2] https://www.cnblogs.com/haiyonghao/p/14440424.html
+
+[3] https://www.intel.com/content/www/us/en/docs/programmable/683686/20-4/msi-registers.html
+
+[4] https://blog.csdn.net/yhb1047818384/article/details/106676560
