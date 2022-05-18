@@ -1,4 +1,4 @@
-## Device Virtualization
+Device Virtualization
 
 设备虚拟化可以分为完全虚拟化和半虚拟化。完全虚拟化就是类似 QEMU 的设备模拟，完全用软件来做，通过 Inter-Virtualization 大致就懂了，这里不再介绍。这篇文章来分析设备透传和 Virtio 虚拟化。
 
@@ -82,79 +82,9 @@ struct vring_used {
 
 ### PCI设备模拟
 
-#### PCI设备
+这里只介绍 QEMU 是怎样模拟 PCI 设备的，而关于 PCI 设备的基础知识可以看[这篇](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/X86/PCIe.md)文章。
 
-使用 lspci 命令可以查看当前系统挂载在 PCI 总线上的设备：
-
-```
-00:00.0 Host bridge: Intel Corporation 8th Gen Core Processor Host Bridge/DRAM Registers (rev 07)
-00:02.0 VGA compatible controller: Intel Corporation UHD Graphics 630 (Mobile)
-00:04.0 Signal processing controller: Intel Corporation Xeon E3-1200 v5/E3-1500 v5/6th Gen Core Processor Thermal Subsystem (rev 07)
-00:08.0 System peripheral: Intel Corporation Xeon E3-1200 v5/v6 / E3-1500 v5 / 6th/7th/8th Gen Core Processor Gaussian Mixture Model
-00:12.0 Signal processing controller: Intel Corporation Cannon Lake PCH Thermal Controller (rev 10)
-00:14.0 USB controller: Intel Corporation Cannon Lake PCH USB 3.1 xHCI Host Controller (rev 10)
-00:14.2 RAM memory: Intel Corporation Cannon Lake PCH Shared SRAM (rev 10)
-00:15.0 Serial bus controller [0c80]: Intel Corporation Cannon Lake PCH Serial IO I2C Controller #0 (rev 10)
-00:15.1 Serial bus controller [0c80]: Intel Corporation Cannon Lake PCH Serial IO I2C Controller #1 (rev 10)
-00:16.0 Communication controller: Intel Corporation Cannon Lake PCH HECI Controller (rev 10)
-00:1b.0 PCI bridge: Intel Corporation Cannon Lake PCH PCI Express Root Port #17 (rev f0)
-00:1d.0 PCI bridge: Intel Corporation Cannon Lake PCH PCI Express Root Port #9 (rev f0)
-00:1d.4 PCI bridge: Intel Corporation Cannon Lake PCH PCI Express Root Port #13 (rev f0)
-00:1d.5 PCI bridge: Intel Corporation Cannon Lake PCH PCI Express Root Port #14 (rev f0)
-00:1f.0 ISA bridge: Intel Corporation HM470 Chipset LPC/eSPI Controller (rev 10)
-00:1f.3 Audio device: Intel Corporation Cannon Lake PCH cAVS (rev 10)
-00:1f.4 SMBus: Intel Corporation Cannon Lake PCH SMBus Controller (rev 10)
-00:1f.5 Serial bus controller [0c80]: Intel Corporation Cannon Lake PCH SPI Controller (rev 10)
-01:00.0 PCI bridge: Intel Corporation JHL7540 Thunderbolt 3 Bridge [Titan Ridge 4C 2018] (rev 06)
-02:00.0 PCI bridge: Intel Corporation JHL7540 Thunderbolt 3 Bridge [Titan Ridge 4C 2018] (rev 06)
-02:01.0 PCI bridge: Intel Corporation JHL7540 Thunderbolt 3 Bridge [Titan Ridge 4C 2018] (rev 06)
-02:02.0 PCI bridge: Intel Corporation JHL7540 Thunderbolt 3 Bridge [Titan Ridge 4C 2018] (rev 06)
-02:04.0 PCI bridge: Intel Corporation JHL7540 Thunderbolt 3 Bridge [Titan Ridge 4C 2018] (rev 06)
-03:00.0 System peripheral: Intel Corporation JHL7540 Thunderbolt 3 NHI [Titan Ridge 4C 2018] (rev 06)
-37:00.0 USB controller: Intel Corporation JHL7540 Thunderbolt 3 USB Controller [Titan Ridge 4C 2018] (rev 06)
-6b:00.0 Non-Volatile memory controller: Samsung Electronics Co Ltd NVMe SSD Controller SM981/PM981/PM983
-6c:00.0 Unassigned class [ff00]: Realtek Semiconductor Co., Ltd. RTS522A PCI Express Card Reader (rev 01)
-6d:00.0 Network controller: Intel Corporation Wi-Fi 6 AX200 (rev 1a)
-```
-
-都是熟悉的设备啊！
-
-- 为什么有 5 个雷电 3 总线？
-
-- `0x00` 号总线到底是低速总线还是高速总线啊？为什么即有 RAM memory 这个高速内存挂载，又有 PCH 这个低速设备集成芯片挂载，还有 serial。奇怪。
-
-每个 PCI 设备在系统中的位置由总线号（Bus Number）、设备号（Device Number）和功能号（Function Number）唯一确定，上面的设备信息中前 3 组数字应该分别对应总线号、设备号、功能号。我们可以看到有不同的总线号，按理来说不都是挂载在 HOST-PCI 桥上，总线号应该是一样的。是这样的，可以在 PCI 总线上挂一个桥设备，之后在该桥上再挂载一个 PCI 总线或其他总线。比如我们看看 usb 设备的挂载情况：
-
-```
-Bus 004 Device 003: ID 0bda:8153 Realtek Semiconductor Corp. RTL8153 Gigabit Ethernet Adapter
-Bus 004 Device 004: ID 0dd8:3d01 Netac Technology Co., Ltd USB3.0 Hub // 挂载一个 U 盘
-Bus 004 Device 002: ID 2109:0817 VIA Labs, Inc. USB3.0 Hub
-Bus 004 Device 001: ID 1d6b:0003 Linux Foundation 3.0 root hub
-Bus 003 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
-Bus 002 Device 001: ID 1d6b:0003 Linux Foundation 3.0 root hub
-Bus 001 Device 007: ID 27c6:55a4 Shenzhen Goodix Technology Co.,Ltd. Goodix FingerPrint Device
-Bus 001 Device 006: ID 13d3:56bb IMC Networks Integrated Camera
-Bus 001 Device 005: ID 048d:c937 Integrated Technology Express, Inc. ITE Device(8910)
-Bus 001 Device 004: ID 2109:2817 VIA Labs, Inc. USB2.0 Hub
-Bus 001 Device 003: ID 1a81:1202 Holtek Semiconductor, Inc. wireless dongle
-Bus 001 Device 008: ID 8087:0029 Intel Corp.
-Bus 001 Device 002: ID 062a:5918 MosArt Semiconductor Corp. 2.4G Keyboard Mouse
-Bus 001 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
-```
-
-这里的位置信息就更清晰了。哦，原来不是所有的雷电 3 接口都是我能看到的。但是 U 盘是挂载在 `0x04` 总线上，不是 PCI 总线？`0x04` 总线是什么？
-
-![PCI-bus.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/PCI-bus.png?raw=true)
-
-PCI 设备有自己的地址空间，叫做 PCI 地址空间，HOST-PCI 桥完成 CPU 访问的内存地址到 PCI 总线地址的转换。每个 PCI 设备都有一个配置空间，该空间至少有 256 字节，前 64 字节是标准化的，所有的设备都是这个格式，后面的内容由设备自己决定。
-
-![PCI-config-space.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/PCI-config-space.png?raw=true)
-
-Vendor ID, Device ID, Class Code 用来表明设备的身份，有时还会配置 Subsystem Vendor ID 和 Subsystem Device ID。6 个 Base Address 表示 PCI 设备的 I/O 地址空间（这么大么），还可能有一个 ROM 的 BAR。两个与中断设置相关的域，IRQ Line 表示该设备使用哪个中断号（BIOS 中注册的 IVT），如传统的 8259 中断控制器，有 0 ~ 15 号 line，IRQ Line 表示的是用哪根线。而 IRQ Pin 表示使用哪个引脚连接中断控制器，PCI 总线上的设备可以通过 4 根中断引脚 INTA ~ D# 向中断控制器提交中断请求。
-
-#### PCI设备的模拟
-
-##### PCIDevice
+#### PCIDevice
 
 老规矩，先看看数据结构。在我看来，虚拟化无非就是定义设备对应的数据结构，初始化它，然后完成对应的操作函数。
 
@@ -260,7 +190,7 @@ struct PCIDevice {
 };
 ```
 
-##### 关键函数pci_qdev_realize
+#### 关键函数pci_qdev_realize
 
 这个函数完成 PCI 设备的初始化，可以在这个函数中设置断点，就会发现上文中出现的设备会一一调用它进行初始化。下面给出南桥芯片—— piix 的初始化，从上文的图中可以直到南桥芯片也是挂载在 PCI 根总线上的一个 PCI 设备。
 
@@ -349,7 +279,7 @@ static void pci_qdev_realize(DeviceState *qdev, Error **errp)
     at ../softmmu/main.c:49
 ```
 
-##### 关键函数do_pci_register_device
+#### 关键函数do_pci_register_device
 
 该函数完成设备及其对应 PCI 总线上的一些初始化工作。
 
@@ -448,7 +378,7 @@ static PCIDevice *do_pci_register_device(PCIDevice *pci_dev,
 }
 ```
 
-##### 关键函数piix3_realize
+#### 关键函数piix3_realize
 
 这里还是拿南桥芯片举例，其对应的回调函数是 `piix3_realize`。
 
@@ -474,7 +404,7 @@ static void piix3_realize(PCIDevice *dev, Error **errp)
 
 `piix3_reset` 用硬编码的方式设置 64 字节后的数据。
 
-##### 关键函数pci_register_bar
+#### 关键函数pci_register_bar
 
 `pci_qdev_realize` -> `pci_add_option_rom` -> `pci_register_bar`
 
@@ -528,7 +458,7 @@ void pci_register_bar(PCIDevice *pci_dev, int region_num,
 }
 ```
 
-##### 关键函数piix3_write_config
+#### 关键函数piix3_write_config
 
 接下来我们看看南桥的读写回调函数。
 
@@ -581,7 +511,7 @@ void pci_default_write_config(PCIDevice *d, uint32_t addr, uint32_t val_in, int 
 
 在[PCI设备](#PCI设备)我们讲到 HOST-PCI 桥完成 CPU 访问的内存地址到 PCI 总线地址的转换，接下来我们分析一下 HOST-PCI 是怎样初始化和访问的。
 
-##### PCIHostState
+#### PCIHostState
 
 ```c
 struct PCIHostState {
@@ -682,7 +612,7 @@ const MemoryRegionOps pci_host_data_le_ops = {
 };
 ```
 
-##### PCI设备读写
+#### PCI设备读写
 
 读写的原理相同，这里只看看写过程。`pci_host_config_write` 将 guest 需要访问的 PCI 设备地址保存在 `PCIHostState -> config_reg` 中。
 
@@ -776,7 +706,7 @@ OK，但是这里还有一个问题，通过 `pci_default_write_config` 访问�
 
 这个工作是 Seabios 完成的，可以看[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/Analysis-Seabios.md#pci-%E8%AE%BE%E5%A4%87)的分析。总的来说是 BIOS 会探测 PCI 设备，然后按照将各个 PCI 设备的总线号、设备号、功能号（？）将 BAR 地址写入 i440fx 的配置空间（`0xcfc`），之后 QEMU 就能根据这些信息建立地址映射。
 
-##### 关键函数pci_default_write_config
+#### 关键函数pci_default_write_config
 
 ```c
 void pci_default_write_config(PCIDevice *d, uint32_t addr, uint32_t val_in, int l)
