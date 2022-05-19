@@ -116,6 +116,17 @@ PCI: Using 00:02.0 for primary VGA
 
 注意，PCI bus 不单能够从上向下转发，也能从下向上转发。DMA 就需要其从下向上转发。
 
+#### 访问配置空间
+
+This Configuration Address Space is accessible via:
+
+- **Configuration Access Mechanism (CAM)** – PCI legacy method using I/O ports 0xCF8 (32-bit configuration address to access) and 0xCFC (data to and from the access). This method only supports 256 buses, each with up to 32 devices, each supporting 8 functions, and assumes use of PCI Segment 0. Either do it in x86 using the OUT instruction or use compiler intrinsic __outbyte(port, data).
+- **Enhanced Configuration Access Mechanism (ECAM)** – PCIe supports access to device configuration spaces via a memory mapped address range, and ECAM support devices extends the config space from 256 bytes to 4096 bytes. ECAM also introduces PCI Segments, allowing more than 256 buses to be accessible by the CPU.
+
+Using the legacy CAM method for example to access config space of an Nvidia video card device on BDF 03.00.0 and read the DeviceId at register 0x4, we could would construct the address like so `80000000h | 03h << 16 | 00h << 11 | 0h << 8 | 4 ` giving us `80030004h`.
+
+Using the ECAM method, we could access config space proprietary register 0x500 of a Nvidia card at BDF 03.00.0 by (assuming no cached device tree) first checking the MCFG ACPI table, choosing the correct ECAM entry corresponding to PCI Segment the device lives in, in the ECAM struct **locating the system physical address for the ECAM base address** (e.g. F0000000h), then getting to the BDF offset via `F0000000h` `+ (03h << 20 | 00h << 15 | 0h << 12 | 500h) `giving us the system physical address of the 4K config space accessing offset 0x500 of the Nvidia card at `00000000_F0300500h`.
+
 ### MSI
 
 MSI 是在 PCIe 的基础上设计的中断方式，关于 PCIe 的介绍可以看[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Device-Virtualization.md#pci%E8%AE%BE%E5%A4%87%E6%A8%A1%E6%8B%9F)。从 PCI 2.1 开始，如果设备需要扩展某种特性，可以向配置空间中的 Capabilities List 中增加一个 Capability，MSI 利用这个特性，将 I/O APIC 中的功能扩展到设备自身。我们来看看 MSI Capability 有哪些域。MSI Capability的ID为5， 共有四种组成方式，分别是 32 和 64 位的 Message 结构，32 位和 64 位带中断Masking 的结构。
@@ -199,3 +210,7 @@ MSI-X Table 中的 vector control 表示 PCIe 设备是否能够使用该 Entry 
 [1] https://resources.infosecinstitute.com/topic/system-address-map-initialization-in-x86x64-architecture-part-1-pci-based-systems/
 
 [2] https://resources.infosecinstitute.com/topic/system-address-map-initialization-x86x64-architecture-part-2-pci-express-based-systems/#gref
+
+[3] https://astralvx.com/introduction-to-pcie/
+
+[4] https://www.cnblogs.com/haiyonghao/p/14440424.html
