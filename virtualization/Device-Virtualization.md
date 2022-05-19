@@ -1,4 +1,4 @@
-Device Virtualization
+## Device Virtualization
 
 设备虚拟化可以分为完全虚拟化和半虚拟化。完全虚拟化就是类似 QEMU 的设备模拟，完全用软件来做，通过 Inter-Virtualization 大致就懂了，这里不再介绍。这篇文章来分析设备透传和 Virtio 虚拟化。
 
@@ -170,7 +170,9 @@ struct PCIDevice {
     SHPCDevice *shpc;
 
     /* Location of option rom */
-    char *romfile; // 设备的 ROM 空间用来干嘛？ cache？
+    // 设备的 ROM 空间用来干嘛？ cache？
+    // 有些 PCI 设备具有 ROM 存储空间需要映射到系统内存中
+    char *romfile;
     uint32_t romsize;
     bool has_rom;
     MemoryRegion rom;
@@ -192,7 +194,7 @@ struct PCIDevice {
 
 #### 关键函数pci_qdev_realize
 
-这个函数完成 PCI 设备的初始化，可以在这个函数中设置断点，就会发现上文中出现的设备会一一调用它进行初始化。下面给出南桥芯片—— piix 的初始化，从上文的图中可以直到南桥芯片也是挂载在 PCI 根总线上的一个 PCI 设备。
+这个函数完成 PCI 设备的初始化，可以在这个函数中设置断点，就会发现上文中出现的设备会一一调用它进行初始化。下面给出南桥芯片—— piix3 的初始化，从上文的图中可以直到南桥芯片也是挂载在 PCI 根总线上的一个 PCI 设备。
 
 ```c
 static void pci_qdev_realize(DeviceState *qdev, Error **errp)
@@ -279,6 +281,36 @@ static void pci_qdev_realize(DeviceState *qdev, Error **errp)
     at ../softmmu/main.c:49
 ```
 
+当然，还有如下几个重要的设备初始化会调用 `pci_qdev_realize`，这些设备都是在 `pc_init1` 中创建的，并挂载在 PCI-HOST 上，后面分析。
+
+```
+#11 0x0000555555a4a68f in i440fx_init (host_type=0x555556061704 "i440FX-pcihost",
+    pci_type=0x5555560616fd "i440FX", pi440fx_state=0x7fffffffd9f8,
+    address_space_mem=0x5555568220c0, address_space_io=0x555556821fb0, ram_size=8589934592,
+    below_4g_mem_size=3221225472, above_4g_mem_size=5368709120,
+    pci_address_space=0x555556a5a030, ram_memory=0x5555569a2af0)
+    at ../hw/pci-host/i440fx.c:266
+
+#10 0x00005555559b79b8 in piix3_create (pci_bus=0x555556bc9df0, isa_bus=0x7fffffffd9f0)
+    at ../hw/isa/piix3.c:385
+
+#11 0x0000555555a369de in pci_vga_init (bus=0x555556bc9df0) at ../hw/pci/pci.c:1998
+#12 0x0000555555b602cb in pc_vga_init (isa_bus=0x555556a5b470, pci_bus=0x555556bc9df0)
+    at ../hw/i386/pc.c:981
+
+#10 0x0000555555b60975 in pc_nic_init (pcmc=0x55555686d020, isa_bus=0x555556a5b470,
+    pci_bus=0x555556bc9df0) at ../hw/i386/pc.c:1143
+
+// 这个应该是硬盘
+#10 0x0000555555a37211 in pci_create_simple (bus=0x555556bc9df0, devfn=9,
+    name=0x5555560616b1 "piix3-ide") at ../hw/pci/pci.c:2224
+
+// 这个我不知道是哪个设备
+#9  0x0000555555912fa4 in piix4_pm_init (bus=0x555556bc9df0, devfn=11, smb_io_base=45312,
+    sci_irq=0x555556bc4120, smi_irq=0x555557836ea0, smm_enabled=1, piix4_pm=0x7fffffffda10)
+    at ../hw/acpi/piix4.c:549
+```
+
 #### 关键函数do_pci_register_device
 
 该函数完成设备及其对应 PCI 总线上的一些初始化工作。
@@ -309,9 +341,6 @@ static PCIDevice *do_pci_register_device(PCIDevice *pci_dev,
                 goto found;
             }
         }
-        error_setg(errp, "PCI: no slot/function available for %s, all in use "
-                   "or reserved", name);
-        return NULL;
     found: ;
     }
 
@@ -513,6 +542,8 @@ void pci_default_write_config(PCIDevice *d, uint32_t addr, uint32_t val_in, int 
 
 #### PCIHostState
 
+北桥的 PCI 部分由结构体 `PCIHostState` 表示，其中有两个关键的寄存器：`CONFGADDR` 和 `CONFGDATA`，系统需要访问 PCI 设备的配置空间都是通过这两个寄存器。将需要访问的 PCI 设备的 dfn 写入 `CONFGADDR`，操作命令写入 `CONFGDATA`，PCI-HOST 桥（北桥）就会将命令分发给对应的 PCI 设备。
+
 ```c
 struct PCIHostState {
     SysBusDevice busdev;
@@ -528,6 +559,136 @@ struct PCIHostState {
     QLIST_ENTRY(PCIHostState) next;
 };
 ```
+
+#### 关键函数i440fx_init
+
+这个函数主要是初始化 i440fx 本身，然后设置映射信息。
+
+```c
+PCIBus *i440fx_init(const char *host_type, const char *pci_type,
+                    PCII440FXState **pi440fx_state,
+                    MemoryRegion *address_space_mem,
+                    MemoryRegion *address_space_io,
+                    ram_addr_t ram_size,
+                    ram_addr_t below_4g_mem_size,
+                    ram_addr_t above_4g_mem_size,
+                    MemoryRegion *pci_address_space,
+                    MemoryRegion *ram_memory)
+{
+    DeviceState *dev;
+    PCIBus *b;
+    PCIDevice *d;
+    PCIHostState *s;
+    PCII440FXState *f;
+    unsigned i;
+    I440FXState *i440fx;
+
+    dev = qdev_new(host_type); // 会执行到 i440fx_pcihost_initfn，这些后面都会分析
+    s = PCI_HOST_BRIDGE(dev);
+    b = pci_root_bus_new(dev, NULL, pci_address_space, // 初始化 PCIBus
+                         address_space_io, 0, TYPE_PCI_BUS);
+    s->bus = b;
+    object_property_add_child(qdev_get_machine(), "i440fx", OBJECT(dev));
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+
+    d = pci_create_simple(b, 0, pci_type); // 执行到 pci_qdev_realize，上文分析过
+    *pi440fx_state = I440FX_PCI_DEVICE(d);
+    f = *pi440fx_state;
+    f->system_memory = address_space_mem;
+    f->pci_address_space = pci_address_space;
+    f->ram_memory = ram_memory;
+
+    i440fx = I440FX_PCI_HOST_BRIDGE(dev);
+    range_set_bounds(&i440fx->pci_hole, below_4g_mem_size,
+                     IO_APIC_DEFAULT_ADDRESS - 1);
+
+  	... // 建立映射信息
+
+    init_pam(dev, f->ram_memory, f->system_memory, f->pci_address_space,
+             &f->pam_regions[0], PAM_BIOS_BASE, PAM_BIOS_SIZE);
+    for (i = 0; i < ARRAY_SIZE(f->pam_regions) - 1; ++i) {
+        init_pam(dev, f->ram_memory, f->system_memory, f->pci_address_space,
+                 &f->pam_regions[i+1], PAM_EXPAN_BASE + i * PAM_EXPAN_SIZE,
+                 PAM_EXPAN_SIZE);
+    }
+
+    ram_size = ram_size / 8 / 1024 / 1024;
+    if (ram_size > 255) {
+        ram_size = 255;
+    }
+    d->config[I440FX_COREBOOT_RAM_SIZE] = ram_size;
+
+    i440fx_update_memory_mappings(f);
+
+    return b;
+}
+```
+
+对于 PCI-HOST 的分析应该关注怎样以它为起点构建一个 PCI 树结构，主要的 PCI 设备都是在 `pc_init1` 中创建和初始化的。
+
+```c
+/* PC hardware initialisation */
+static void pc_init1(MachineState *machine,
+                     const char *host_type, const char *pci_type)
+{
+    ...
+
+    if (pcmc->pci_enabled) {
+        PIIX3State *piix3;
+
+        pci_bus = i440fx_init(host_type, // 1. 创建 PCI-HOST bridge
+                              pci_type,
+                              &i440fx_state,
+                              system_memory, system_io, machine->ram_size,
+                              x86ms->below_4g_mem_size,
+                              x86ms->above_4g_mem_size,
+                              pci_memory, ram_memory);
+        pcms->bus = pci_bus;
+
+        piix3 = piix3_create(pci_bus, &isa_bus); // 2. 创建 piix3，并和 i440fx 建立联系
+        piix3->pic = x86ms->gsi;
+        piix3_devfn = piix3->dev.devfn;
+    }
+
+    ...
+
+    pc_vga_init(isa_bus, pcmc->pci_enabled ? pci_bus : NULL); // 3. 创建 vga
+
+    ...
+
+    pc_nic_init(pcmc, isa_bus, pci_bus); // 4. 创建网卡
+
+    if (pcmc->pci_enabled) {
+        PCIDevice *dev;
+
+        dev = pci_create_simple(pci_bus, piix3_devfn + 1, // 5. 创建 piix3-ide
+                                xen_enabled() ? "piix3-ide-xen" : "piix3-ide");
+        pci_ide_create_devs(dev);
+        idebus[0] = qdev_get_child_bus(&dev->qdev, "ide.0");
+        idebus[1] = qdev_get_child_bus(&dev->qdev, "ide.1");
+        pc_cmos_init(pcms, idebus[0], idebus[1], rtc_state);
+    }
+
+    ...
+
+    if (pcmc->pci_enabled && x86_machine_is_acpi_enabled(X86_MACHINE(pcms))) {
+        DeviceState *piix4_pm;
+
+        smi_irq = qemu_allocate_irq(pc_acpi_smi_interrupt, first_cpu, 0);
+        /* TODO: Populate SPD eeprom data.  */
+        pcms->smbus = piix4_pm_init(pci_bus, piix3_devfn + 3, 0xb100, // 6. 创建 piix4_pm
+                                    x86ms->gsi[9], smi_irq,
+                                    x86_machine_is_smm_enabled(x86ms),
+                                    &piix4_pm);
+
+        ...
+    }
+
+    ...
+}
+```
+
+上面我们也看到了，这些设备都会调用 `pci_qdev_realize` 完成初始化。
 
 我们知道 CPU 是通过读写地址寄存器和数据寄存器来访问 PCI 设备的，而地址寄存器对应的物理地址就是 `0xcf8`，数据寄存器是 `0xcfc`，这两个寄存器分别是 `PCIHostState -> conf_mem` 和 `PCIHostState -> data_mem`，它们在 `i440fx_pcihost_initfn` 中初始化。
 
@@ -562,41 +723,7 @@ static void i440fx_pcihost_realize(DeviceState *dev, Error **errp)
 }
 ```
 
-我们看一下调用栈，在 `i440fx` 初始化的时候就需要完成 `PCI-HOST` 初始化，这个应该和 `i440fx` 芯片组的结构有关。
-
-```
-#0  i440fx_pcihost_initfn (obj=0x555556bc8d00) at ../hw/pci-host/i440fx.c:207
-#1  0x0000555555d431fe in object_init_with_type (obj=0x555556bc8d00, ti=0x5555567d9880)
-    at ../qom/object.c:376
-#2  0x0000555555d43751 in object_initialize_with_type (obj=0x555556bc8d00, size=1648,
-    type=0x5555567d9880) at ../qom/object.c:518
-#3  0x0000555555d43e83 in object_new_with_type (type=0x5555567d9880) at ../qom/object.c:733
-#4  0x0000555555d43ee2 in object_new (typename=0x555556061704 "i440FX-pcihost")
-    at ../qom/object.c:748
-#5  0x0000555555d3c86f in qdev_new (name=0x555556061704 "i440FX-pcihost")
-    at ../hw/core/qdev.c:153
-#6  0x0000555555a4a5f4 in i440fx_init (host_type=0x555556061704 "i440FX-pcihost",
-    pci_type=0x5555560616fd "i440FX", pi440fx_state=0x7fffffffd9f8,
-    address_space_mem=0x5555568220c0, address_space_io=0x555556821fb0, ram_size=8589934592,
-    below_4g_mem_size=3221225472, above_4g_mem_size=5368709120,
-    pci_address_space=0x555556a5a030, ram_memory=0x5555569a2af0)
-    at ../hw/pci-host/i440fx.c:258
-#7  0x0000555555b44298 in pc_init1 (machine=0x555556a2f000,
-    host_type=0x555556061704 "i440FX-pcihost", pci_type=0x5555560616fd "i440FX")
-    at ../hw/i386/pc_piix.c:200
-#8  0x0000555555b44b1d in pc_init_v6_2 (machine=0x555556a2f000) at ../hw/i386/pc_piix.c:425
-#9  0x000055555594b889 in machine_run_board_init (machine=0x555556a2f000)
-    at ../hw/core/machine.c:1181
-#10 0x0000555555c08082 in qemu_init_board () at ../softmmu/vl.c:2652
-#11 0x0000555555c082ad in qmp_x_exit_preconfig (errp=0x55555677c100 <error_fatal>)
-    at ../softmmu/vl.c:2740
-#12 0x0000555555c0a936 in qemu_init (argc=15, argv=0x7fffffffde28, envp=0x7fffffffdea8)
-    at ../softmmu/vl.c:3775
-#13 0x000055555583b6f5 in main (argc=15, argv=0x7fffffffde28, envp=0x7fffffffdea8)
-    at ../softmmu/main.c:49
-```
-
-也就是说这两段地址空间其实就是北桥芯片的一部分，就像 PAM 技术一样，将前 1M 地址空间声明为 rom 空间，这里将这两段地址空间声明为 PCI 寄存器。同时指定了回调函数，
+这两段地址空间其实就是北桥芯片的一部分，就像 PAM 技术一样，将前 1M 地址空间声明为 rom 空间，这里将这两段地址空间声明为 PCI 寄存器，同时指定了回调函数，
 
 ```c
 const MemoryRegionOps pci_host_conf_le_ops = {
@@ -704,9 +831,13 @@ void pci_host_config_write_common(PCIDevice *pci_dev, uint32_t addr,
 
 OK，但是这里还有一个问题，通过 `pci_default_write_config` 访问设备时是怎样知道不同设备的配置空间的地址？也就是说 PCI-HOST 怎样将读写请求转发到对应的 PCI 设备？
 
-这个工作是 Seabios 完成的，可以看[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/Analysis-Seabios.md#pci-%E8%AE%BE%E5%A4%87)的分析。总的来说是 BIOS 会探测 PCI 设备，然后按照将各个 PCI 设备的总线号、设备号、功能号（？）将 BAR 地址写入 i440fx 的配置空间（`0xcfc`），之后 QEMU 就能根据这些信息建立地址映射。
+在每个 PCI 设备初始化的时候会将 `devfn` 写入 PCI-HOST bridge，然后 guest 或 Seabios 访问设备的配置空间是通过 dfn，这样 PCI-HOST bridge 就可以转发。但这只是配置空间，还有 MMIO 空间也需要配置，这个工作是 Seabios 完成的，可以看[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/Analysis-Seabios.md#pci-%E8%AE%BE%E5%A4%87)的分析。
+
+总的来说是 BIOS 会探测 PCI 设备，然后按照将各个 PCI 设备的总线号、设备号、功能号（？）将 BAR 地址写入 i440fx 的配置空间（`0xcfc`），之后 QEMU 就能根据这些信息建立地址映射。当然 QEMU 工作在用户态，不能直接访问物理设备，这些访问最终会通过中断发送给 host 进行处理。
 
 #### 关键函数pci_default_write_config
+
+上面分析到会初始化的几个 PCI 设备都是使用这个作为默认读写函数。
 
 ```c
 void pci_default_write_config(PCIDevice *d, uint32_t addr, uint32_t val_in, int l)
@@ -723,6 +854,8 @@ void pci_default_write_config(PCIDevice *d, uint32_t addr, uint32_t val_in, int 
         d->config[addr + i] = (d->config[addr + i] & ~wmask) | (val & wmask);
         d->config[addr + i] &= ~(val & w1cmask); /* W1C: Write 1 to Clear */
     }
+
+    // 如果是读写 BAR，需要修改映射信息
     if (ranges_overlap(addr, l, PCI_BASE_ADDRESS_0, 24) ||
         ranges_overlap(addr, l, PCI_ROM_ADDRESS, 4) ||
         ranges_overlap(addr, l, PCI_ROM_ADDRESS1, 4) ||
@@ -736,7 +869,7 @@ void pci_default_write_config(PCIDevice *d, uint32_t addr, uint32_t val_in, int 
                                    & PCI_COMMAND_MASTER) && d->has_power);
     }
 
-    msi_write_config(d, addr, val_in, l);
+    msi_write_config(d, addr, val_in, l); // 使用 msi 中断，不用 apic 中断
     msix_write_config(d, addr, val_in, l);
 }
 ```
@@ -771,6 +904,8 @@ void pci_default_write_config(PCIDevice *d, uint32_t addr, uint32_t val_in, int 
 `pci_update_mappings` 之后有需要再分析。
 
 #### PCI设备中断模拟
+
+现在大多使用 MSI(X) 中断，APIC 中断方式就顺带分析一下。MSI(X) 中断方式的分析可以看[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Interrupt-Virtualization.md#msix%E8%99%9A%E6%8B%9F%E5%8C%96)。
 
 接下来我们看看 PCI 设备是怎样发起中断的。前面讲到每个 PCI 设备有 4 个中断引脚，单功能设备都用 INTA 触发中断，之后多功能设备会用到 INTB、INTC、INTD。PCI 设备配置空间的 IRQ Pin 域表示使用哪个引脚，这在每个设备初始化的时候会设置。如 e1000，
 
