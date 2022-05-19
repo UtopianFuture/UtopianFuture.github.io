@@ -1,6 +1,38 @@
-Interrupt Virtualization
+## Interrupt Virtualization
 
-### background
+### 目录
+
+- [Background](#Background)
+  - [虚拟中断](#虚拟中断)
+  - [PIC虚拟化](#PIC虚拟化)
+  - [APIC虚拟化](#APIC虚拟化)
+  - [MSI(X)虚拟化](#MSI(X)虚拟化)
+    - [MSI](#MSI)
+    - [MSIX](#MSIX)
+  - [硬件虚拟化支持](#硬件虚拟化支持)
+  - [几种中断类型](#几种中断类型)
+  - [IRQ号，中断向量和GSI](#IRQ号，中断向量和GSI)
+- [中断模拟](#中断模拟)
+  - [虚拟化环境下的中断注入](#虚拟化环境下的中断注入)
+  - [PIC中断模拟](#PIC中断模拟)
+    - [KVM中PIC的创建](#KVM中PIC的创建)
+    - [QEMU中PIC的初始化](#QEMU中PIC的初始化)
+    - [设备使用PIC中断](#设备使用PIC中断)
+  - [I/O-APIC中断模拟](#I/O-APIC中断模拟)
+  - [MSI中断模拟](#MSI中断模拟)
+    - [关键函数msi_write_config](#关键函数msi_write_config)
+    - [关键函数msi_notify](#关键函数msi_notify)
+    - [关键函数msi_get_message](#关键函数msi_get_message)
+    - [关键函数msi_send_message](#关键函数msi_send_message)
+  - [KVM处理ioctl(KVM_SIGNAL_MSI)](#KVM处理ioctl(KVM_SIGNAL_MSI))
+    - [关键函数kvm_send_userspace_msi](#关键函数kvm_send_userspace_msi)
+    - [关键函数kvm_irq_delivery_to_apic](#关键函数kvm_irq_delivery_to_apic)
+  - [MSIX中断模拟](#MSIX中断模拟)
+- [APIC虚拟化](#APIC虚拟化)
+
+- [Reference](#Reference)
+
+### Background
 
 #### 虚拟中断
 
@@ -12,7 +44,7 @@ guest 模式的 CPU 不能检测虚拟中断芯片的引脚，只能在 VM entry
 
 在硬件层面增加对虚拟化的支持。在 guest 模式下实现 `virtual-APIC page` 页面和虚拟中断逻辑。遇到中断时，将中断信息写入`posted-interrupt descriptor`，然后通过特殊的核间中断 `posted-interrupt notification` 通知 CPU，guest 模式下的 CPU 就可以借助虚拟中断逻辑处理中断。
 
-#### PIC 虚拟化
+#### PIC虚拟化
 
 PIC（可编程中断控制器，programmable interrupt controller），通过引脚向 CPU 发送中断信号。而虚拟设备请求中断是通过虚拟 8259A 芯片对外提供的一个 API。
 
@@ -34,7 +66,7 @@ guest 需要读取外设数据时，通过写 I/O 端口触发 CPU 从 guest 到
 
 VMCS 中有字段：`VM-entry interruption-information`，在 VM-entry 时 CPU 会检查这个字段。如果 CPU 正处在 guest 模式，则等待下一次 VM exit 和 VM entry；如果 VCPU 正在睡眠状态，则 kick。
 
-#### APIC 虚拟化
+#### APIC虚拟化
 
 APIC( Advanced Programmable Interrupt Controller)，其可以将接收到的中断按需分给不同的 processor 进行处理，而 PIC 只能应用于单核。
 
@@ -141,7 +173,7 @@ guest 模式下的 CPU 借助 VMCS 中的字段 `guest interrupt status` 评估�
 
 [详情](https://stackoverflow.com/questions/40583848/differences-among-various-interrupts-sci-smi-nmi-and-normal-interrupt)。
 
-#### IRQ 号，中断向量和 GSI
+#### IRQ号，中断向量和GSI
 
 - IRQ 号是 PIC 时代引入的概念，由于 ISA 设备通常是直接连接到到固定的引脚，所以对于 IRQ 号描述了设备连接到了 PIC 的哪个引脚上，同 IRQ 号直接和中断优先级相关，例如 IRQ0 比 IRQ3 的中断优先级更高。
 - GSI 号是 ACPI 引入的概念，全称是 Global System Interrupt，用于为系统中每个中断源指定一个唯一的中断编号。注：ACPI Spec 规定 PIC 的 IRQ 号必须对应到 GSI0-GSI15 上。kvm 默认支持最大 1024 个 GSI。
@@ -211,7 +243,7 @@ guest 模式下的 CPU 借助 VMCS 中的字段 `guest interrupt status` 评估�
 
 在 KVM 模拟虚拟 CPU 的数据结构中有字段 `VM-entry interruption-information field` 即用来设定虚拟机的中断信息。物理机产生的中断要注入到这个字段中，虚拟机的虚拟中断才能处理。
 
-![image-20211025120600116](/home/guanshun/.config/Typora/typora-user-images/image-20211025120600116.png)
+![VM-entry-inter info field.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/VM-entry-inter%20info%20field.png?raw=true)
 
 中断注入的大致流程如下：
 
@@ -422,9 +454,9 @@ static void vmx_queue_exception(struct kvm_vcpu *vcpu)
 }
 ```
 
-#### PIC 中断模拟
+#### PIC中断模拟
 
-##### KVM 中 PIC 的创建
+##### KVM中PIC的创建
 
 和 CPU 一样，终端设备的模拟也分 KVM 端和 QEMU 端。QEMU 端在 `kvm_init` 中通过 ioctl 向 vmfd （这个 fd 在前面介绍过）发起创建 irqchip 的请求，KVM 进行处理。
 
@@ -708,7 +740,7 @@ static int setup_routing_entry(struct kvm *kvm,
 }
 ```
 
-##### QEMU 中 PIC 的初始化
+##### QEMU中PIC的初始化
 
 QEMU 虚拟机的中断状态由 `GSIState` 表示。其中 `qemu_irq` 表示一个中断引脚。
 
@@ -1050,7 +1082,7 @@ void tcg_handle_interrupt(CPUState *cpu, int mask)
 
 最后就是 `qemu_cpu_kick` 通知 CPU 进行处理。
 
-##### 设备使用 PIC 中断
+##### 设备使用PIC中断
 
 pic 设备使用 `isa_init_irq` 申请 irq 资源。每个设备都会传入一个 `isairq` 表示中断引脚号和自己的 `qemu_irq` ，根据 `isairq` 来获取 `isabus` 中对应的 `qemu_irq` ，共有 14 个设备使用 pic 中断。以键盘鼠标为例：
 
@@ -1386,7 +1418,7 @@ static void pic_unlock(struct kvm_pic *s)
 
 这就是整个中断的执行流程。
 
-#### I/O APIC 中断模拟
+#### I/O-APIC中断模拟
 
 I/O apic 模拟的关键是这两个数据结构。`kvm_ioapic` 是 kvm 中用来表示 I/O apic 中断控制器，`kvm_ioapic_redirect_entry` 则表示重定位表项，I/O apic 有 24 个端口，且可以通过编程设置。
 
@@ -1429,7 +1461,7 @@ struct kvm_ioapic {
 
 其中断请求过程和 pic 类似，之后有需要再进一步分析。
 
-#### MSI 中断模拟
+#### MSI中断模拟
 
 上面介绍了 MSI(X) 的基本概念，这里介绍 QEMU 是怎样模拟 MSI(X) 中断的。先看看 PCI 设备是怎样通过 MSI 发起中断的。
 
@@ -1752,7 +1784,7 @@ int kvm_irq_delivery_to_apic(struct kvm *kvm, struct kvm_lapic *src,
 }
 ```
 
-#### MSIX 中断模拟
+#### MSIX中断模拟
 
 MSIX 是在 MSI 的基础上为了支持多个中断增加了 MSI-X Table，具体结构看上面的图。它只在 `pci_default_write_config` 中被调用，而且和 MSI 一起被调用，这是为什么？
 
@@ -1807,7 +1839,7 @@ static void msix_table_mmio_write(void *opaque, hwaddr addr,
 
 MSIX 远不止这些内容，不过目前了解这些已经够用了，之后有需要再进一步分析。
 
-### APIC 虚拟化
+### APIC虚拟化
 
 ### Reference
 
