@@ -729,3 +729,7 @@ x86 架构中 CPU 的模式众多，幸好手册给出了它们之间的关系�
 - 调试时，根据dump推算结构体内容将极为麻烦，因为每个版本、每个平台的布局都将不同。
 
 - 部分以模块形式添加到内核中的驱动，为保持结构体一致性，在编译时需要采用与内核相同的随机数种子，这带来了极大的安全风险。
+
+### efi
+
+EFI 系统分区（EFI system partition，ESP），是一个 [FAT](https://zh.wikipedia.org/wiki/FAT) 或 [FAT32](https://zh.wikipedia.org/wiki/FAT32) 格式的磁盘分区。UEFI 固件可从 ESP 加载 EFI 启动程式或者 EFI 应用程序。
