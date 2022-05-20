@@ -850,3 +850,13 @@ NUMA 内存体系中，每个节点都要初始化一个 bootmem 分配器。
 ### [SWIOTLB](https://blog.csdn.net/liuhangtiant/article/details/87825466)
 
 龙芯 3 号的访存能力是 48 位，而龙芯的顶级 IO 总线是 40 位的，部分 PCI 设备的总线只有 32 位，如果系统为其分配了超过 40 位或 32 位总线寻址能力的地址，那么这些设备就不能访问对应的 DMA 数据，为了**让访存能力有限的 IO 设备能够访问任意的 DMA 空间**，就必须**在硬件上设置一个 DMA 地址 - 物理地址的映射表**，或者由内核在设备可访问的地址范围预先准备一款内存做中转站——SWIOTLB。
+
+### LSX 和 LASZ
+
+龙芯架构下的向量扩展指令，其包括向量扩展（Loongson SIMD Extension, LSX）和高级向量扩展（Loongson Advanced SIMD Extension, LASX）。两个扩展部分均采用 SIMD 指令且功能基本一致，区别是 LSX 操作的向量位宽是 128 位，而 LASX 是 256 位。两者的关系类似与 xmm 和 mmx。
+
+问题：
+
+（1）正常在 LA 架构上运行 LA 内核是这样的，那如果在 LA 架构上运行 x86 内核是怎样的，BootLoader 直接传递 x86 内核的入口地址么。bios 要怎样把 LA 内核拉起来。
+
+（2）源码要结合书一起看，而且要多找即本书，对比着看，因为有些内容，如 ACPI，bootmem 不是所有的书都会详细介绍。我用到的参考书有《基于龙芯的 Linux 内核探索解析》、《深入理解 LINUX 内核》、《深入 LINUX 内核架构》。
