@@ -786,3 +786,63 @@ Device Tree 由一系列被命名的结点（node）和属性（property）组�
 是否 Device Tree 要描述系统中的所有硬件信息？答案是否定的。基本上，那些可以动态探测到的设备是不需要描述的， 例如 USB device。不过对于 SOC 上的 usb hostcontroller，它是无法动态识别的，需要在 device tree 中描述。同样的道理， 在 computersystem 中，PCI device 可以被动态探测到，不需要在 device tree 中描述，但是 PCI bridge 如果不能被探测，那么就需要描述之。
 
 设备树和 ACPI 有什么关系？
+
+### [BootMem 内存分配器](https://cloud.tencent.com/developer/article/1376122)
+
+**[Bootmem](https://www.kernel.org/doc/html/v4.19/core-api/boot-time-mm.html#bootmem) is a boot-time physical memory allocator and configurator**.
+
+It is used early in the boot process before the page allocator is set up.
+
+Bootmem is based on the most basic of allocators, a First Fit allocator which uses a bitmap to represent memory. If a bit is 1, the page is allocated and 0 if unallocated. To satisfy allocations of sizes smaller than a page, the allocator records the **Page Frame Number (PFN)** of the last allocation and the offset the allocation ended at. Subsequent small allocations are merged together and stored on the same page.
+
+The information used by the bootmem allocator is represented by `struct bootmem_data`. An array to hold up to `MAX_NUMNODES` such structures is statically allocated and then it is discarded when the system initialization completes. **Each entry in this array corresponds to a node with memory**. For UMA systems only entry 0 is used.
+
+The bootmem allocator is initialized during early architecture specific setup. Each architecture is required to supply a `setup_arch` function which, among other tasks, is responsible for acquiring the necessary parameters to initialise the boot memory allocator. These parameters define limits of usable physical memory:
+
+- **min_low_pfn** - the lowest PFN that is available in the system
+- **max_low_pfn** - the highest PFN that may be addressed by low memory (`ZONE_NORMAL`)
+- **max_pfn** - the last PFN available to the system.
+
+After those limits are determined, the `init_bootmem` or `init_bootmem_node` function should be called to initialize the bootmem allocator. The UMA case should use the init_bootmem function. It will initialize `contig_page_data` structure that represents the only memory node in the system. In the NUMA case the `init_bootmem_node` function should be called to initialize the bootmem allocator for each node.
+
+Once the allocator is set up, it is possible to use either single node or NUMA variant of the allocation APIs.
+
+现在的 bootmem 初始化是用的 memblock，详细看这个。
+
+LoongArch 的 bootmem 似乎和 x86 的不一样，以下为 x86 的 bootmem 初始化过程。
+
+bootmem_data 结构：
+
+```c
+/**
+ * struct bootmem_data - per-node information used by the bootmem allocator
+ * @node_min_pfn: the starting physical address of the node's memory
+ * @node_low_pfn: the end physical address of the directly addressable memory
+ * @node_bootmem_map: is a bitmap pointer - the bits represent all physical
+ *		      memory pages (including holes) on the node.
+ * @last_end_off: the offset within the page of the end of the last allocation;
+ *                if 0, the page used is full
+ * @hint_idx: the PFN of the page used with the last allocation;
+ *            together with using this with the @last_end_offset field,
+ *            a test can be made to see if allocations can be merged
+ *            with the page used for the last allocation rather than
+ *            using up a full new page.
+ * @list: list entry in the linked list ordered by the memory addresses
+ */
+typedef struct bootmem_data {
+	unsigned long node_min_pfn;
+	unsigned long node_low_pfn;
+	void *node_bootmem_map;
+	unsigned long last_end_off;
+	unsigned long hint_idx;
+	struct list_head list;
+} bootmem_data_t;
+```
+
+bootmem 的需求是简单，因此使用 first fit 的方式。该分配器使用一个位图来管理页，位图中的 bit 数等于物理页数，bit 为 1，表示该页使用；bit 为 0，表示该页未用。在需要分配内存时，bootmem 逐位扫描位图，知道找到一个空间足够大的连续页的位置。这种每次分配都需要从头扫描的方式效率不高，因此内核初始化结束后就转用伙伴系统（连同 slab、slub 或 slob 分配器）。
+
+NUMA 内存体系中，每个节点都要初始化一个 bootmem 分配器。
+
+开始时位图中的 bit 都是 1，根据 BIOS 提供的可用内存区的列表，释放所有可用的内存页。由于 bootmem 需要一些内存页保存位图，必须先调用 reserve_bootmem 分配这些内存页（ACPI 数据和 SMP 启动时的配置也是通过 reserve_bootmem 保存的）。
+
+在停用 bootmem 时，需要扫描位图释放每个未使用的页，释放完后，位图所在的页也要释放。
