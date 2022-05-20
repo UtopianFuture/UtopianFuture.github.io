@@ -1,4 +1,4 @@
-### Interrupt and exception
+## Interrupt and exception
 
 这是测试 LA 内核的中断的小程序。
 
