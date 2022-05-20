@@ -6,14 +6,11 @@
 - [xv6-labs-2020](https://github.com/UtopianFuture/xv6-labs)
 - [debug loongarch kernel in qemu](./kernel/debug-loongarch-kernel-in-qemu.md)
 - [MemBlock in kernel](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/Analysis-memblock_add_range.md)
+- [Seabios source code analysis](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/Analysis-Seabios.md)
 - [Memory Management](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/Memory-Management.md)
 - [Process Schedule](#https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/Process-Schedule.md)
-- [What is UEFI?](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/what-is-uefi.md)
-- [Run helloworld in edk2](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/run-helloworld-in-edk2.md)
-- [How to configure edk2?](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/UEFI.md)
 - [From keyboard to Display](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/From-keyboard-to-Display.md)
 - [kernel init](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/kernel_init.md)
-- [Analysis memblock](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/Analysis-memblock_add_range.md)
 - [kthreadd in kernel](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/kthreadd.md)
 - [workqueue in kernel](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/workqueue.md)
 
@@ -27,10 +24,11 @@
 - [Memory Virtualization](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Memory-Virtualization.md)
 - [Interrupt Virtualization](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Interrupt-Virtualization.md)
 - [Device Virtualization](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Device-Virtualization.md)
-- [QOM](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/QOM.md)
 - [QEMU Event Loop](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/QEMU-event-loop.md)
+- [QEMU pam](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/QEMU-pam.md)
+- [QEMU qom](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/QEMU-qom.md)
 - [QEMU Timer](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/QEMU-timer.md)
-- [Seabios source code analysis](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Analysis-Seabios.md)
+- [QEMU tlb](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/QEMU-tlb.md)
 - [Port serial to BMBT](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/port-serial.md)
 
 ## linux
@@ -47,7 +45,14 @@
 
 ## x86
 
+- [PCIe](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/X86/PCIe.md)
 - [段式管理的数据结构](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/X86/Segment-data-structure.md)
+
+### UEFI
+
+- [What is UEFI?](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/what-is-uefi.md)
+- [Run helloworld in edk2](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/run-helloworld-in-edk2.md)
+- [How to configure edk2?](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/UEFI.md)
 
 ## others
 
