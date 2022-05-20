@@ -1,95 +1,29 @@
-## bmbt 系统级虚拟化
+## start_kernel
 
-## 中期目标
+### 目录
 
-1. 在 loongarch 的 qemu 上输出 hello world.
-2. 了解 CPU 时钟的相关知识，怎样使用 LA 的时钟，利用定时器周期性的输出 hello world.
-3. 实现 glib 功能。
-4. 调研 memory managment 相关设计和实现。
+- [start_kernel](#start_kernel)
+  - [setup_arch](#setup_arch)
+    - [cpu_probe](#cpu_probe)
+    - [plat_early_init](#plat_early_init)
+    - [prom_init](#prom_init)
+    - [arch_mem_init](#arch_mem_init)
+    - [plat_smp_setup](#plat_smp_setup)
+    - [paging_init](#paging_init)
+  - [trap_init](#trap_init)
+  - [init_IRQ](#init_IRQ)
 
-### 零、 虚拟化知识
-
-VMM 对物理资源的虚拟可以归结为三个主要任务：处理器虚拟化、内存虚拟化和 I/O 虚拟化。
-
-#### 1. 可虚拟化架构与不可虚拟化架构
-
-系统级的虚拟机由于 VMM 直接运行在 bare metal 上，整体可以分为 3 个部分：
-
-![](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/bmbt.1.png?raw=true)
-
-在我们的项目中，虚拟机暂时是 ubuntu，虚拟机监控器是 bmbt，硬件是 LoongArch。
-
-敏感指令：操作特权资源的指令，包括修改虚拟机的运行模式或物理机的状态，访存等等。所有的特权指令都是敏感指令，但不是所有的敏感指令都是特权指令。为了 VMM 能够完全控制物理资源，敏感指令必须在 VMM 的监督下才能运行，或者经由 VMM 完成。如果一个系统所有的敏感指令都是特权指令，那么只需要将 VMM 运行在系统的最高特权级上，而 guest 系统运行在非最高特权级上，在执行敏感指令时，陷入到 VMM 中。而如果像 x86 架构一样，不是所有的敏感指令都是特权指令，那么我们就说这种架构存在虚拟化漏洞，是不可虚拟化架构。这种架构需要采用一些辅助方法，如在硬件层面填补虚拟化漏洞——VT；通过软件方法避免使用无法陷入的敏感指令。
-
-问题：BMBT 要怎样解决 x86 的虚拟化漏洞？
-
-#### 2. 处理器虚拟化
-
-##### 2.1 指令模拟
-
-​	guest 运行的架构可能不是原架构，如 ubuntu 只能运行在 x86 架构上，如何使其在 LoongArch 架构的 CPU 上运行却察觉不到和 x86 架构有区别，换句话说，其运行的处理器和 VMM 需要提供与其“期望”的处理器一致的功能和行为。典型的“期望”包括：
-
-（1）指令集和与执行效果。
-
-（2）可用寄存器集合，包括通用寄存器以及各种系统寄存器。
-
-（3）运行模式，如实模式、保护模式和 64 位长模式等。处理器的运行模式决定了指令执行的效果、寻址宽度与限制以及保护粒度等。
-
-（4）地址翻译系统，如页表级数。
-
-（5）保护机制，如分段和分页等。
-
-（6）中断/异常机制，如虚拟处理器必须能够正确模拟真实处理器的行为，在错误的执行条件下，为虚拟机注入一个虚拟的异常。
-
-##### 2.2 中断和异常的模拟及注入
-
-​	VMM 对于异常的虚拟化需要完全按照物理处理器对于各种异常条件的定义，再根据虚拟处理器当时的内容，来判断是否需要模拟出一个虚拟的异常，并注入到 guest 中。
-
-##### 2.3 SMP 模拟
-
-​	底层有 N 个物理 CPU，能够虚拟出 M 个虚拟 CPU。
-
-问题：
-
-1. bmbt 如何达到这一功能，即让 ubuntu 运行在 LoongArch 架构的 CPU 上运行却察觉不到和 x86 架构有区别？仿照 QEMU？
-2. 如何解决虚拟寄存器，上下文切换和虚拟处理器？之前看《LINUX 系统虚拟化》了解到，虚拟 CPU 就是定义一个结构体来表示，如 KVM 中的 VMCS，QEMU 中的 X86State 等，之后所有的操作都是对这个结构体进行操作，bmbt 也是这样实现的么？
-3. 当 guest 要访问敏感资源时，要陷入到 VMM，如何陷入？
-4. 二进制翻译是用 latx 还是用 QEMU 的 tcg？
-
-#### 3. 内存虚拟化(见[linux 系统虚拟化](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/linux-note/linux%E7%B3%BB%E7%BB%9F%E8%99%9A%E6%8B%9F%E5%8C%96.md))
-
-问题：
-
-（1）内存分配算法怎样设计？
-
-#### 4. I/O 虚拟化(见[linux 系统虚拟化](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/linux-note/linux%E7%B3%BB%E7%BB%9F%E8%99%9A%E6%8B%9F%E5%8C%96.md))
-
-​	现实中 I/O 资源是有限的额，为了满足多个 gues 对 I/O 的访问需求，VMM 必须通过 I/O 虚拟化的方式复用有限的 I/O 资源。
-
-问题：
-
-（1）I/O 虚拟化的设计思想是什么？目前进展怎么样？
-
-### 一、调试 LA 内核
-
-#### 1. 环境搭建
-
-[在 qemu 上调试 LoongArch 内核](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/debug%20loongarch%20kernel%20in%20qemu.md)
-
-#### 2. 内核启动过程
+这里分析 LoongArch 内核的初始化过程。
 
 主核的执行入口（PC 寄存器的初始值）是编译内核时决定的，运行时由 BIOS 或者 BootLoader 传递给内核。内核的初始入口是`kernel_entry`。LA 的 `kernel_entry` 和 mips 的类似，进行.bss 段的清 0（包括之后加载用户态进程也需要清 0，[为什么要清 0？](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/linux-note/others.md#bss-%E6%AE%B5%E6%B8%85-0)），保存 a0~a3 等操作。之后就进入到第二入口 `start_kernel`。
 
-通过 gdb 单步调试看 LA 内核是怎样初始化的。但是遇到一个问题，内核使用`-O2`优化项，在单步调试时很多值都是`optimized out`，同时设置断点也不会顺序执行，是跳着执行的，给阅读代码带来困难。后来请教师兄，这是正常的，start_kernel 部分的代码可以直接看源码，不用单步调试。
+通过 gdb 单步调试看 LA 内核是怎样初始化的。但是遇到一个问题，内核使用`-O2`优化项，在单步调试时很多值都是`optimized out`，同时设置断点也不会顺序执行，是跳着执行的，给阅读代码带来困难。后来请教师兄，这是正常的，`start_kernel` 部分的代码可以直接看源码，不用单步调试。
 
-
-### 二、源码阅读
-
-#### 1. start_kernel
+### start_kernel
 
 `start_kernel` 的一级节点中，架构相关的重要函数有 `setup_arch`, `trap_init`, `init_IRQ`, `time_init`。代码中涉及的技术都在之后有介绍。
 
-```plain
+```c
 start_kernel
 | -- local_irq_disable(); // 关中断，中断处理程序没有准备好
                            // 通过标志位
@@ -197,11 +131,11 @@ start_kernel
 \
 ```
 
-##### 1.1 setup_arch
+#### setup_arch
 
 架构相关，代码和 mips 类似，下为代码树展开。
 
-```plain
+```c
 setup_arch
 | -- cpu_probe; // 探测cpu类型，写入cputype中
 |
@@ -261,11 +195,7 @@ setup_arch
 \
 ```
 
-
-
-###### 1.1.1 cpu_probe()
-
-源码分析：
+##### cpu_probe
 
 ```c
 void cpu_probe(void) // probe CPU type, LOONGARCH's processor_id should be 0
@@ -280,7 +210,8 @@ void cpu_probe(void) // probe CPU type, LOONGARCH's processor_id should be 0
 	set_elf_platform(cpu, "loongarch");
 
 	c->cputype	= CPU_UNKNOWN; // 初始化当前cpu的信息
-	c->processor_id = read_cpucfg(LOONGARCH_CPUCFG0); // 有多个CPUCFG，这些CFG是干嘛用的，同时read_cpucfd好像返回的都是0，怎么回事
+    // 有多个CPUCFG，这些CFG是干嘛用的，同时read_cpucfd好像返回的都是0，怎么回事
+	c->processor_id = read_cpucfg(LOONGARCH_CPUCFG0);
 	c->fpu_vers	= (read_cpucfg(LOONGARCH_CPUCFG2) >> 3) & 0x3;
 	c->writecombine = _CACHE_SUC;
 
@@ -333,9 +264,7 @@ void cpu_probe(void) // probe CPU type, LOONGARCH's processor_id should be 0
 }
 ```
 
-###### 1.1.2 plat_early_init
-
-源码分析：
+##### plat_early_init
 
 ```c
 void __init fw_init_cmdline(void)
@@ -360,7 +289,8 @@ void __init prom_init_env(void)
 {
 	efi_bp = (struct bootparamsinterface *)_fw_envp;
 
-	loongson_regaddr_set(smp_group, 0x800000001fe01000, 16); // 设置smp_gropu寄存器，但不知道为什么要设置这些寄存器
+    // 设置 smp_gropu 寄存器，但不知道为什么要设置这些寄存器
+	loongson_regaddr_set(smp_group, 0x800000001fe01000, 16);
 
 	loongson_sysconf.ht_control_base = 0x80000EFDFB000000;
 
@@ -540,9 +470,7 @@ repeat:
 }
 ```
 
-###### 1.1.3 prom_init
-
-源码分析：
+##### prom_init
 
 ```c
 void __init prom_init(void)
@@ -847,9 +775,7 @@ static int __init numa_mem_init(int (*init_func)(void))
 }
 ```
 
-###### 1.1.4 arch_mem_init
-
-源码分析：
+##### arch_mem_init
 
 ```c
 /*
@@ -981,9 +907,9 @@ swiotlb_init(int verbose)
 }
 ```
 
-###### 1.1.5 plat_smp_setup
+##### plat_smp_setup
 
-LoongArch 也使用 loongson3_smp_setup 进行初始化。
+LoongArch 也使用 `loongson3_smp_setup` 进行初始化。
 
 源码分析：
 
@@ -1051,9 +977,7 @@ static void __init loongson3_smp_setup(void)
 }
 ```
 
-###### 1.1.6 paging_init
-
-源码分析：
+##### paging_init
 
 ```c
 void __init free_area_init_nodes(unsigned long *max_zone_pfn)
@@ -1133,7 +1057,7 @@ void __init free_area_init_nodes(unsigned long *max_zone_pfn)
 }
 ```
 
-##### 1.2 trap_init
+#### trap_init
 
 异常初始化。
 
@@ -1215,7 +1139,7 @@ void set_merr_handler(unsigned long offset, void *addr, unsigned long size)
 }
 ```
 
-##### 1.3 init_IRQ
+#### init_IRQ
 
 ```plain
 init_IRQ
@@ -1226,9 +1150,9 @@ init_IRQ
 |
 ```
 
-在 init_IRQ 之前还有一个函数——early_irq_init，用于初始化中断描述符——irq_desc，irq_desc 中包含了每个中断号（IRQ）的芯片数据 irq_data 和总段处理程序 irqaction 等信息。该函数只是设置默认信息，体系相关的设置有 init_IRQ 完成。
+在 `init_IRQ` 之前还有一个函数——`early_irq_init`，用于初始化中断描述符——`irq_desc`，`irq_desc` 中包含了每个中断号（IRQ）的芯片数据 `irq_data` 和中断处理程序 `irqaction` 等信息。该函数只是设置默认信息，体系相关的设置有 `init_IRQ` 完成。
 
-```plain
+```c
 int __init early_irq_init(void)
 {
 	int count, i, node = first_online_node;
@@ -1252,221 +1176,3 @@ int __init early_irq_init(void)
 	return arch_early_irq_init();
 }
 ```
-
-
-
-### 三、相关知识
-
-#### 3.1. [BSS 段清 0](https://www.cnblogs.com/lvzh/p/12079365.html)
-
-BSS 段是保存全局变量和静态局部变量的，因为这两种数据的位置是固定的，所有可以直接保存在 BSS 里，局部变量是保存在栈上。在初始化内核时一次性将 BSS 所有变量初始化为 0 更方便。
-
-#### 3.2. efi
-
-EFI 系统分区（EFI system partition，ESP），是一个[FAT](https://zh.wikipedia.org/wiki/FAT)或[FAT32](https://zh.wikipedia.org/wiki/FAT32)格式的磁盘分区。UEFI 固件可从 ESP 加载 EFI 启动程式或者 EFI 应用程序。
-
-#### 3.3. [cpio](https://unix.stackexchange.com/questions/7276/why-use-cpio-for-initramfs)
-
-cpio 是 UNIX 操作系统的一个文件备份程序及文件格式。
-
-The initial ramdisk needs to be unpacked by the kernel during boot, cpio is used because it is already implemented in kernel code.
-
-All 2.6 Linux kernels **contain a gzipped "cpio" format archive,** which is extracted into rootfs when the kernel boots up.  After extracting, the kernel
-checks to see if rootfs contains a file "init", and if so it executes it as PID. If found, this init process is responsible for bringing the system the rest of the way up, including locating and mounting the real root device (if any).  If rootfs does not contain an init program after the embedded cpio archive is extracted into it, the kernel will fall through to the older code to locate and mount a root partition, then exec some variant of /sbin/init
-out of that.
-
-#### 3.4. ACPI（建议浏览一下 ACPI[手册](https://uefi.org/sites/default/files/resources/ACPI_6_3_final_Jan30.pdf)）
-
-Advanced Configuration and Power Interface (ACPI). Before the development of ACPI, operating systems (OS) primarily used BIOS (Basic Input/
-Output System) interfaces for **power management and device discovery and configuration**.
-
-ACPI can first be understood as an architecture-independent power management and configuration framework that forms a subsystem within the host OS. This framework **establishes a hardware register set to define power states** (sleep, hibernate, wake, etc). The hardware register set can accommodate operations on dedicated hardware and general purpose hardware.
-
-The primary intention of the standard ACPI framework and the hardware register set is to enable power management and system configuration without directly calling firmware natively from the OS. **ACPI serves as an interface layer between the system firmware (BIOS) and the OS**.
-
-There are 2 main parts to ACPI. **The first part** is the tables used by the OS for configuration during boot (these include things like how many CPUs, APIC details, NUMA memory ranges, etc). The second part is the run time ACPI environment, which consists of AML code (a platform independent OOP language that comes from the BIOS and devices) and the ACPI SMM (System Management Mode) code.
-
-关键数据结构：
-
-**RSDT** (Root System Description Table) is a data structure used in the [ACPI](https://wiki.osdev.org/ACPI) programming interface. This table contains pointers to all the other System Description Tables. However there are many kinds of SDT. All the SDT may be split into two parts. One (**the header**) which is common to all the SDT and another (data) which is different for each table. RSDT contains 32-bit physical addresses, XSDT contains 64-bit physical addresses.
-
-#### 3.5. [NUMA](https://zhuanlan.zhihu.com/p/62795773)
-
-NUMA 指的是针对某个 CPU，内存访问的距离和时间是不一样的。其解决了多 CPU 系统下共享 BUS 带来的性能问题（链接中的图很直观）。
-
-NUMA 的特点是：被共享的内存物理上是分布式的，所有这些内存的集合就是全局地址空间。所以处理器访问这些内存的时间是不一样的，显然访问本地内存的速度要比访问全局共享内存或远程访问外地内存要快些。
-
-#### 3.6. initrd
-
-Initrd ramdisk 或者 initrd 是指一个临时文件系统，它在启动阶段被 Linux 内核调用。initrd 主要用于当“根”文件系统被[挂载](https://zh.wikipedia.org/wiki/Mount_(Unix))之前，进行准备工作。
-
-#### 3.7. initramfs
-
-#### 3.8. [设备树（dt）](https://e-mailky.github.io/2019-01-14-dts-1)
-
-Device Tree 由一系列被命名的结点（node）和属性（property）组成，而结点本身可包含子结点。所谓属性， 其实就是成对出现的 name 和 value。在 Device Tree 中，可描述的信息包括（原先这些信息大多被 hard code 到 kernel 中）：
-
-- CPU 的数量和类别
-- 内存基地址和大小
-- 总线和桥
-- 外设连接
-- 中断控制器和中断使用情况
-- GPIO 控制器和 GPIO 使用情况
-- Clock 控制器和 Clock 使用情况
-
-它基本上就是画一棵电路板上 CPU、总线、设备组成的树，**Bootloader 会将这棵树传递给内核**，然后内核可以识别这棵树， 并根据它**展开出 Linux 内核中的** platform_device、i2c_client、spi_device 等**设备**，而这些设备用到的内存、IRQ 等资源， 也被传递给了内核，内核会将这些资源绑定给展开的相应的设备。
-
-是否 Device Tree 要描述系统中的所有硬件信息？答案是否定的。基本上，那些可以动态探测到的设备是不需要描述的， 例如 USB device。不过对于 SOC 上的 usb hostcontroller，它是无法动态识别的，需要在 device tree 中描述。同样的道理， 在 computersystem 中，PCI device 可以被动态探测到，不需要在 device tree 中描述，但是 PCI bridge 如果不能被探测，那么就需要描述之。
-
-设备树和 ACPI 有什么关系？
-
-#### 3.9. [BootMem 内存分配器](https://cloud.tencent.com/developer/article/1376122)
-
-**[Bootmem](https://www.kernel.org/doc/html/v4.19/core-api/boot-time-mm.html#bootmem) is a boot-time physical memory allocator and configurator**.
-
-It is used early in the boot process before the page allocator is set up.
-
-Bootmem is based on the most basic of allocators, a First Fit allocator which uses a bitmap to represent memory. If a bit is 1, the page is allocated and 0 if unallocated. To satisfy allocations of sizes smaller than a page, the allocator records the **Page Frame Number (PFN)** of the last allocation and the offset the allocation ended at. Subsequent small allocations are merged together and stored on the same page.
-
-The information used by the bootmem allocator is represented by `struct bootmem_data`. An array to hold up to `MAX_NUMNODES` such structures is statically allocated and then it is discarded when the system initialization completes. **Each entry in this array corresponds to a node with memory**. For UMA systems only entry 0 is used.
-
-The bootmem allocator is initialized during early architecture specific setup. Each architecture is required to supply a `setup_arch` function which, among other tasks, is responsible for acquiring the necessary parameters to initialise the boot memory allocator. These parameters define limits of usable physical memory:
-
-- **min_low_pfn** - the lowest PFN that is available in the system
-- **max_low_pfn** - the highest PFN that may be addressed by low memory (`ZONE_NORMAL`)
-- **max_pfn** - the last PFN available to the system.
-
-After those limits are determined, the `init_bootmem` or `init_bootmem_node` function should be called to initialize the bootmem allocator. The UMA case should use the init_bootmem function. It will initialize `contig_page_data` structure that represents the only memory node in the system. In the NUMA case the `init_bootmem_node` function should be called to initialize the bootmem allocator for each node.
-
-Once the allocator is set up, it is possible to use either single node or NUMA variant of the allocation APIs.
-
-现在的 bootmem 初始化是用的 memblock，详细看这个。
-
-LoongArch 的 bootmem 似乎和 x86 的不一样，以下为 x86 的 bootmem 初始化过程。
-
-bootmem_data 结构：
-
-```c
-/**
- * struct bootmem_data - per-node information used by the bootmem allocator
- * @node_min_pfn: the starting physical address of the node's memory
- * @node_low_pfn: the end physical address of the directly addressable memory
- * @node_bootmem_map: is a bitmap pointer - the bits represent all physical
- *		      memory pages (including holes) on the node.
- * @last_end_off: the offset within the page of the end of the last allocation;
- *                if 0, the page used is full
- * @hint_idx: the PFN of the page used with the last allocation;
- *            together with using this with the @last_end_offset field,
- *            a test can be made to see if allocations can be merged
- *            with the page used for the last allocation rather than
- *            using up a full new page.
- * @list: list entry in the linked list ordered by the memory addresses
- */
-typedef struct bootmem_data {
-	unsigned long node_min_pfn;
-	unsigned long node_low_pfn;
-	void *node_bootmem_map;
-	unsigned long last_end_off;
-	unsigned long hint_idx;
-	struct list_head list;
-} bootmem_data_t;
-```
-
-bootmem 的需求是简单，因此使用 first fit 的方式。该分配器使用一个位图来管理页，位图中的 bit 数等于物理页数，bit 为 1，表示该页使用；bit 为 0，表示该页未用。在需要分配内存时，bootmem 逐位扫描位图，知道找到一个空间足够大的连续页的位置。这种每次分配都需要从头扫描的方式效率不高，因此内核初始化结束后就转用伙伴系统（连同 slab、slub 或 slob 分配器）。
-
-NUMA 内存体系中，每个节点都要初始化一个 bootmem 分配器。
-
-开始时位图中的 bit 都是 1，根据 BIOS 提供的可用内存区的列表，释放所有可用的内存页。由于 bootmem 需要一些内存页保存位图，必须先调用 reserve_bootmem 分配这些内存页（ACPI 数据和 SMP 启动时的配置也是通过 reserve_bootmem 保存的）。
-
-在停用 bootmem 时，需要扫描位图释放每个未使用的页，释放完后，位图所在的页也要释放。
-
-#### 3.10. [SWIOTLB](https://blog.csdn.net/liuhangtiant/article/details/87825466)
-
-龙芯 3 号的访存能力是 48 位，而龙芯的顶级 IO 总线是 40 位的，部分 PCI 设备的总线只有 32 位，如果系统为其分配了超过 40 位或 32 位总线寻址能力的地址，那么这些设备就不能访问对应的 DMA 数据，为了让访存能力有限的 IO 设备能够访问任意的 DMA 空间，就必须在硬件上设置一个 DMA 地址-物理地址的映射表，或者由内核在设备可访问的地址范围预先准备一款内存做中转站——SWIOTLB。
-
-#### 3.11. IOMMU
-
- **Input–output memory management unit** (**IOMMU**) is a memory management unit (MMU) that **connects a direct-memory-access–capable (DMA-capable) I/O bus to the main memory**. Like a traditional MMU, which translates CPU-visible virtual addresses to physical addresses, the IOMMU maps device-visible virtual addresses (also called *device addresses* or *I/O addresses* in this context) to physical addresses. Some units also provide memory protection from faulty or malicious devices. It's function is same as SWIOTLB.
-
-#### 3.12. 节点
-
-系统的物理内存被划分为几个节点（node)，每个节点的物理内存又分为一个管理区（zone）:
-
-- ZONE_DMA: 包含低于 16MB 的内存页框；
-- ZONE_MORMAL: 包含高于 16MB 且低于 896MB 的内存页框；
-- ZONE_HIGHMEM: 包含从 896MB 开始的内存页框。
-
-#### 3.13. LSX 和 LASZ
-
-龙芯架构下的向量扩展指令，其包括向量扩展（Loongson SIMD Extension, LSX）和高级向量扩展（Loongson Advanced SIMD Extension, LASX）。两个扩展部分均采用 SIMD 指令且功能基本一致，区别是 LSX 操作的向量位宽是 128 位，而 LASX 是 256 位。两者的关系类似与 xmm 和 mmx。
-
-问题：
-
-（1）正常在 LA 架构上运行 LA 内核是这样的，那如果在 LA 架构上运行 x86 内核是怎样的，BootLoader 直接传递 x86 内核的入口地址么。bios 要怎样把 LA 内核拉起来。
-
-（2）源码要结合书一起看，而且要多找即本书，对比着看，因为有些内容，如 ACPI，bootmem 不是所有的书都会详细介绍。我用到的参考书有《基于龙芯的 Linux 内核探索解析》、《深入理解 LINUX 内核》、《深入 LINUX 内核架构》。
-
-### 四、DEGUG
-
-4.1. 各种[配置参数](https://github.com/Martins3/Martins3.github.io/blob/master/hack/qemu/x64-e1000/alpine.sh)
-
-### 五、BMBT 杂记
-
-- PAM: Programmable Attribute Map registers
-
-  PAM 的作用可以将对于 bios 空间读写转发到 PCI 或者 RAM 中，因为读 ROM 比较慢。
-
-- 这两个 bios 地址区间有什么区别？
-
-  ```c
-  include/hw/pci-host/pam.h
-  #define PAM_EXBIOS_BASE 0xe0000
-  #define PAM_EXBIOS_SIZE 0x04000
-
-  #define PAM_BIOS_BASE 0xf0000
-  #define PAM_BIOS_END 0xfffff
-  ```
-
-- 交叉验证
-
-  用 bmbt 和 qemu 分别跑 tiny kernel ，编译 tiny kernel  参考这篇 [blog](https://weeraman.com/building-a-tiny-linux-kernel-8c07579ae79d)。其中 tty 和 printk 两个选项要打开。
-
-  qemu 跑 tiny kernel 的命令
-
-  ```plain
-  ./qemu-system-x86_64 --enable-kvm -m 8192 -chardev file,path=/home/guanshun/gitlab/bmbt/seabios.log,id=seabios -device isa-debugcon,iobase=0x402,chardev=seabios -kernel /home/guanshun/gitlab/bmbt/image/bzImage -append "console=ttyS0 earlyprintk=serial debug"
-  ```
-
-- 用如下命令跑 kernel 时出现如下界面是因为没有给 qemu 指定输出。
-
-  ```plain
-  ./qemu-system-i386 -m 8192 -kernel /home/guanshun/research/bmbt/bzImage -append "console=ttyS0 earlyprintk=serial debug"
-  ```
-
-  ![image-20211126171915639](/home/guanshun/.config/Typora/typora-user-images/image-20211126171915639.png)
-
-  加上 --nographic 命令就行。
-
-  ```plain
-  ./qemu-system-i386 -m 8192 -kernel /home/guanshun/research/bmbt/bzImage -append "console=ttyS0 earlyprintk=serial debug" --nographic
-  ```
-
-
-- AioContext
-
-  这个结构体是 QEMU 事件循环机制的事件源，但是 bmbt 中不用事件循环机制，所以所有涉及到的函数都不需要。
-
-- bmbt 有异步操作么，例如 I/O 等等，是同步还是异步?
-
-- 在 LA 上用 QEMU+KVM 运行 bmbt 。注意路径要修改。
-
-  ```plain
-  配置 QEMU
-  ./configure --target-list=loongarch64-softmmu --enable-debug --enable-profiler --disable-rdma --disable-pvrdma --disable-libiscsi --disable-libnfs --disable-libpmem --disable-glusterfs --disable-opengl --disable-xen --disable-werror --disable-capstone --disable-spice --disable-libusb --disable-usb-redir --audio-drv-list='' --enable-kvm --enable-tcg-interpreter
-  运行
-  sudo ./qemu-system-loongarch64 -nographic -m 2G -cpu Loongson-3A5000 -serial mon:stdio -bios /home/xieby1/lgs/qemu-la/pc-bios/loongarch_bios.bin -enable-kvm -M loongson7a_v1.0,accel=kvm -drive file=/home/xieby1/lgs/Loongnix-20.mini.loongarch64.rc1.b2.qcow2,if=virtio -kernel /home/xieby1/lgs/test/la_hello.elf  -append "console=ttyS0 root=/dev/vda1"
-  ```
-
-
-- 在未移植完 c 库之前不能直接在 QEMU 上跑
-- ram-below-4g 和 ram-above-4g 分别表示什么？
