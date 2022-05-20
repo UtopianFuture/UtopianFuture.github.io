@@ -733,3 +733,13 @@ x86 架构中 CPU 的模式众多，幸好手册给出了它们之间的关系�
 ### efi
 
 EFI 系统分区（EFI system partition，ESP），是一个 [FAT](https://zh.wikipedia.org/wiki/FAT) 或 [FAT32](https://zh.wikipedia.org/wiki/FAT32) 格式的磁盘分区。UEFI 固件可从 ESP 加载 EFI 启动程式或者 EFI 应用程序。
+
+### [cpio](https://unix.stackexchange.com/questions/7276/why-use-cpio-for-initramfs)
+
+cpio 是 UNIX 操作系统的一个文件备份程序及文件格式。
+
+The initial ramdisk needs to be unpacked by the kernel during boot, cpio is used because it is already implemented in kernel code.
+
+All 2.6 Linux kernels **contain a gzipped "cpio" format archive,** which is extracted into rootfs when the kernel boots up.  After extracting, the kernel
+checks to see if rootfs contains a file "init", and if so it executes it as PID. If found, this init process is responsible for bringing the system the rest of the way up, including locating and mounting the real root device (if any).  If rootfs does not contain an init program after the embedded cpio archive is extracted into it, the kernel will fall through to the older code to locate and mount a root partition, then exec some variant of /sbin/init
+out of that.
