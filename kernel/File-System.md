@@ -472,6 +472,267 @@ struct fdtable {
 
 ### 文件系统处理
 
+Linux 使用系统的根文件系统（？），其由内核在引导阶段直接安装，并拥有系统初始化脚本以及最基本的系统程序。其他文件系统要么由初始化脚本安装，要么由用户直接安装在已安装文件系统的目录上。
+
+#### 命名空间
+
+在传统的 Unix 系统中，只有一个已安装文件系统树：从系统的根文件系统开始，每个进程通过指定合适的路径名可以访问已安装文件系统中的任何文件。而从 Linux 2.6 开始，每个进程可以拥有自己的已安装文件系统树——进程的命名空间（namespace）。
+
+通常大多数进程共享一个命名空间，即位于系统的根文件系统且被 init 进程使用的已安装文件系统树。不过如果 `clone` 系统调用以 `CLONE_NEWS` 标志创建一个新进程，那么新进程将获取这个新的命名空间。
+
+#### 安装普通文件系统
+
+这部分分析内核安装一个文件系统需要执行的操作，首先考虑一个文件系统将被安装在一个已安装文件系统之上的情形。`mount` 系统调用被用来安装一个普通文件系统，它的执行函数是 `sys_mount`。
+
+```c
+// 文件系统所在的设备文件的路径名
+// 文集呐系统被安装在某个目录的路径名（安装点）
+// 文件系统的类型，有 MS_RDONLY, MS_NOSUID, MS_NODEV 等等
+// 安装标志
+// 指向一个与文件系统相关的数据结构
+SYSCALL_DEFINE5(mount, char __user *, dev_name, char __user *, dir_name,
+		char __user *, type, unsigned long, flags, void __user *, data)
+{
+	int ret;
+	char *kernel_type;
+	char *kernel_dev;
+	void *options;
+
+	kernel_type = copy_mount_string(type); // 将参数从用户进程空间拷贝到内核空间
+
+	kernel_dev = copy_mount_string(dev_name);
+
+	options = copy_mount_options(data);
+
+	ret = do_mount(kernel_dev, dir_name, kernel_type, flags, options);
+
+	...
+
+	return ret;
+}
+```
+
+##### 关键函数do_mount
+
+```c
+long do_mount(const char *dev_name, const char __user *dir_name,
+		const char *type_page, unsigned long flags, void *data_page)
+{
+	struct path path; // 这个数据结构是用来干嘛的
+	int ret;
+
+	ret = user_path_at(AT_FDCWD, dir_name, LOOKUP_FOLLOW, &path); // 获取路径名
+	if (ret)
+		return ret;
+	ret = path_mount(dev_name, &path, type_page, flags, data_page); // 检查众多标志位
+	path_put(&path);
+	return ret;
+}
+```
+
+下面我们看看 `sysfs` 特殊文件系统的挂载过程，
+
+```plain
+#0  do_mount (dev_name=dev_name@entry=0xffff888100c26070 "sysfs", // 该特殊文件系统为 sysfs
+    dir_name=dir_name@entry=0x7fffd702ff8a "/sys", // 挂载点为 /sys
+    type_page=type_page@entry=0xffff888100c26608 "sysfs", flags=flags@entry=32782,
+    data_page=data_page@entry=0x0 <fixed_percpu_data>) at fs/namespace.c:3328
+#1  0xffffffff8135576b in __do_sys_mount (data=<optimized out>, flags=32782,
+    type=<optimized out>, dir_name=0x7fffd702ff8a "/sys", dev_name=<optimized out>)
+    at fs/namespace.c:3539
+#2  __se_sys_mount (data=<optimized out>, flags=32782, type=<optimized out>,
+    dir_name=140736800685962, dev_name=<optimized out>) at fs/namespace.c:3516
+#3  __x64_sys_mount (regs=<optimized out>) at fs/namespace.c:3516
+#4  0xffffffff81c0711b in do_syscall_x64 (nr=<optimized out>, regs=0xffffc90000473f58)
+    at arch/x86/entry/common.c:50
+#5  do_syscall_64 (regs=0xffffc90000473f58, nr=<optimized out>) at arch/x86/entry/common.c:80
+#6  0xffffffff81e0007c in entry_SYSCALL_64 () at arch/x86/entry/entry_64.S:113
+#7  0x0000000000000000 in ?? ()
+```
+
+```c
+int path_mount(const char *dev_name, struct path *path,
+		const char *type_page, unsigned long flags, void *data_page)
+{
+	unsigned int mnt_flags = 0, sb_flags;
+	int ret;
+
+	...
+
+	/* Separate the per-mountpoint flags */
+	if (flags & MS_NOSUID)
+		mnt_flags |= MNT_NOSUID;
+	if (flags & MS_NODEV)
+		mnt_flags |= MNT_NODEV;
+	if (flags & MS_NOEXEC)
+		mnt_flags |= MNT_NOEXEC;
+	if (flags & MS_NOATIME)
+		mnt_flags |= MNT_NOATIME;
+	if (flags & MS_NODIRATIME)
+		mnt_flags |= MNT_NODIRATIME;
+	if (flags & MS_STRICTATIME)
+		mnt_flags &= ~(MNT_RELATIME | MNT_NOATIME);
+	if (flags & MS_RDONLY)
+		mnt_flags |= MNT_READONLY;
+	if (flags & MS_NOSYMFOLLOW)
+		mnt_flags |= MNT_NOSYMFOLLOW;
+
+	/* The default atime for remount is preservation */
+	if ((flags & MS_REMOUNT) &&
+	    ((flags & (MS_NOATIME | MS_NODIRATIME | MS_RELATIME |
+		       MS_STRICTATIME)) == 0)) {
+		mnt_flags &= ~MNT_ATIME_MASK;
+		mnt_flags |= path->mnt->mnt_flags & MNT_ATIME_MASK;
+	}
+
+	sb_flags = flags & (SB_RDONLY | // 设置 superblock 的标志位
+			    SB_SYNCHRONOUS |
+			    SB_MANDLOCK |
+			    SB_DIRSYNC |
+			    SB_SILENT |
+			    SB_POSIXACL |
+			    SB_LAZYTIME |
+			    SB_I_VERSION);
+
+	if ((flags & (MS_REMOUNT | MS_BIND)) == (MS_REMOUNT | MS_BIND))
+		return do_reconfigure_mnt(path, mnt_flags);
+	if (flags & MS_REMOUNT) // 该标志位表示改变 sb->s_flags 的安装标志一级已安装文件系统 mnt_flags 字段
+		return do_remount(path, flags, sb_flags, mnt_flags, data_page);
+	if (flags & MS_BIND) // 在系统目录树的另一个安装点上的文件或目录是可见的
+		return do_loopback(path, dev_name, flags & MS_REC);
+	if (flags & (MS_SHARED | MS_PRIVATE | MS_SLAVE | MS_UNBINDABLE))
+		return do_change_type(path, flags); // 改变文件系统的类型
+	if (flags & MS_MOVE) // 改变已安装文件系统的安装点
+		return do_move_mount_old(path, dev_name);
+
+    // 最普通的情况，安装一个特殊文件系统或者存放在磁盘分区中的普通文件系统
+	return do_new_mount(path, type_page, sb_flags, mnt_flags, dev_name,
+			    data_page);
+}
+```
+
+##### 关键函数do_new_mount_fc
+
+`do_new_mount` -> `do_new_mount_fc`
+
+```c
+
+ * Create a new mount using a superblock configuration and request it
+ * be added to the namespace tree.
+ */
+static int do_new_mount_fc(struct fs_context *fc, struct path *mountpoint,
+			   unsigned int mnt_flags)
+{
+	struct vfsmount *mnt;
+	struct mountpoint *mp;
+	struct super_block *sb = fc->root->d_sb;
+	int error;
+
+	error = security_sb_kern_mount(sb);
+	if (!error && mount_too_revealing(sb, &mnt_flags))
+		error = -EPERM;
+
+	if (unlikely(error)) {
+		fc_drop_locked(fc);
+		return error;
+	}
+
+	up_write(&sb->s_umount);
+
+	mnt = vfs_create_mount(fc);
+	if (IS_ERR(mnt))
+		return PTR_ERR(mnt);
+
+	mnt_warn_timestamp_expiry(mountpoint, mnt);
+
+	mp = lock_mount(mountpoint);
+	if (IS_ERR(mp)) {
+		mntput(mnt);
+		return PTR_ERR(mp);
+	}
+	error = do_add_mount(real_mount(mnt), mp, mountpoint, mnt_flags);
+	unlock_mount(mp);
+	if (error < 0)
+		mntput(mnt);
+	return error;
+}
+```
+
+##### 关键函数vfs_create_mount
+
+```c
+/**
+ * vfs_create_mount - Create a mount for a configured superblock
+ * @fc: The configuration context with the superblock attached
+ *
+ * Create a mount to an already configured superblock.  If necessary, the
+ * caller should invoke vfs_get_tree() before calling this.
+ *
+ * Note that this does not attach the mount to anything.
+ */
+struct vfsmount *vfs_create_mount(struct fs_context *fc)
+{
+	struct mount *mnt;
+
+	if (!fc->root)
+		return ERR_PTR(-EINVAL);
+
+	mnt = alloc_vfsmnt(fc->source ?: "none");
+	if (!mnt)
+		return ERR_PTR(-ENOMEM);
+
+	if (fc->sb_flags & SB_KERNMOUNT)
+		mnt->mnt.mnt_flags = MNT_INTERNAL;
+
+	atomic_inc(&fc->root->d_sb->s_active);
+	mnt->mnt.mnt_sb		= fc->root->d_sb;
+	mnt->mnt.mnt_root	= dget(fc->root);
+	mnt->mnt_mountpoint	= mnt->mnt.mnt_root;
+	mnt->mnt_parent		= mnt;
+
+	lock_mount_hash();
+	list_add_tail(&mnt->mnt_instance, &mnt->mnt.mnt_sb->s_mounts);
+	unlock_mount_hash();
+	return &mnt->mnt;
+}
+EXPORT_SYMBOL(vfs_create_mount);
+```
+
+##### 关键函数do_add_mount
+
+```c
+/*
+ * add a mount into a namespace's mount tree
+ */
+static int do_add_mount(struct mount *newmnt, struct mountpoint *mp,
+			struct path *path, int mnt_flags)
+{
+	struct mount *parent = real_mount(path->mnt);
+
+	mnt_flags &= ~MNT_INTERNAL_FLAGS;
+
+	if (unlikely(!check_mnt(parent))) {
+		/* that's acceptable only for automounts done in private ns */
+		if (!(mnt_flags & MNT_SHRINKABLE))
+			return -EINVAL;
+		/* ... and for those we'd better have mountpoint still alive */
+		if (!parent->mnt_ns)
+			return -EINVAL;
+	}
+
+	/* Refuse the same filesystem on the same mount point */
+	if (path->mnt->mnt_sb == newmnt->mnt.mnt_sb &&
+	    path->mnt->mnt_root == path->dentry)
+		return -EBUSY;
+
+	if (d_is_symlink(newmnt->mnt.mnt_root))
+		return -EINVAL;
+
+	newmnt->mnt.mnt_flags = mnt_flags;
+	return graft_tree(newmnt, parent, mp);
+}
+```
+
 ### 路径名查找
 
 ### VFS 系统调用的实现
