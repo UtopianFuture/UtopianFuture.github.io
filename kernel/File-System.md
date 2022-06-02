@@ -40,7 +40,9 @@ VFS 为了支持尽可能多的文件系统，引入了一个通用的文件模�
 
 ### VFS 的数据结构
 
-这节介绍 VFS 相关的数据结构及其关系。
+这节介绍 VFS 相关的数据结构及其关系。这些数据结构都是通过 slub 描述符分配内存空间。我们先看看整体的关系图。
+
+![VFS.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/VFS.png?raw=true)
 
 #### super_block
 
@@ -295,7 +297,7 @@ struct inode {
 
 #### file
 
-该数据结构描述进程怎样与一个打开的文件进行交互。`struct file` 在磁盘上没有对应的映像，所以没有 `dirty` 位。
+该数据结构描述进程怎样与一个打开的文件进行交互（文件描述符？）。`struct file` 在磁盘上没有对应的映像，所以没有 `dirty` 位。
 
 ```c
 struct file {
@@ -343,7 +345,7 @@ struct file {
 
 #### dentry
 
-VFS 把每个目录看作由若干个子目录和文件组成的一个普通的文件。对于进程查找的路径名中的每个分量，内核都为其**创建一个目录项对象**，目录项对象将每个分量域器及对应的索引节点联系。
+VFS 把每个目录看作由若干个子目录和文件组成的一个普通的文件，当从实际的磁盘文件系统中读取目录项到内存时，VFS 会将其转换成基于 dentry 结构的一个目录项对象。对于进程查找的路径名中的每个分量，内核都为其**创建一个目录项对象**，目录项对象将每个分量与其对应的索引节点相联系。
 
 ```c
 struct dentry {
@@ -444,6 +446,8 @@ struct fdtable {
 ```
 
 `fdtable->fd` 通常指向 `files_struct->fd_array`，该数组的索引就是文件描述符（哪个数据结构？），通常第一个元素（索引为 0）时进程的标准输入文件，第二个是标准输出文件（索引为 1），第三个是标准错误文件（索引为 2）。
+
+我们打开了一个文件后，操作系统会跟踪进程打开的所有文件，即**为每个进程维护一个打开文件表**，文件表里的每一项代表「**文件描述符**」，所以说文件描述符是打开文件的标识。
 
 ### 文件系统类型
 
@@ -734,6 +738,202 @@ static int do_add_mount(struct mount *newmnt, struct mountpoint *mp,
 ```
 
 ### 路径名查找
+
+路径名查找也就是根据给定的文件路径名导出相应的索引节点。执行这一任务的标准过程就是分析路径名并把它们拆分成一个文件名序列。根据第一个字符是不是 “/” 决定从 `current -> fs -> root` 还是 `current -> fs -> pwd` 开始搜索。
+
+整个查找过程是一个循环，内核首先检查与第一个名字匹配的目录项以获取相应的索引节点，然后从磁盘中读取包含哪个索引节点的目录，并检查与第二个名字匹配的目录项，以获取第二个索引节点，如此反复。而反复读取磁盘效率低下，所以有目录项高速缓存，将最近常使用的目录项保存在内存中。
+
+虽然 Linux 使用万物皆文件的思想，但路径名的查找并不想上面描述的那样简单，有很多情况需要考虑：
+
+- 检查每个目录的访问权限；
+- 文件名可能是与任意一个路径名对应的符号链接，这样需要扩展到那个路径名的所有分量（是不是符号链接对应的文件？）；
+- 符号链接可能导致循环引用；
+- 文件名可能是一个已安装的文件系统的安装点，这样需要扩展到新的文件系统（这个很好理解，因为我装的双系统，能够在 Linux 中访问 windows 的文件）；
+- 路径名查找应该发生在发起该系统调用的进程所在的命名空间，不同命名空间中两个进程可能使用同一个文件名。
+
+内核的路径名查找是由 `path_lookupat` 完成的，
+
+```c
+/* Returns 0 and nd will be valid on success; Retuns error, otherwise. */
+static int path_lookupat(struct nameidata *nd, unsigned flags, struct path *path)
+{ // nameidata 存放了查找操作的结果
+	const char *s = path_init(nd, flags); // 初始化 namaidata 的标志位等等
+	int err;
+
+	if (unlikely(flags & LOOKUP_DOWN) && !IS_ERR(s)) { // 暂时不清楚 LOOKUP_DOWN 是干啥的
+		err = handle_lookup_down(nd);
+		if (unlikely(err < 0))
+			s = ERR_PTR(err);
+	}
+
+	while (!(err = link_path_walk(s, nd)) &&
+	       (s = lookup_last(nd)) != NULL)
+		;
+	if (!err && unlikely(nd->flags & LOOKUP_MOUNTPOINT)) {
+		err = handle_lookup_down(nd);
+		nd->state &= ~ND_JUMPED; // no d_weak_revalidate(), please...
+	}
+	if (!err)
+		err = complete_walk(nd);
+
+	if (!err && nd->flags & LOOKUP_DIRECTORY)
+		if (!d_can_lookup(nd->path.dentry))
+			err = -ENOTDIR;
+	if (!err) {
+		*path = nd->path;
+		nd->path.mnt = NULL;
+		nd->path.dentry = NULL;
+	}
+	terminate_walk(nd);
+	return err;
+}
+```
+
+##### nameidata
+
+变化很大，和 understanding 上。
+
+```c
+struct nameidata {
+	struct path	path;
+	struct qstr	last; // 路径名的最后一个分量
+	struct path	root;
+	struct inode	*inode; /* path.dentry.d_inode */
+	unsigned int	flags, state;
+	unsigned	seq, m_seq, r_seq;
+	int		last_type;
+	unsigned	depth; // 符号链接嵌套的当前级别
+	int		total_link_count;
+	struct saved {
+		struct path link;
+		struct delayed_call done;
+		const char *name;
+		unsigned seq;
+	} *stack, internal[EMBEDDED_LEVELS];
+	struct filename	*name;
+	struct nameidata *saved;
+	unsigned	root_seq;
+	int		dfd;
+	kuid_t		dir_uid;
+	umode_t		dir_mode;
+} __randomize_layout;
+```
+
+#### 关键函数link_path_walk
+
+```c
+/*
+ * Name resolution.
+ * This is the basic name resolution function, turning a pathname into
+ * the final dentry. We expect 'base' to be positive and a directory.
+ *
+ * Returns 0 and nd will have valid dentry and mnt on success.
+ * Returns error and drops reference to input namei data on failure.
+ */
+static int link_path_walk(const char *name, struct nameidata *nd)
+{
+	int depth = 0; // depth <= nd->depth
+	int err;
+
+	nd->last_type = LAST_ROOT;
+	nd->flags |= LOOKUP_PARENT;
+	if (IS_ERR(name))
+		return PTR_ERR(name);
+	while (*name=='/')
+		name++;
+	if (!*name) {
+		nd->dir_mode = 0; // short-circuit the 'hardening' idiocy
+		return 0;
+	}
+
+	/* At this point we know we have a real path component. */
+	for(;;) {
+		struct user_namespace *mnt_userns;
+		const char *link;
+		u64 hash_len;
+		int type;
+
+		mnt_userns = mnt_user_ns(nd->path.mnt);
+		err = may_lookup(mnt_userns, nd);
+		if (err)
+			return err;
+
+		hash_len = hash_name(nd->path.dentry, name);
+
+		type = LAST_NORM;
+		if (name[0] == '.') switch (hashlen_len(hash_len)) {
+			case 2:
+				if (name[1] == '.') {
+					type = LAST_DOTDOT;
+					nd->state |= ND_JUMPED;
+				}
+				break;
+			case 1:
+				type = LAST_DOT;
+		}
+		if (likely(type == LAST_NORM)) {
+			struct dentry *parent = nd->path.dentry;
+			nd->state &= ~ND_JUMPED;
+			if (unlikely(parent->d_flags & DCACHE_OP_HASH)) {
+				struct qstr this = { { .hash_len = hash_len }, .name = name };
+				err = parent->d_op->d_hash(parent, &this);
+				if (err < 0)
+					return err;
+				hash_len = this.hash_len;
+				name = this.name;
+			}
+		}
+
+		nd->last.hash_len = hash_len;
+		nd->last.name = name;
+		nd->last_type = type;
+
+		name += hashlen_len(hash_len);
+		if (!*name)
+			goto OK;
+		/*
+		 * If it wasn't NUL, we know it was '/'. Skip that
+		 * slash, and continue until no more slashes.
+		 */
+		do {
+			name++;
+		} while (unlikely(*name == '/'));
+		if (unlikely(!*name)) {
+OK:
+			/* pathname or trailing symlink, done */
+			if (!depth) {
+				nd->dir_uid = i_uid_into_mnt(mnt_userns, nd->inode);
+				nd->dir_mode = nd->inode->i_mode;
+				nd->flags &= ~LOOKUP_PARENT;
+				return 0;
+			}
+			/* last component of nested symlink */
+			name = nd->stack[--depth].name;
+			link = walk_component(nd, 0);
+		} else {
+			/* not the last component */
+			link = walk_component(nd, WALK_MORE);
+		}
+		if (unlikely(link)) {
+			if (IS_ERR(link))
+				return PTR_ERR(link);
+			/* a symlink to follow */
+			nd->stack[depth++].name = name;
+			name = link;
+			continue;
+		}
+		if (unlikely(!d_can_lookup(nd->path.dentry))) {
+			if (nd->flags & LOOKUP_RCU) {
+				if (!try_to_unlazy(nd))
+					return -ECHILD;
+			}
+			return -ENOTDIR;
+		}
+	}
+}
+```
+
+
 
 ### VFS 系统调用的实现
 
