@@ -126,7 +126,7 @@ struct PCIDevice {
     MemoryRegion bus_master_enable_region;
 
     /* do not access the following fields */
-    PCIConfigReadFunc *config_read; // 对应的回调幻术
+    PCIConfigReadFunc *config_read; // 对应的回调函数
     PCIConfigWriteFunc *config_write;
 
     /* Legacy PCI VGA regions */
@@ -140,7 +140,7 @@ struct PCIDevice {
     uint32_t cap_present;
 
     /* Offset of MSI-X capability in config space */
-    uint8_t msix_cap; // MSI 中断方式也需要了解啊
+    uint8_t msix_cap; // MSI(X) 中断方式
 
     /* MSI-X entries */
     int msix_entries_nr;
@@ -178,17 +178,7 @@ struct PCIDevice {
     MemoryRegion rom;
     uint32_t rom_bar;
 
-    /* INTx routing notifier */
-    PCIINTxRoutingNotifier intx_routing_notifier;
-
-    /* MSI-X notifiers */
-    MSIVectorUseNotifier msix_vector_use_notifier;
-    MSIVectorReleaseNotifier msix_vector_release_notifier;
-    MSIVectorPollNotifier msix_vector_poll_notifier;
-
-    /* ID of standby device in net_failover pair */
-    char *failover_pair_id;
-    uint32_t acpi_index;
+    ...
 };
 ```
 

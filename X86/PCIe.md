@@ -120,7 +120,7 @@ PCI: Using 00:02.0 for primary VGA
 
 This Configuration Address Space is accessible via:
 
-- **Configuration Access Mechanism (CAM)** – PCI legacy method using I/O ports 0xCF8 (32-bit configuration address to access) and 0xCFC (data to and from the access). This method only supports 256 buses, each with up to 32 devices, each supporting 8 functions, and assumes use of PCI Segment 0. Either do it in x86 using the OUT instruction or use compiler intrinsic __outbyte(port, data).
+- **Configuration Access Mechanism (CAM)** – PCI legacy method using I/O ports `0xCF8` (32-bit configuration address to access) and `0xCFC` (data to and from the access). This method only supports 256 buses, each with up to 32 devices, each supporting 8 functions, and assumes use of PCI Segment 0. Either do it in x86 using the OUT instruction or use compiler intrinsic __outbyte(port, data).
 - **Enhanced Configuration Access Mechanism (ECAM)** – PCIe supports access to device configuration spaces via a memory mapped address range, and ECAM support devices extends the config space from 256 bytes to 4096 bytes. ECAM also introduces PCI Segments, allowing more than 256 buses to be accessible by the CPU.
 
 Using the legacy CAM method for example to access config space of an Nvidia video card device on BDF 03.00.0 and read the DeviceId at register 0x4, we could would construct the address like so `80000000h | 03h << 16 | 00h << 11 | 0h << 8 | 4 ` giving us `80030004h`.
@@ -129,12 +129,12 @@ Using the ECAM method, we could access config space proprietary register 0x500 o
 
 ### MSI
 
-MSI 是在 PCIe 的基础上设计的中断方式，关于 PCIe 的介绍可以看[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Device-Virtualization.md#pci%E8%AE%BE%E5%A4%87%E6%A8%A1%E6%8B%9F)。从 PCI 2.1 开始，如果设备需要扩展某种特性，可以向配置空间中的 Capabilities List 中增加一个 Capability，MSI 利用这个特性，将 I/O APIC 中的功能扩展到设备自身。我们来看看 MSI Capability 有哪些域。MSI Capability的ID为5， 共有四种组成方式，分别是 32 和 64 位的 Message 结构，32 位和 64 位带中断Masking 的结构。
+MSI 是在 PCIe 的基础上设计的中断方式，关于 PCIe 在 QEMU 中的模拟介绍可以看[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Device-Virtualization.md#pci%E8%AE%BE%E5%A4%87%E6%A8%A1%E6%8B%9F)。从 PCI 2.1 开始，如果设备需要扩展某种特性，可以**向配置空间中的 Capabilities List 中增加一个 Capability**，MSI 利用这个特性，将 I/O APIC 中的功能扩展到设备自身。我们来看看 MSI Capability 有哪些域。MSI Capability 的ID为5， 共有四种组成方式，分别是 32 和 64 位的 Message 结构，32 位和 64 位带中断 Masking 的结构。
 
 ![MSI-capability.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/MSI-capability.png?raw=true)
 
 - `Next Pointer`、`Capability ID` 这两个 field 是 PCI 的任何 Capability 都具有的 field，分别表示下一个 Capability 在配置空间的位置、以及当前 Capability 的 ID；
-- `Message Address` 和 `Message Data` 是 MSI 的关键，**只要将 Message Data 中的内容写入到 Message Address 指定的地址中，就会产生一个 MSI 中断，** ` Message Address` 中存放的其实就是对应 CPU 的 LAPIC 的地址；
+- `Message Address` 和 `Message Data` 是 MSI 的关键，**只要将 Message Data 中的内容写入到 Message Address 指定的地址中，就会产生一个 MSI 中断，** ` Message Address` 中存放的其实就是**对应 CPU 的 LAPIC 的地址**；
 - `Message Control` 用于系统软件对 MSI 的控制，如 enable MSI、使能 64bit 地址等；
 - `Mask Bits` 可选，Mask Bits 字段由 32 位组成，其中每一位对应一种 MSI 中断请求。
 - `Pending Bits` 可选，需要与 Mask bits 配合使用， 可以防止中断丢失。当 Mask bits 为 1 的时候，设备发送的MSI中断请求并不会发出，会将  pending bits 置为1，当 mask bits 变为 0 时，MSI 会成功发出，pending 位会被清除。
@@ -183,7 +183,7 @@ MSI 是在 PCIe 的基础上设计的中断方式，关于 PCIe 的介绍可以�
 
 ### MSIX
 
-为了支持多个中断，MSI-X 的 Capability Structure 在 MSI 的基础上增加了 table，其中 Table Offset 和 BIR(BAR Indicator Registor) 定义了 table 所在的位置，即指定使用哪个 BAR 寄存器（PCI 配置空间有 6 个 BAR 和 1 个 XROMBAR），然后从指定的这个 BAR 寄存器中取出 table 映射在 CPU 地址空间的基址，加上 Table Offset 就定位了 entry 的位置。类似的，`PBA BIR` 和 `PBA offset` 分别说明 MSIX- PBA 在哪个 BAR 中，在 BAR 中的什么位置。
+**为了支持多个中断**，MSI-X 的 Capability Structure 在 MSI 的基础上增加了 table，其中 Table Offset 和 BIR(BAR Indicator Registor) 定义了 table 所在的位置，即指定使用哪个 BAR 寄存器（PCI 配置空间有 6 个 BAR 和 1 个 XROMBAR），然后从指定的这个 BAR 寄存器中取出 table 映射在 CPU 地址空间的基址，加上 Table Offset 就定位了 entry 的位置。类似的，`PBA BIR` 和 `PBA offset` 分别说明 MSIX- PBA 在哪个 BAR 中，在 BAR 中的什么位置。
 
 ![MSIX-capability.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/MSIX-capability.png?raw=true)
 
