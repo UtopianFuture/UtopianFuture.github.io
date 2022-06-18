@@ -866,3 +866,58 @@ NUMA 内存体系中，每个节点都要初始化一个 bootmem 分配器。
 **namespace 是 Linux 内核用来隔离内核资源的方式。**通过 namespace 可以让一些进程只能看到与自己相关的一部分资源，而另外一些进程也只能看到与它们自己相关的资源，这两拨进程根本就感觉不到对方的存在。具体的实现方式是把一个或多个进程的相关资源指定在同一个 namespace 中。
 
 Linux namespaces 是对全局系统资源的一种封装隔离，使得处于不同 namespace 的进程拥有独立的全局系统资源，改变一个namespace 中的系统资源只会影响当前 namespace 里的进程，对其他 namespace 中的进程没有影响。也就是虚拟化的一种。
+
+### SPEC
+
+spec 执行命令：
+
+```
+../00000003/gzip_base.O3.x86 input.source 60  1>input.source.out 2>input.source.err
+../00000003/gzip_base.O3.x86 input.log 60  1>input.log.out 2>input.log.err
+../00000003/gzip_base.O3.x86 input.graphic 60  1>input.graphic.out 2>input.graphic.err
+../00000003/gzip_base.O3.x86 input.random 60  1>input.random.out 2>input.random.err
+../00000003/gzip_base.O3.x86 input.program 60  1>input.program.out 2>input.program.err
+../00000003/vpr_base.O3.x86 net.in arch.in place.out dum.out -nodisp -place_only -init_t 5 -exit_t 0.005 -alpha_t 0.9412 -inner_num 2  1>place_log.out 2>place_log.err
+../00000003/vpr_base.O3.x86 net.in arch.in place.in route.out -nodisp -route_only -route_chan_width 15 -pres_fac_mult 2 -acc_fac 1 -first_iter_pres_fac 4 -initial_pres_fac 8  1>route_log.out 2>route_log.err
+../00000003/cc1_base.O3.x86 166.i -o 166.s  1>166.out 2>166.err
+../00000003/cc1_base.O3.x86 200.i -o 200.s  1>200.out 2>200.err
+../00000003/cc1_base.O3.x86 expr.i -o expr.s  1>expr.out 2>expr.err
+../00000003/cc1_base.O3.x86 integrate.i -o integrate.s  1>integrate.out 2>integrate.err
+../00000003/cc1_base.O3.x86 scilab.i -o scilab.s  1>scilab.out 2>scilab.err
+../00000003/mcf_base.O3.x86 inp.in  1>inp.out 2>inp.err
+../00000003/crafty_base.O3.x86 <crafty.in 1>crafty.out 2>crafty.err
+../00000003/parser_base.O3.x86 2.1.dict -batch <ref.in 1>ref.out 2>ref.err
+../00000003/eon_base.O3.x86 chair.control.cook chair.camera chair.surfaces chair.cook.ppm ppm pixels_out.cook  1>cook_log.out 2>cook_log.err
+../00000003/eon_base.O3.x86 chair.control.rushmeier chair.camera chair.surfaces chair.rushmeier.ppm ppm pixels_out.rushmeier  1>rushmeier_log.out 2>rushmeier_log.err
+../00000003/eon_base.O3.x86 chair.control.kajiya chair.camera chair.surfaces chair.kajiya.ppm ppm pixels_out.kajiya  1>kajiya_log.out 2>kajiya_log.err
+../00000003/perlbmk_base.O3.x86 -I./lib diffmail.pl 2 550 15 24 23 100  1>2.550.15.24.23.100.out 2>2.550.15.24.23.100.err
+../00000003/perlbmk_base.O3.x86 -I. -I./lib makerand.pl  1>makerand.out 2>makerand.err
+../00000003/perlbmk_base.O3.x86 -I./lib perfect.pl b 3 m 4  1>b.3.m.4.out 2>b.3.m.4.err
+../00000003/perlbmk_base.O3.x86 -I./lib splitmail.pl 850 5 19 18 1500  1>850.5.19.18.1500.out 2>850.5.19.18.1500.err
+../00000003/perlbmk_base.O3.x86 -I./lib splitmail.pl 704 12 26 16 836  1>704.12.26.16.836.out 2>704.12.26.16.836.err
+../00000003/perlbmk_base.O3.x86 -I./lib splitmail.pl 535 13 25 24 1091  1>535.13.25.24.1091.out 2>535.13.25.24.1091.err
+../00000003/perlbmk_base.O3.x86 -I./lib splitmail.pl 957 12 23 26 1014  1>957.12.23.26.1014.out 2>957.12.23.26.1014.err
+../00000003/gap_base.O3.x86 -l ./ -q -m 192M <ref.in 1>ref.out 2>ref.err
+../00000003/vortex_base.O3.x86 lendian1.raw  1>vortex1.out2 2>vortex1.err
+../00000003/vortex_base.O3.x86 lendian2.raw  1>vortex2.out2 2>vortex2.err
+../00000003/vortex_base.O3.x86 lendian3.raw  1>vortex3.out2 2>vortex3.err
+../00000003/bzip2_base.O3.x86 input.source 58  1>input.source.out 2>input.source.err
+../00000003/bzip2_base.O3.x86 input.graphic 58  1>input.graphic.out 2>input.graphic.err
+../00000003/bzip2_base.O3.x86 input.program 58  1>input.program.out 2>input.program.err
+../00000003/twolf_base.O3.x86 ref  1>ref.stdout 2>ref.err
+../00000003/wupwise_base.O3.x86  1>wupwise.out 2>wupwise.err
+../00000003/swim_base.O3.x86 <swim.in 1>swim.out 2>swim.err
+../00000003/mgrid_base.O3.x86 <mgrid.in 1>mgrid.out 2>mgrid.err
+../00000003/applu_base.O3.x86 <applu.in 1>applu.out 2>applu.err
+../00000003/mesa_base.O3.x86 -frames 1000 -meshfile mesa.in -ppmfile mesa.ppm
+../00000003/galgel_base.O3.x86 <galgel.in 1>galgel.out 2>galgel.err
+../00000003/art_base.O3.x86 -scanfile c756hel.in -trainfile1 a10.img -trainfile2 hc.img -stride 2 -startx 110 -starty 200 -endx 160 -endy 240 -objects 10  1>ref.1.out 2>ref.1.err
+../00000003/art_base.O3.x86 -scanfile c756hel.in -trainfile1 a10.img -trainfile2 hc.img -stride 2 -startx 470 -starty 140 -endx 520 -endy 180 -objects 10  1>ref.2.out 2>ref.2.err
+../00000003/equake_base.O3.x86 <inp.in 1>inp.out 2>inp.err
+../00000003/facerec_base.O3.x86 <ref.in 1>ref.out 2>ref.err
+../00000003/ammp_base.O3.x86 <ammp.in 1>ammp.out 2>ammp.err
+../00000003/lucas_base.O3.x86 <lucas2.in 1>lucas2.out 2>lucas2.err
+../00000003/fma3d_base.O3.x86  1>fma3d.out 2>fma3d.err
+../00000003/sixtrack_base.O3.x86 <inp.in 1>inp.out 2>inp.err
+../00000003/apsi_base.O3.x86  1>apsi.out 2>apsi.err
+```
