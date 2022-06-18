@@ -1,6 +1,6 @@
 ## Kernel_init
 
-这篇文章我们来分析一下内核启动的第二阶段，第一阶段的分析[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/bmbt-virtualization.md)。
+这篇文章我们来分析一下内核启动的第二阶段，第一阶段的分析[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/start_kernel.md)。
 
 这里有个事情应该说明一下，第一阶段的分析是基于 loongarch 的，这里是基于 x86 内核的，初始化过程略有不同，下面是 x86 内核调用 `start_kernel` 的过程。
 

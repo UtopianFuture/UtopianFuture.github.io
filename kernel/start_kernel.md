@@ -21,20 +21,18 @@
 
 ### start_kernel
 
-`start_kernel` 的一级节点中，架构相关的重要函数有 `setup_arch`, `trap_init`, `init_IRQ`, `time_init`。代码中涉及的技术都在之后有介绍。
+`start_kernel` 的一级节点中，架构相关的重要函数有 `setup_arch`, `trap_init`, `init_IRQ`, `time_init`。
 
 ```c
 start_kernel
-| -- local_irq_disable(); // 关中断，中断处理程序没有准备好
-                           // 通过标志位
-| -- boot_cpu_init(); // 如果是 smp，设置启动的 CPU
+| -- local_irq_disable(); // 关中断，中断处理程序没有准备好,通过标志位
+| -- boot_cpu_init(); // 如果是 smp，设置启动的 CPU，主核
 | -- page_address_init(); // do nothing
 | -- pr_notice("%s", linux_banner); // 输出一些 kernel 信息
 | -- setup_arch(&command_line); // 下面详细分析
 | -- add_device_randomness(command_line, strlen(command_line)); // ?
 | -- mm_init_cpumask(&init_mm);
-| -- setup_command_line(command_line); // 设置 kernel 启动参数
-                                        // 可写在 grub.cfg 中，由 grub 传递
+| -- setup_command_line(command_line); // 设置 kernel 启动参数，可写在 grub.cfg 中，由 grub 传递
 | -- setup_nr_cpu_ids(); // 获取 cpu_possible_mask 中最大的编号
 | -- boot_cpu_hotplug_init(); // 将 boot_once 设为 true
 | -- pr_notice("Kernel command line: %s\n", boot_command_line);
@@ -50,7 +48,7 @@ start_kernel
 |      	 | -- setup_zero_pages(); // buddy 开始接管所有的 page
 |	| -- kmem_cache_init(); // SLAB 内存对象管理器初始化 kmem_cache: Slab cache management
 |       | -- create_boot_cache; // 分配两个 kmem_cache 变量：boot_kmem_cache, boot_kmem_cache_node
-|	| -- pgtable_init(); //enpty
+|	| -- pgtable_init(); // empty
 |	| -- vmalloc_init(); // 非连续内存区管理器的初始化，将不连续的页面碎片映射到连续的虚拟地址空间
 |      	| -- vmap_block_queue; // 非连续内存块队列管理结构
 |       | -- vfree_deferred; // 内存延迟释放管理
@@ -324,8 +322,8 @@ void __init prom_init_env(void)
 重要的数据结构：
 
 ```c
-// 这个应该就是bootmem的数据结构，书上说是用位图的方式，但这里改用mem_start和mem_size表示内存空间
-// 这个是BIOS内存分布图，记录了包括NUMA节点和多种类型在内的内存信息。
+// 这个应该就是bootmem的数据结构，书上说是用位图的方式，但这里改用 mem_start 和 mem_size 表示内存空间
+// 这个是 BIOS 内存分布图，记录了包括 NUMA 节点和多种类型在内的内存信息。
 struct loongsonlist_mem_map {
 	struct	_extention_list_hdr header;	/*{"M", "E", "M"}*/
 	u8	map_count;
@@ -345,9 +343,9 @@ void __init memblock_and_maxpfn_init(void)
 	u64 mem_start, mem_end, mem_size;
 
 	/* parse memory information */
-	for (i = 0; i < loongson_mem_map->map_count; i++) { // 将map中的虚拟内存依次挂载
+	for (i = 0; i < loongson_mem_map->map_count; i++) { // 将 map 中的虚拟内存依次挂载
 
-		mem_type = loongson_mem_map->map[i].mem_type; // loongson_mem_map在哪里初始化的？目前没有找到
+		mem_type = loongson_mem_map->map[i].mem_type; // loongson_mem_map 在哪里初始化的？目前没有找到
 		mem_start = loongson_mem_map->map[i].mem_start;
 		mem_size = loongson_mem_map->map[i].mem_size;
 		mem_end = mem_start + mem_size;
@@ -364,7 +362,7 @@ void __init memblock_and_maxpfn_init(void)
 }
 ```
 
-memblock_add_range 就是 bootmem 的 allocator，初始化过程中，所有的内存挂载，物理页的 reserved，都是通过这个函数进行。
+`memblock_add_range` 就是 bootmem 的 allocator，初始化过程中，所有的内存挂载，物理页的 reserved，都是通过这个函数进行。
 
 ```c
 /**
@@ -391,7 +389,7 @@ int __init_memblock memblock_add_range(struct memblock_type *type,
 	phys_addr_t obase = base;
 	phys_addr_t end = base + memblock_cap_size(base, &size); // 防止溢出
 	int idx, nr_new;
-	struct memblock_region *rgn; // 每个memblock_region表示一块内存，而不再是一页一页的表示
+	struct memblock_region *rgn; // 每个 memblock_region 表示一块内存，而不再是一页一页的表示
 
 	if (!size)
 		return 0;
@@ -419,9 +417,9 @@ repeat:
 		phys_addr_t rbase = rgn->base;
 		phys_addr_t rend = rbase + rgn->size; // 内存从低往高增长
 
-		if (rbase >= end) // overlap，直接跳转到if(!insert)
+		if (rbase >= end) // overlap，直接跳转到 if(!insert)
 			break;
-		if (rend <= base) // 该region的end < base，也就是说会出现碎片，尝试存储在下一个region
+		if (rend <= base) // 该 region 的 end < base，也就是说会出现碎片，尝试存储在下一个 region
 			continue;
 		/*
 		 * @rgn overlaps.  If it separates the lower part of new
@@ -476,7 +474,8 @@ repeat:
 void __init prom_init(void)
 {
 	/* init base address of io space */
-	set_io_port_base((unsigned long) // ioremap获取到io base的物理地址后set_io_port_base将其赋值给全局变量loongarch_io_port_base
+	set_io_port_base((unsigned long) // ioremap 获取到 io base 的物理地址后
+                     // 			 // set_io_port_base 将其赋值给全局变量loongarch_io_port_base
 		ioremap(LOONGSON_LIO_BASE, LOONGSON_LIO_SIZE));
 
 	if (efi_bp) { // efi_bp是在prom_init_env中用bios传递的_fw_envp赋值的
@@ -738,8 +737,6 @@ acpi_initialize_tables(struct acpi_table_desc *initial_table_array,
 }
 ```
 
-
-
 ```c
 static int __init numa_mem_init(int (*init_func)(void))
 {
@@ -875,7 +872,7 @@ static void __init arch_mem_init(char **cmdline_p)
 
 初始化设备树可以看[这里](http://sourcelink.top/2019/09/10/dts-unflatten_device_tree/)，分析的很详细。
 
-plat_swiotlb_setup
+`plat_swiotlb_setup`
 
 ```c
 void  __init
@@ -1061,7 +1058,7 @@ void __init free_area_init_nodes(unsigned long *max_zone_pfn)
 
 异常初始化。
 
-```plain
+```c
 trap_init
 | -- set_handle // 将不同的trap_handler加载到对应的内存位置
 |	| -- memcpy // 每个handler大小为vec_size，所以要EXCCODE * vec_size
@@ -1073,7 +1070,7 @@ trap_init
 
 还有很多异常，如 PSI, HYP, GCM 等，为什么没有设置 handler？
 
-应该是 set_handler 只负责设置 cpu exception handler.
+应该是 `set_handler` 只负责设置 cpu exception handler，其他的都是由中断控制器接受中断，然后发送给 CPU。
 
 ```c
 void __init trap_init(void)
