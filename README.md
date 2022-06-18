@@ -1,4 +1,5 @@
 ## Kernel
+
 - [xv6 notes](./kernel/xv6.md)
 - [xv6-labs-2020](https://github.com/UtopianFuture/xv6-labs)
 - [debug loongarch kernel in qemu](./kernel/debug-loongarch-kernel-in-qemu.md)
@@ -32,7 +33,13 @@
 - 🚧[Live migration](./virtualization/Live-Migration.md)
 - [Port serial to BMBT](./virtualization/port-serial.md)
 
+## Architecture
+
+- [A Quantitative Approach](./Architecture/A-Quantitative-Approach.md)
+- [Note](./Note.md)
+
 ## note
+
 - [debug](./linux-note/debug.md)
 - [others](./linux-note/others.md)
 - [tools](./linux-note/tool.md)
