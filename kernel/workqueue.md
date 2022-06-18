@@ -1,4 +1,4 @@
-## workqueue
+workqueue
 
 ### 问题
 
@@ -8,9 +8,12 @@
 
 ### 数据结构
 
-workqueue 是内核里面很重要的一个机制，特别是内核驱动，一般的小型任务 (work) 都不会自己起一个线程来处理，而是扔到 workqueue 中处理。workqueue 的主要工作就是**用进程上下文来处理内核中大量的小任务**。
+workqueue 是内核里面很重要的一个机制，特别是内核驱动，**一般的小型任务 (work) 都不会自己起一个线程来处理，而是扔到 workqueue 中处理**。workqueue 的主要工作就是**用进程上下文来处理内核中大量的小任务**。
 
-所以 workqueue 的主要设计思想：一个是并行，多个 work 不要相互阻塞；另外一个是节省资源，多个 work 尽量共享资源 ( 进程、调度、内存 )，不要造成系统过多的资源浪费。
+所以 workqueue 的主要设计思想为：
+
+- 并行，多个 work 不要相互阻塞；
+- 节省资源，多个 work 尽量共享资源 ( 进程、调度、内存 )，不要造成系统过多的资源浪费。
 
 为了实现的设计思想，workqueue 的设计实现也更新了很多版本。最新的 workqueue 实现叫做 CMWQ(Concurrency Managed Workqueue)，也就是用更加智能的算法来实现“并行和节省”。
 
@@ -18,13 +21,13 @@ workqueue 允许内核函数被激活，挂起，稍后**由 worker thread 的�
 
 这部份涉及到几个关键的数据结构：
 
-`workqueue_struct`，`worker_pool`，`pool_workqueue`，`work_struct`，`worker`，有必要把它们之间的关系搞懂。还有就是 runqueue 和 workqueue 有什么关系。**runqueue 中放的是 process，用来作负载均衡的，而 workqueue 中放的是可以延迟执行的内核函数**。
+`workqueue_struct`，`worker_pool`，`pool_workqueue`，`work_struct`，`worker`，有必要把它们之间的关系搞懂。还有就是 `runqueue` 和 `workqueue` 有什么关系。**runqueue 中放的是 process，用来作负载均衡的，而 workqueue 中放的是可以延迟执行的内核函数**。
 
 从代码中推测 `workqueue_struct` 表示一个工作队列；`pool_workqueue` 负责建立起 `workqueue` 和 `worker_pool` 之间的关系，`workqueue` 和 pwq 是一对多的关系，pwq 和 `worker_pool` 是一对一的关系；`work_struct` 表示挂起的函数，`worker` 是执行挂起函数的内核线程，一个 `worker` 对应一个 `work_thread`；`worker_pool` 表示所有用来执行 work 的 worker。
 
 可以看一下它们之间的拓扑图。
 
-![workqueue1](/home/guanshun/gitlab/UFuture.github.io/image/workqueue1.png)
+![workqueue.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/workqueue.png?raw=true)
 
 ### worker_pool
 
@@ -37,7 +40,20 @@ CMWQ 对 worker_pool 分成两类：
 
 默认 work 是在 normal worker_pool 中处理的。系统的规划是每个 CPU 创建两个 normal worker_pool：一个 normal 优先级 (nice=0)、一个高优先级 (nice=HIGHPRI_NICE_LEVEL)，对应创建出来的 worker 的进程 nice 不一样。
 
-每个 worker 对应一个 `worker_thread()` 内核线程，一个 worker_pool 包含一个或者多个 worker，worker_pool 中 worker 的数量是根据 worker_pool 中 work 的负载来动态增减的。
+每个 worker 对应一个 `worker_thread()` 内核线程，一个 worker_pool 包含一个或者多个 worker，worker_pool 中 worker 的数量是根据 worker_pool 中 work 的负载来动态增减的。下面就是一个 work 执行键盘输入任务的过程，
+
+```plain
+(gdb) p p
+$22 = (unsigned char *) 0xffff88810431f429 "a"
+(gdb) bt
+#0  receive_buf (count=<optimized out>, head=0xffff88810431f400, port=0xffff888100a80000) at drivers/tty/tty_buffer.c:493
+#1  flush_to_ldisc (work=0xffff888100a80008) at drivers/tty/tty_buffer.c:543
+#2  0xffffffff810c4a49 in process_one_work (worker=worker@entry=0xffff88810401ea80, work=0xffff888100a80008) at kernel/workqueue.c:2297
+#3  0xffffffff810c4c3d in worker_thread (__worker=0xffff88810401ea80) at kernel/workqueue.c:2444
+#4  0xffffffff810cc32a in kthread (_create=0xffff88810400aec0) at kernel/kthread.c:319
+#5  0xffffffff81004572 in ret_from_fork () at arch/x86/entry/entry_64.S:295
+#6  0x0000000000000000 in ?? ()
+```
 
 我们可以通过 `ps -eo pid,ppid,command | grep kworker` 命令来查看所有 worker 对应的内核线程。
 
@@ -60,11 +76,13 @@ CMWQ 对 worker_pool 分成两类：
 	  146       2 [kworker/5:1-events]
 ```
 
-![workqueue2](/home/guanshun/gitlab/UFuture.github.io/image/workqueue2.png)
+下面是每个结构体之间的详细关系：
+
+![worker_pool.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/worker_pool.png?raw=true)
 
 对应的拓扑图为：
 
-![workqueue3](/home/guanshun/gitlab/UFuture.github.io/image/workqueue3.png)
+![worker.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/worker.png?raw=true)
 
 现在通过代码看看 normal worker_pool 是怎样初始化的。
 
@@ -268,7 +286,7 @@ struct task_struct *__kthread_create_on_node(int (*threadfn)(void *data),
 
 我们用类似甘特图的方式来描述 worker 在不同配置下的执行过程。
 
- w(ork)0、w1、w2 被排到同一个 CPU 上的一个绑定的 wq q0 上。w0 消耗 CPU 5ms，然后睡眠 10ms，然后在完成之前再次消耗 CPU 5ms。忽略所有其他的任务、工作和处理开销，并假设简单的 FIFO 调度，下面是一个高度简化的原始 workqueue 的可能的执行序列。
+ work0、w1、w2 被排到同一个 CPU 上的一个绑定的 wq q0 上。w0 消耗 CPU 5ms，然后睡眠 10ms，然后在完成之前再次消耗 CPU 5ms。忽略所有其他的任务、工作和处理开销，并假设简单的 FIFO 调度，下面是一个高度简化的原始 workqueue 的可能的执行序列。
 
 ```plain
  TIME IN MSECS	EVENT
@@ -315,8 +333,6 @@ TIME IN MSECS	EVENT
  25		w2 sleeps
  35		w2 wakes up and finishes
 ```
-
-
 
 ### Reference
 
