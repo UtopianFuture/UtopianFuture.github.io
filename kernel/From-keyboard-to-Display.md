@@ -2,9 +2,25 @@
 
 为什么要探究这个过程呢？在看 kernel 和 bmbt 代码的过程中，代码始终一块块孤零零的，脑子里没有整个流程，不知道下一步该实现什么，总是跟着别人的脚步在走，感觉用 gdb 走一遍这个流程能对整个系统认识更加深刻。
 
+### 目录
+
+- [执行流程](#执行流程)
+  - [keyboard中断](#keyboard中断)
+  - [tty处理字符](#tty处理字符)
+  - [serial读取](#serial读取)
+  - [QEMU模拟](#QEMU模拟)
+- [用户态执行流程](#用户态执行流程)
+- [用户态到内核态的上下文切换](#用户态到内核态的上下文切换)
+- [fork新的kernel_thread](#fork新的kernel_thread)
+- [kernel_thread处理字符输入](#kernel_thread处理字符输入)
+- [serial中断](#serial中断)
+- [Reference](#Reference)
+- [说明](#说明)
+- [经验](#经验)
+
 ### 执行流程
 
-#### keyboard 中断
+#### keyboard中断
 
 首先我们要确定 keyboard 中断是怎样处理的。现在的猜想是 keyboard 按下一个键就会触发一次中断，这个中断貌似和 serial 中断处理流程类似。先看看相关文档。
 
@@ -33,9 +49,9 @@
 1. keyboard controller 在 la 中有么，是哪一个？
 2. 中断号是哪个。
 
-经过测试，la 上 keyboard 是挂载在 usb 总线上的，接下来看看怎样通过 cdev 访问设备。
+ok，键鼠是这样的，输入的信息会写入到串口的寄存器中（忘了是哪个寄存器），而串口的寄存器一旦写入了值，就是向中断控制器发起中断，在龙芯机器上是 extioi 中断控制器，在 x86 机器上是 ioapic。中断控制器介绍到中断后就会向 CPU 或更高一层的控制器发起中断，CPU 根据硬中断号得到对应的软中断号，然后进行层层转发，最后转发到串口注册的中断处理函数，进行处理。
 
-#### tty 处理字符
+#### tty处理字符
 
 再寻找到 kernel 中的 keyboard 是怎样处理字符的。
 
@@ -278,7 +294,7 @@ static inline void __raw_spin_unlock_irqrestore(raw_spinlock_t *lock,
 
 ```c
 #define preempt_enable()			barrier()
-#define barrier() __asm__ __volatile__("": : :"memory") // 这个 barrier 是干什么的，memory barrier？ //
+#define barrier() __asm__ __volatile__("": : :"memory") // 这个 barrier 是干什么的，memory barrier？
 ```
 
 这个中断处理完就继续执行 tty_buffer 的工作。
@@ -295,12 +311,12 @@ static inline void __raw_spin_unlock_irqrestore(raw_spinlock_t *lock,
 #define smp_store_release(p, v)			\
 do {						\
 	barrier();				\ // 这个地方涉及到 memory barrier，需要搞懂
-	WRITE_ONCE(*p, v);			\
+	WRITE_ONCE(*p, v);			\ // 内存屏障，保证这条指令前的所有访存指令都执行完了
 } while (0)
 ```
 
 ```c
-#define WRITE_ONCE(x, val)				\ // 这个代码看不懂
+#define WRITE_ONCE(x, val)				\ // 这个代码看不懂，应该就是向指定的地址写值
 ({							\
 	union { typeof(x) __val; char __c[1]; } __u =	\
 		{ .__val = (val) }; 			\
@@ -309,7 +325,7 @@ do {						\
 })
 ```
 
-#### serial 读取
+#### serial读取
 
 那么键盘输入的字符怎样读取到 tty_buffer 中呢？
 
@@ -391,7 +407,7 @@ void serial8250_read_char(struct uart_8250_port *up, unsigned char lsr)
 EXPORT_SYMBOL_GPL(serial8250_read_char);
 ```
 
-现在可以确定，键盘输入后字符直接放到 serial 的 rx 寄存器，然后触发中断，通过上面的执行流程读取，再调用 `uart_insert_char` 函数写入到 tty_buffer 中。
+现在可以确定，**键盘输入后字符直接放到 serial 的 rx 寄存器，然后触发中断**，通过上面的执行流程读取，再调用 `uart_insert_char` 函数写入到 tty_buffer 中。
 
 ok，现在整个流程闭环了，唯一的问题是 serial 中断怎样触发，其实应该开中断就可以了，需要测试。
 
@@ -515,9 +531,9 @@ ripts/local-block ... done.\r\ndone.\r\nGave up waiting for suspend/resume devic
 - 用户态到内核态的上下文切换在哪里，怎么做的？（这个是切入点）
   - 用户态到内核态的上下文切换
 
-- kernel thread, workqueue 的设计思想是什么？ （搞定）
+- kernel thread, workqueue 的设计思想是什么？ （[搞定](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/workqueue.md)）
   - kernel thread, workqueu 的设计及实现
-  - `schedule` 进程调度
+  - `schedule` 进程调度（[搞定](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/Process-Schedule.md)）
 
 - tty_buffer 中的字符是怎样发送到 serial_port 中去的。
 - `preempt_enable` 执行完后就会执行一次中断，这个中断是由哪个发出来的，怎样判断中断来源？
@@ -529,7 +545,7 @@ ripts/local-block ... done.\r\ndone.\r\nGave up waiting for suspend/resume devic
 - `serial8250_tx_chars` 也是中断处理过程的一部分，serial 发的中断么？
   - 中断的处理过程。
 
-#### QEMU 模拟
+#### QEMU模拟
 
 在 qemu 中是这样模拟字符输入的，
 
@@ -572,7 +588,7 @@ s+;exec-events+;vContSupported+;QThreadEvents+;no-resumed+;xmlRegisters=i386#6a"
     at ../softmmu/main.c:50
 ```
 
-在 `kvm_vm_ioctl` 中使用 `ioctl` 系统调用，这里就跟不下去了，再想办法。
+QEMU 用线程——`qemu_main_loop` 来模拟 VCPU 的运行，线程——`main_loop_wait` 来响应 I/O 请求。`main_loop_wait` 使用了 epoll 的方式，接收到 host 发来的中断后进行转发，这里转发到 `serial_receive1`，然后 serial 通过 `serial_update_irq` 发起中断，进入到 KVM，在 `kvm_vm_ioctl` 中使用 `ioctl` 系统调用，这里就跟不下去了，再想办法。
 
 ```c
 int kvm_vm_ioctl(KVMState *s, int type, ...)
@@ -594,17 +610,17 @@ int kvm_vm_ioctl(KVMState *s, int type, ...)
 }
 ```
 
-
+KVM 会修改 VMCS，然后又会执行 vm entry 进入到 guest，这样完成一个完整的 I/O 请求。
 
 ### 用户态执行流程
 
-待续。。。
+🚧
 
 ### 用户态到内核态的上下文切换
 
-待续。。。
+🚧
 
-### fork 新的 kernel thread
+### fork新的kernel_thread
 
 `ret_from_fork` 是上下文切换的函数，这应该是内核态，用户态怎么处理的？
 
@@ -700,13 +716,13 @@ asmlinkage __visible void schedule_tail(struct task_struct *prev)
 
 `prepare_task_switch`：
 
-第二个重要命令是 `CALL_NOSPEC rbx`，这条命令会跳转到 `kernel_init` 中（第一次执行 ret_from_fork 时才会跳转到这里，是初始化的过程，之后的 fork 会怎么执行再分析）。我在[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/bmbt-virtualization.md)分析了内核的启动过程，那是启动的第一部分，初始化各种设备和内存，下面的内容涉及到内核初始化的第二阶段，我在[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/kernel_init.md)进行分析。
+第二个重要命令是 `CALL_NOSPEC rbx`，这条命令会跳转到 `kernel_init` 中（第一次执行 ret_from_fork 时才会跳转到这里，是初始化的过程，之后的 fork 会怎么执行再分析。我在[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/bmbt-virtualization.md)分析了内核的启动过程，那是启动的第一部分，初始化各种设备和内存，下面的内容涉及到内核初始化的第二阶段，我在[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/kernel_init.md)进行分析。
 
 总结起来就是内核用 fork 创建了一个新的 kernel thread 用来执行 tty 的相关工作，`ret_from_fork` 就是 fork 的最后部分，然后通过 `CALL_NOSPEC rbx` 开始新的 kernel thread 的执行。这就可以解释为什么在 `ret_from_fork` 设置断点会运行到不同的处理函数。
 
 [这篇文章](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/kernel_init.md)中我分析了 workqueue 的原理，现在我们结合执行流程来看看 kernel thread 是怎样处理 tty_buffer 字符这一任务。
 
-### kernel thread 处理字符输入
+### kernel_thread处理字符输入
 
 我在 `ret_from_fork`， `kthread`，`worker_thread` 都设置了断点，但是内核还是会运行 `receive_buf` 才停下来。那这是属于创建了一个 kernel thread 来处理字符输入还是将内核函数加入到 workqueue，用 worker 来处理呢？
 
@@ -926,7 +942,7 @@ int kthreadd(void *unused)
 
 那么 `kthread_create_list` 又是由谁维护呢？ `__kthread_create_on_node` 在创建线程的时候将 `__create` 一个个添加到 `kthread_create_list` 中。
 
-### serial 中断
+### serial中断
 
 在阅读源码的过程中，发现最重要的数据结构是 `irq_desc`，每个中断号对应一个，之后所有的处理都跟这个 `irq_desc` 有关。然后在中断分发的过程中，任何一个中断控制器的 dispatch 都会通过 `irq_linear_revmap` 函数来将 hwirq 转换成 linux irq，再通过 `irq_to_desc` 找到对应的 `irq_desc`。因此最重要的就是 hwirq 到 linux irq 之间的映射是怎样做的。
 
@@ -1299,7 +1315,7 @@ static void extioi_irq_dispatch(struct irq_desc *desc)
 
 现在遇到的问题是无法接收到 serial 中断和 keyboard 中断。  在看书的过程中发现 la 有 8 个硬中断，这些硬中断的中断源来自处理器核外部，其直接来源是核外的中断控制器。也就是说 serial 发起的中断并不是直接将 cpu 的硬中断之一拉高，而是发送到中断控制器，如 8259 就是 pin1 作为 keyboard 中断，pin3, pin4 都是 serial 中断。那么是不是我没有设置中断控制器的映射从而导致无法接收到 serial 中断。定时器中断能够响应是因为 cpu 中有一个线中断： TI 作为定时器中断。
 
-![img](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/from-keyboard-to-display.1.png)
+![img](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/from-keyboard-to-display.1.png?raw=true)
 
 ### Reference
 

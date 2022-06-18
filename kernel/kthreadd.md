@@ -1,8 +1,8 @@
 ## kthreadd
 
-kthread 是 2 号内核进程（kernel thread），用来创建其他内核进程的。这篇文章我们来分析它是怎样创建新的内核进程以及涉及到有意思的地方。
+kthreadd 是 2 号内核进程（kernel thread），用来创建其他内核进程的。这篇文章我们来分析它是怎样创建新的内核进程以及涉及到有意思的地方。
 
-这是创建 kthread 的位置。
+这是创建 kthreadd 的位置，
 
 ```c
 noinline void __ref rest_init(void)
@@ -38,7 +38,7 @@ int kthreadd(void *unused)
 	current->flags |= PF_NOFREEZE;
 	cgroup_init_kthreadd();
 
-	for (;;) {
+	for (;;) { // 这个循环就是进程调度的主循环
 		set_current_state(TASK_INTERRUPTIBLE);
 		if (list_empty(&kthread_create_list)) // 如果没有需要创建的线程，则调度已有的线程执行
 			schedule();
@@ -335,6 +335,17 @@ struct task_struct *__kthread_create_on_node(int (*threadfn)(void *data),
 ```
 
 在两个函数（宏）设置断点，看看调用情况即可。
+
+```
+guanshun@guanshun-ubuntu ~> ps -eo pid,ppid,command
+    PID    PPID COMMAND
+      1       0 /sbin/init splash
+      2       0 [kthreadd]
+      3       2 [rcu_gp]
+      4       2 [rcu_par_gp]
+      6       2 [kworker/0:0H-kblockd]
+      9       2 [mm_percpu_wq]
+```
 
 3(rcu_gp)，4(rcu_par_gp)，5, 6, 7(kworker), 8(mm_percpu_wq), 9(rcu_tasks_rude_), 10(rcu_tasks_trace) 等等内核线程都是 `kthread_create` 创建的。
 
