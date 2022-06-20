@@ -2,7 +2,7 @@
 
 ### 编程思想
 
-写代码不能拿到代码就开始跑，开始调，这部时正确的写代码的方式，会让你陷入到很 trivial 的细节当中。当拿到一份代码，或者写一段代码，你要完全理解这段代码，对于你认为可能会出错的地方，加上很多措施去加固它，这样才能增强你对代码的洞察力。当代码跑出问题了，这时候不应该立刻动手调试，gdb 打断点谁不会，而是坐下来想，哪怕想一天，让代码在你脑子里跑，然后你意识到问题在哪里。是的，这样做开始很慢，但之后出的问题都在掌握之中。而我往往等不了，心急，跑起来再说，最后效率并不高。
+写代码不能拿到代码就开始跑，开始调，这不是正确的写代码的方式，会让你陷入到很 trivial 的细节当中。当拿到一份代码，或者写一段代码，你要完全理解这段代码，对于你认为可能会出错的地方，加上很多措施去加固它，这样才能增强你对代码的洞察力。当代码跑出问题了，这时候不应该立刻动手调试，gdb 打断点谁不会，而是坐下来想，哪怕想一天，让代码在你脑子里跑，然后你意识到问题在哪里。是的，这样做开始很慢，但之后出的问题都在掌握之中。而我往往等不了，心急，跑起来再说，最后效率并不高。
 
 ### 目录
 
@@ -75,7 +75,7 @@
 - [Reference](#Reference)
 - [些许感想](#些许感想)
 
-很多文章都说内存管理是内核中最复杂的部分、最重要的部分之一，在来实验室之后跟着师兄做项目、看代码的这段时间里，渐渐感觉自己的知识框架是不完整的，底下少了一部分，后来发现这部分就是内核，所以开始学习内核。其实这也不是第一次接触内核，之前也陆陆续续的看过一部分，包括做 RISC-V 操作系统实验，LoongArch 内核的启动部分，但始终没有花时间去肯内存管理，进程调度和文件管理这几个核心模块。而师兄也说过，内核都看的懂，啥代码你看不懂。
+很多文章都说内存管理是内核中最复杂的部分、最重要的部分之一，在来实验室之后跟着师兄做项目、看代码的这段时间里，渐渐感觉自己的知识框架是不完整的，底下少了一部分，后来发现这部分就是内核，所以开始学习内核。其实这也不是第一次接触内核，之前也陆陆续续的看过一部分，包括做 RISC-V 操作系统实验，LoongArch 内核的启动部分，但始终没有花时间去啃内存管理，进程调度和文件管理这几个核心模块，而师兄也说过，内核都看的懂，啥代码你看不懂，所以分析一下内存管理模块。
 
 ### 内存分布
 
@@ -408,7 +408,7 @@ struct free_area {
 };
 ```
 
-内核使用 zone 来管理内存节点，上文介绍过，一个内存节点可能存在多个 zone，如 `ZONE_DMA,` `ZONE_NORMAL` 等。`zonelist` 是所有可用的 zone，其中排在第一个的是页面分配器最喜欢的。
+内核使用 zone 来管理内存节点，上文介绍过，一个内存节点可能存在多个 zone，如 `ZONE_DMA,` `ZONE_NORMAL` 等。`zonelist` 是所有可用的 zone，其中**排在第一个的是页面分配器最喜欢的**。
 
 我们假设系统中只有一个内存节点，有两个 zone，分别是 `ZONE_DMA` 和 `ZONE_NORMAL`，那么 `zonelist` 中的相关数据结构的关系如下：
 
@@ -976,7 +976,7 @@ EXPORT_SYMBOL(alloc_pages);
 
 - `per_cpu_pageset`
 
-  `per_cpu_pageset` 是一个 Per-CPU 变量，即每个 CPU 中都有一个本地的 `per_cpu_pageset` 变量，里面暂存了一部分单个的物理页面。当系统需要单个物理页面时，直接从本地 CPU 的 `per_cpu_pageset` 中获取物理页面即可，这样能减少对 zone 中相关锁的操作。
+  `per_cpu_pageset` 是一个 Per-CPU 变量，即每个 CPU 中都有一个本地的 `per_cpu_pageset` 变量，里面**暂存了一部分单个的物理页面**。当系统需要单个物理页面时，直接从本地 CPU 的 `per_cpu_pageset` 中获取物理页面即可，这样能减少对 zone 中相关锁的操作。
 
   ```c
   struct per_cpu_pageset	pageset[NR_CPUS];
@@ -1029,13 +1029,11 @@ EXPORT_SYMBOL(alloc_pages);
    }
    ```
 
-
-
 这里我们总结一下伙伴系统通过快路径分配物理页面的流程。
 
-首先物理页面都是存放在 zone 中的 `free_area` 中，伙伴系统将所有的空闲页框分组为 11 个块链表，每个块链表分别包含大小为 1、2、4、8、16、32、64、128、256、512 和 1024 个连续页框的页框块。内核可以使用多个接口来申请物理页面，这些接口最后都是调用 `__alloc_pages`。`__alloc_pages` 首先会进行分配前的准备工作，比如设置第一个 zone（大部分情况下从第一个 zone 中分配页面），设置分配掩码等等，而后调用 `get_page_from_freelist`。`get_page_from_freelist` 会遍历所有 zone，检查该 zone 的 watermark 是否满足要求，watermark 是伙伴系统用来提高分配效率的机制，每个 zone 都有 3 个 watermark，根据这些 watermark 在适当的时候做页面回收等工作。如果该 zone 的 watermark 满足要求，就调用 `rmqueue` 去分配物理页面。这里又根据需要分配页面的大小采用不同的分配策略。如果 `order == 0`，即只需要分配 1 个页面（内核大部分情况是这样的），那么直接调用 `rmqueue_pcplist` -> `__rmqueue_pcplist` 使用 `per_cpu_pages` 中的每 CPU 页框高速缓存来分配，这样就不需要使用 zone 的锁，提高效率。当然，如果每 CPU 页框高速缓存如果也没有物理页面了，那么还是先需要通过 `rmqueue_bulk` -> `__rmqueue` 来增加页面列表的。如果需要分配多个物理页面，那么就需要通过 `__rmqueue_smallest` 来分配页面。这个分配流程就很简单了，从 `free_area` 的第 `order`  个块链表开始遍历， 知道找到符合条件的块链表。
+首先物理页面都是存放在 zone 中的 `free_area` 中，伙伴系统将所有的空闲页框分组为 11 个块链表，每个块链表分别包含大小为 1、2、4、8、16、32、64、128、256、512 和 1024 个连续页框的页框块。内核可以使用多个接口来申请物理页面，这些接口最后都是调用 `__alloc_pages`。`__alloc_pages` 首先会进行分配前的准备工作，比如设置第一个 zone（大部分情况下从第一个 zone 中分配页面），设置分配掩码等等，而后调用 `get_page_from_freelist`。`get_page_from_freelist` 会遍历所有 zone，检查该 zone 的 watermark 是否满足要求，**watermark 是伙伴系统用来提高分配效率的机制**，每个 zone 都有 3 个 watermark，根据这些 watermark 在适当的时候做页面回收等工作。如果该 zone 的 watermark 满足要求，就调用 `rmqueue` 去分配物理页面。这里又根据需要分配页面的大小采用不同的分配策略。如果 `order == 0`，即只需要分配 1 个页面（内核大部分情况是这样的），那么直接调用 `rmqueue_pcplist` -> `__rmqueue_pcplist` 使用 `per_cpu_pages` 中的每 CPU 页框高速缓存来分配，这样就不需要使用 zone 的锁，提高效率。当然，如果每 CPU 页框高速缓存如果也没有物理页面了，那么还是先需要通过 `rmqueue_bulk` -> `__rmqueue` 来增加页面列表的。如果需要分配多个物理页面，那么就需要通过 `__rmqueue_smallest` 来分配页面。这个分配流程就很简单了，从 `free_area` 的第 `order`  个块链表开始遍历， 知道找到符合条件的块链表。
 
-我觉得整个分配流程到不难，难的是要考虑到各种应用场景，理解如果设置分配掩码，理解如何根据 zone 的 watermark 去进行空间回收。不过这些现在还没有时间去学习，之后有需要再进一步分析。
+我觉得整个分配流程到不难，**难的是要考虑到各种应用场景，理解如果设置分配掩码**，理解如何根据 zone 的 watermark 去进行空间回收。不过这些现在还没有时间去学习，之后有需要再进一步分析。
 
 ##### 释放页框
 
@@ -1736,7 +1734,7 @@ slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure
 		struct kmem_cache_node *n;
 		struct array_cache *old_shared = NULL;
 		struct array_cache *new_shared = NULL;
-	struct alien_cache **new_alien = NULL;
+		struct alien_cache **new_alien = NULL;
 		LIST_HEAD(list);
 
 		if (use_alien_caches) {
@@ -1753,7 +1751,7 @@ slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure
 		}
 
 		ret = init_cache_node(cachep, node, gfp);
-	if (ret)
+		if (ret)
 			goto fail;
 
 		n = get_node(cachep, node);
@@ -1775,7 +1773,7 @@ slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure
 		new_alien = NULL;
 		}
 
-	spin_unlock_irq(&n->list_lock);
+		spin_unlock_irq(&n->list_lock);
 		slabs_destroy(cachep, &list);
 
 		/*
@@ -1784,15 +1782,15 @@ slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure
 		 * guaranteed to be valid until irq is re-enabled, because it will be
 		 * freed after synchronize_rcu().
 		 */
-	if (old_shared && force_change)
+		if (old_shared && force_change)
 			synchronize_rcu();
 
 	fail:
-	kfree(old_shared);
+		kfree(old_shared);
 		kfree(new_shared);
-	free_alien_cache(new_alien);
+		free_alien_cache(new_alien);
 
-	return ret;
+		return ret;
 	}
    ```
 
@@ -2235,7 +2233,7 @@ static __always_inline unsigned int __kmalloc_index(size_t size,
 
 上面介绍了 `kmalloc` 使用 slab 分配器分配小块的、连续的物理内存，因为 slab 分配器在创建的时候也需要使用伙伴系统分配物理内存页面的接口，所以 **slab 分配器建立在一个物理地址连续的大块内存之上**（理解这点很重要）。那如果在内核中不需要连续的物理地址，而**仅仅需要虚拟地址连续的内存块**该如何处理？这就是 `vmalloc` 的工作。
 
-后来发现 `vmalloc` 的用途不止于此，在创建子进程时需要为子进程分配内核栈，这时就需要用到 `vmalloc`。那是不是说需要在内核地址空间分配内存时就需要用到 `vmalloc`，这个有待验证。
+后来发现 `vmalloc` 的用途不止于此，**在创建子进程时需要为子进程分配内核栈，这时就需要用到 `vmalloc`**。那是不是说需要在内核地址空间分配内存时就需要用到 `vmalloc`，这个有待验证。
 
 vmalloc 映射区的**映射方式与用户空间完全相同**，内核可以通过调用 vmalloc 函数在内核地址空间的 vmalloc 区域获得内存。这个函数的功能相当于用户空间的 malloc 函数，所提供的虚拟地址空间是连续的， 但不保证物理地址是连续的。
 
@@ -2832,7 +2830,7 @@ malloc 函数是标准 C 库封装的一个核心函数，C 标准库最终会�
    }
    ```
 
-   这个有个疑问，`vm_area_alloc` 创建新的 VMA 为什么还会调用到 slab 分配器？
+   这个有个疑问，`vm_area_alloc` 创建新的 VMA 为什么还会调用到 slab 分配器？`vm_area_alloc` 本身作为一个结构也需要占用内存，不过它的大小肯定小于 4K，所以使用 slab 来分配。
 
    ```
    #0  slab_alloc_node (orig_size=200, addr=18446744071579497582, node=-1, gfpflags=3264, s=0xffff8881001d5600)  at mm/slub.c:3120
@@ -2850,7 +2848,7 @@ malloc 函数是标准 C 库封装的一个核心函数，C 标准库最终会�
    #10 0xffffffff81e0007c in entry_SYSCALL_64 () at arch/x86/entry/entry_64.S:113
    ```
 
-3. `mm_populate` 为该进程分配物理内存。通常用户进程很少使用 `VM_LOCKED` 分配掩码（果然很少用，设置断点都跑不到，那就分析代码看怎样建立映射吧），所以 brk 系统调用不会马上为这个进程分配物理内存，而是一直延迟到用户进程需要访问这些虚拟页面并发生缺页中断时才会分配物理内存，并和虚拟地址建立映射关系。
+3. `mm_populate` 为该进程分配物理内存。通常用户进程很少使用 `VM_LOCKED` 分配掩码（果然很少用，设置断点都跑不到，那就分析代码看怎样建立映射吧），所以 brk 系统调用不会马上为这个进程分配物理内存，而是**一直延迟到用户进程需要访问这些虚拟页面并发生缺页中断时才会分配物理内存，并和虚拟地址建立映射关系**。
 
    ```c
    int __mm_populate(unsigned long start, unsigned long len, int ignore_errors)
@@ -4351,7 +4349,7 @@ out:
 __SYSCALL(256, sys_migrate_pages)
 ```
 
-这个系统调用最初是为了在 NUMA 系统中迁移一个进程的所有页面到指定内存节点上，但目前其他模块也可以使用页面迁移机制，如内存规整和内存热拔插等。因此，页面迁移机制支持两大类的内存页面：
+这个系统调用最初是为了**在 NUMA 系统中迁移一个进程的所有页面到指定内存节点上**，但目前其他模块也可以使用页面迁移机制，如内存规整和内存热拔插等。因此，页面迁移机制支持两大类的内存页面：
 
 - 传统 LRU 页面，如匿名页面和文件映射页面（看来 LRU 链表还是要了解啊）
 - 非 LRU 页面，如 zsmalloc 或 virtio-ballon 页面（这是内核引入的新特性）
@@ -4545,7 +4543,7 @@ out:
 
 #### 基本原理
 
-内存规整是为了解决内核碎片化出现的一个功能，当物理设备需要大段的连续的物理内存，而内核无法满足，则会发生内核错误，因此需要将多个小空闲内存块重新整理以凑出大块连续的物理内存。
+内存规整是为了解决内核碎片化出现的一个功能，当物理设备需要大段的连续的物理内存，而内核无法满足，则会发生内核错误，因此需要**将多个小空闲内存块重新整理以凑出大块连续的物理内存**。
 
 内存规整的核心思想是将内存页面按照可移动、可回收、不可移动等特性进行分类。可移动页面通常指用户态进程分配的内存，移动这些页面仅仅需要修改页表映射关系；可回收页面指不可移动但可释放的页面。其运行流程总结起来很好理解（但是实现又是另一回事:joy:）。有两个方向的扫描者：一个从 zone 的头部向 zone 的尾部方向扫描，查找哪些页面是可移动的；另一个从 zone 的尾部向 zone 的头部方向扫描，查找哪些页面是空闲页面。当这两个扫描者在 zone 中间相遇或已经满足分配大块内存的需求（能分配处所需要的大块内存并且满足最低的水位要求）时，就可以退出扫描。
 
@@ -4957,6 +4955,8 @@ got_pg:
 ### 疑问
 
 1. `vm_area_alloc` 创建新的 VMA 为什么还会调用到 slab 分配器？
+
+   上面已经解释过了，分配 `vm_area_alloc` 对象。
 
 2. vmalloc 中的`vm_struct` 和 `vmap_area` 分别用来干嘛？
 
