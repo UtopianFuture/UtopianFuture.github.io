@@ -38,6 +38,8 @@
 
    写入.ssh/config 中，可以直接使用 ssh 3a5000 进行连接。然后将 id_rsa.pub 写入远程主机的~/.ssh/authorized_keys 中，这样可以不用输入密码登陆。
 
+   直接使用 `ssh-copy-id username@remote-server` 命令更方便。
+
 9. 遇到这个问题，diffie-hellman-xxxxxx
 
    ![](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/experience.1.png?raw=true)
@@ -94,3 +96,23 @@ KexAlgorithms +diffie-hellman-group14-sha1
 15. 运行 qemu 通过 ctrl alt 2 进入 monitor ，ctrl alt 1 进入 guest os ，可以通过 -monitor stdio 将 monitor 重定向到终端。
 
 16. md 文件中换行需要在行末输入 2 个空格。
+
+17. 创建新用户后遇到
+
+    ```
+    user not in sudoers
+    ```
+
+    的问题，使用如下命令查看正常用户所在的 group，
+
+    ```
+    groups xxx
+    ```
+
+    然后使用
+
+    ```
+    sudo usermod -aG wheel <username>
+    ```
+
+    将当前用户一个个加到这些 group 中去即可。
