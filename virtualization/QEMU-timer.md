@@ -56,7 +56,7 @@ struct QEMUTimerListGroup {
 };
 ```
 
-因为 QEMU 有四种不同的 CLOCK，不同种类的 CLOCK 上的时间的进度不同，为了方便管理，一个类型的 CLOCK 都会插入到相同的 QEMUTimerList 上。一个事件监听 thread 需要持有一个 QEMUTimerListGroup，在设置 timeout 的时候会遍历 QEMUTimerListGroup 中所有 QEMUClockType 对应的 QEMUTimerList 上的 QEMUTimer，这点在 main_loop 的执行中可以清楚的看出。
+因为 QEMU 有四种不同的 CLOCK，不同种类的 CLOCK 上的时间的进度不同，为了方便管理，一个类型的 CLOCK 都会插入到相同的 `QEMUTimerList` 上。一个事件监听 thread 需要持有一个 `QEMUTimerListGroup`，在设置 timeout 的时候会遍历 `QEMUTimerListGroup` 中所有 `QEMUClockType` 对应的 `QEMUTimerList` 上的 `QEMUTimer`，这点在 main_loop 的执行中可以清楚的看出。
 
 > 因为 iothread 的引入，QEMU 不仅仅在 main loop 使用 ppoll 等待，还有可能在 iothread 中来等待时钟。 在 [aio / timers: Split QEMUClock into QEMUClock and QEMUTimerList](https://github.com/qemu/qemu/commit/ff83c66eccf5b5f6b6530d504e3be41559250dcb) 创建出来了 QEMUTimerListGroup，一个事件监听 thread 持有一个 group。
 
@@ -126,7 +126,7 @@ int64_t qemu_clock_get_ns(QEMUClockType type)
 }
 ```
 
-其中 `QEMU_CLOCK_HOST`，`QEMU_CLOCK_VIRTUAL_RT` 由于要考虑 Replay mode ，实现的比较复杂，如果不考虑 Replay mode ，其实现也是 `get_clock_realtime`，`cpu_get_clock` 。让我们看看具体是怎么响应的。
+其中 `QEMU_CLOCK_HOST`，`QEMU_CLOCK_VIRTUAL_RT` 由于要考虑 Replay mode ，实现的比较复杂，如果不考虑 Replay mode ，其实现也是 `get_clock_realtime`，`cpu_get_clock` 。让我们看看具体是怎么响应的，
 
 ```c
 static inline int64_t get_clock(void)
@@ -478,7 +478,7 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
 
         /* run the callback (the timer list can be modified) */
         qemu_mutex_unlock(&timer_list->active_timers_lock);
-        cb(opaque);
+        cb(opaque); // 调用不同设备注册的回调函数，然后由设备将时间中断注入到 guest 中，这种设计，太强了
         qemu_mutex_lock(&timer_list->active_timers_lock);
 
         progress = true;
