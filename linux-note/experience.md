@@ -116,3 +116,11 @@ KexAlgorithms +diffie-hellman-group14-sha1
     ```
 
     将当前用户一个个加到这些 group 中去即可。
+
+18. 当 grub.cfg 出现问题导致内核不能正常启动时，按照如下步骤即可恢复：
+
+    首先确定 `/` 目录所在的硬盘分区，使用 `ls`，会出现不同的硬盘号和分区，如 `hd0,msdos0` 等等，然后用 `ls hd0,msdos0` 命令检查所有的硬盘分区，如果某个分区是 linux ext2/ext3/ext4 等文件文件系统，那么就是 `/` 目录所有的分区。这里假设是 `hd0,msdos0`。
+
+    然后使用 `linux (hd0,msdos0)/vm-xxx root=/dev/sda3` 命令，敲出 `vm` 后使用 `tab` 建补全，同时确定 initrd，`initrd (hd0,msdos0)/init` 同样使用 `tab` 补全。
+
+    最后 `boot` 命令重启即可。
