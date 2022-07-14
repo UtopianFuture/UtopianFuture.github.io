@@ -26,7 +26,7 @@
 
 ### 一、CPU 虚拟化
 
-​      物理 CPU 同时运行 host 和 guest，**在不同模式间按需切换**，每个模式需要保存上下文。VMX 设计了`VMCS`，每个 guest 都有自己的`VMCS`。通过`VMLaunch`切换到 not root 模式，即进入 guest(vm entry)，当需要执行敏感指令时，退回到 root 模式，即退出 guest(vm exit)。
+​      物理 CPU 同时运行 host 和 guest，**在不同模式间按需切换**，每个模式需要保存上下文。VMX 设计了`VMCS`，每个 guest 都有自己的`VMCS`。通过 `VMLaunch `切换到 not root 模式，即进入 guest(vm entry)，当需要执行敏感指令时，退回到 root 模式，即退出 guest(vm exit)。
 
 #### 陷入和模拟
 
@@ -38,23 +38,23 @@
 
    （2）PIO
 
-   使用专用的 I/O 指令`(out, outs, in, ins)`访问外设。
+   使用专用的 I/O 指令 `(out, outs, in, ins) `访问外设。
 
 2. 特殊指令
 
    （1）CPUID
 
-   KVM 的用户空间通过`cpuid`指令获取 Host 的 CPU 特征，加上用户空间的配置，定义好 VCPU 支持的 CPU 特性，传递给 KVM 内核模块。
+   KVM 的用户空间通过 `cpuid` 指令获取 Host 的 CPU 特征，加上用户空间的配置，定义好 VCPU 支持的 CPU 特性，传递给 KVM 内核模块。
 
    KVM 用户空间按照如下结构体组织好 CPU 特性后传递给内核模块：
 
-```c
-struct kvm_cpuid{
-	__u32 nent;
-	__u32 padding;
-	struct kvm_cpuid_entry entries[0];
-}
-```
+   ```c
+   struct kvm_cpuid{
+   	__u32 nent;
+   	__u32 padding;
+   	struct kvm_cpuid_entry entries[0];
+   }
+   ```
 
 ​	`kvm_cpuid_entry`就是 kvm 内核模块定义的 VCPU 特性结构体：
 
@@ -69,7 +69,7 @@ struct kvm_cpuid_entry {
 };
 ```
 
-​		guest 执行 cpuid 时发生 VM exit，KVM 会根据`eax`中的功能号以及`ecx`中的子功能号，从`kvm_cpuid_entry`实例中所以到相应的 entry，使用 entry 中的`eax`, `ebx`, `ecx`, `edx`覆盖结构体 vcpu 中的 regs 数组对应的字段，当再次切入 guest 时，KVM 会将他们加载到物理 CPU 的通用寄存器，guest 就可以正常的读取。
+​		guest 执行 cpuid 时发生 VM exit，KVM 会根据 `eax` 中的功能号以及`ecx`中的子功能号，从 `kvm_cpuid_entry` 实例中所以到相应的 entry，使用 entry 中的 `eax`, `ebx`, `ecx`, `edx` 覆盖结构体 vcpu 中的 regs 数组对应的字段，当再次切入 guest 时，KVM 会将他们加载到物理 CPU 的通用寄存器，guest 就可以正常的读取。
 
 ​	（2）hlt
 
@@ -85,7 +85,7 @@ struct kvm_cpuid_entry {
 
 1. 创建虚拟机实例
 
-   每一台虚拟机都需要在 kvm 中有一个实例与其对应。KVM 中的`KVM_CREATE_VM`用来创建虚拟机，并返回指向这个虚拟机实例的一个文件描述符，之后的操作都需要通过文件描述符。
+   每一台虚拟机都需要在 kvm 中有一个实例与其对应。KVM 中的 `KVM_CREATE_VM` 用来创建虚拟机，并返回指向这个虚拟机实例的一个文件描述符，之后的操作都需要通过文件描述符。
 
 2. 创建内存
 
@@ -111,21 +111,21 @@ struct kvm_userspace_memory_region {
 
 1. VMM 为 Guest 准备物理内存
 
-   系统启动后，先运行 bios，bios 会检查内存信息，记录下来，并对外提供内存查询功能。bios 将中断向量表`(IVT)`的第 0x15 个表项中的地址设置为查询内存信息函数的地址，后续的 os 就可以通过发起 0x15 中断来获取系统内存信息。VMM 需要模拟这个功能，在 bios 数据区中构造内存信息表。
+   系统启动后，先运行 bios，bios 会检查内存信息，记录下来，并对外提供内存查询功能。bios 将中断向量表 `(IVT)` 的第 0x15 个表项中的地址设置为查询内存信息函数的地址，后续的 os 就可以通过发起 0x15 中断来获取系统内存信息。VMM 需要模拟这个功能，在 bios 数据区中构造内存信息表。
 
    在这个数据结构中：
 
-```c
-struct kvm_userspace_memory_region {
-	__u32 slot;
-	__u32 flags;
-	__u32 guest_phys_addr;
-	__u32 memory_size;
-	__u64 userspace_addr;
-};
-```
+   ```c
+   struct kvm_userspace_memory_region {
+   	__u32 slot;
+   	__u32 flags;
+   	__u32 guest_phys_addr;
+   	__u32 memory_size;
+   	__u64 userspace_addr;
+   };
+   ```
 
-​	`	slot`表示这个结构体 `kvm_userspace_memory_region`实例描述的是第几个内存条， `guest_phys_addr`表示这块内存条在 guest 物理地址空间中的起始地址，`memory_size`表示内存条大小， `userspace_addr`表示 host 用户空间的起始地址，这个是虚拟地址，guest 的内存条就不用直接在物理内存上分配，能提高内存的利用率。
+   `	slot` 表示这个结构体 `kvm_userspace_memory_region` 实例描述的是第几个内存条， `guest_phys_addr` 表示这块内存条在 guest 物理地址空间中的起始地址，`memory_size` 表示内存条大小， `userspace_addr` 表示 host 用户空间的起始地址，这个是虚拟地址，guest 的内存条就不用直接在物理内存上分配，能提高内存的利用率。
 
 2. 保护模式的 guest 寻址
 
@@ -135,13 +135,13 @@ struct kvm_userspace_memory_region {
 
 3. EPT
 
-   EPT(extented page table pointer)是硬件机制，完成从 GPA 到 HPA 的映射。EPT 的缺页处理的原理与 MMU 基本相同。MMU 完成 GVA  到 GPA 的映射，EPT 完成 GPA  到 HPA  的映射，MMU 和  EPT 在硬件层面直接配合，不需要软件干涉，经过 MMU 翻译的 GPA 将在硬件层面给到 EPT 。增加 EPT 后不需要频繁的 VM exit，同时，对于 host 而言，一个虚拟机就是一个进程，因此一个虚拟机只需要维护一个 EPT 表即可。
+   EPT(extented page table pointer) 是硬件机制，完成从 GPA 到 HPA 的映射。EPT 的缺页处理的原理与 MMU 基本相同。**MMU 完成 GVA  到 GPA 的映射，EPT 完成 GPA  到 HPA  的映射，MMU 和  EPT 在硬件层面直接配合，不需要软件干涉，经过 MMU 翻译的 GPA 将在硬件层面给到 EPT** 。增加 EPT 后不需要频繁的 VM exit，同时，对于 host 而言，一个虚拟机就是一个进程，因此一个虚拟机只需要维护一个 EPT 表即可。
 
-   VMX 在`VMCS`中定义了一个字段`extended-page-table-pointer`，KVM 将 EPT 页表的位置写入这个字段，这样当 CPU 进入 guest 模式时，就可以从这个字段读出 EPT 页表的位置。而 guest 模式下的`cr3`寄存器指向 guest 内部的页表。
+   VMX 在 `VMCS` 中定义了一个字段 `extended-page-table-pointer`，KVM 将 EPT 页表的位置写入这个字段，这样当 CPU 进入 guest 模式时，就可以从这个字段读出 EPT 页表的位置。而 guest 模式下的 `cr3` 寄存器指向 guest 内部的页表。
 
-   当 guest 发生缺页异常时，CPU 不再切换到 host 模式，而是由 guest 自身的缺页异常处理函数处理。当地址从 GVA 翻译到 GPA 后，GPA 在硬件内部从 MMU 流转到 EPT。如果 EPT 页表中存在 GPA 到 HPA 的映射，则 EPA 最终获取了对应的 HPA，将 HPA 送上地址总线。如果不存在映射，那么抛出 EPT 异常， CPU 将从 guest 模式切换到 host 模式，进行正常的异常处理。建立好映射之后返回 guest 模式。
+   当 guest 发生缺页异常时，CPU 不再切换到 host 模式，而是由 guest 自身的缺页异常处理函数处理。当地址从 GVA 翻译到 GPA 后，GPA 在硬件内部从 MMU 流转到 EPT。如果 EPT 页表中存在 GPA 到 HPA 的映射，则 EPT 最终获取了对应的 HPA，将 HPA 送上地址总线。如果不存在映射，那**么抛出 EPT 异常， CPU 将从 guest 模式切换到 host 模式，进行正常的异常处理**。建立好映射之后返回 guest 模式。
 
-   需要退出 guest 时，会将引发异常的 GPA 保存到`VMCS`的`guest physical address`字段，然后 KVM 就可以根据这个 GPA 调用异常处理函数，处理 EPT 缺页异常。
+   需要退出 guest 时，会将引发异常的 GPA 保存到 `VMCS` 的 `guest physical address` 字段，然后 KVM 就可以根据这个 GPA 调用异常处理函数，处理 EPT 缺页异常。
 
    简单举例：如果 guest 采用 2 级页表，那么在通过一级页表目录读取二级页表地址时，需要通过 EPT，然后通过二级页表读取页帧地址时，需要通过 EPT，最后通过 offset 在页帧中读取字节需要通过 EPT。
 
@@ -151,11 +151,11 @@ struct kvm_userspace_memory_region {
 
    物理 CPU 在执行完一条指令后，都会检查中断引脚是否有效，一旦有效，CPU 将处理中断，然后执行下一条指令。
 
-   对于软件虚拟的中断芯片而言，**“引脚”只是一个变量**。如果 KVM 发现虚拟中断芯片有中断请求，则向`VMCS`中的`VM-entry control`部分的`VM-entry interruption-information field`字段写入中断信息，在切入 guest 模式的一刻，**CPU** 将检查这个字段，如同检查 CPU 引脚，如果有中断，则进入中断执行过程。
+   对于软件虚拟的中断芯片而言，**“引脚”只是一个变量**。如果 KVM 发现虚拟中断芯片有中断请求，则向 `VMCS` 中的 `VM-entry control` 部分的 `VM-entry interruption-information field` 字段写入中断信息，在切入 guest 模式的一刻，**CPU** 将检查这个字段，如同检查 CPU 引脚，如果有中断，则进入中断执行过程。
 
-   guest 模式的 CPU 不能检测虚拟中断芯片的引脚，只能在 VM entry 时由 KVM 模块代为检查，然后写入`VMCS`，一旦有中断注入，那么处于 guest 模式的 CPU 一定需要通过 VM exit 退出到 host 模式，这个上下文切换很麻烦。
+   guest 模式的 CPU 不能检测虚拟中断芯片的引脚，只能在 VM entry 时由 KVM 模块代为检查，然后写入 `VMCS`，一旦有中断注入，那么处于 guest 模式的 CPU 一定需要通过 VM exit 退出到 host 模式，这个上下文切换很麻烦。
 
-   在硬件层面增加对虚拟化的支持。在 guest 模式下实现`virtual-APIC page`页面和虚拟中断逻辑。遇到中断时，将中断信息写入`posted-interrupt descriptor`，然后通过特殊的核间中断`posted-interrupt notification`通知 CPU，guest 模式下的 CPU 就可以借助虚拟中断逻辑处理中断。
+   在硬件层面增加对虚拟化的支持。在 guest 模式下实现 `virtual-APIC page` 页面和虚拟中断逻辑。**遇到中断时，将中断信息写入 `posted-interrupt descriptor`，然后通过特殊的核间中断 `posted-interrupt notification` 通知 CPU，guest 模式下的 CPU 就可以借助虚拟中断逻辑处理中断**。
 
 2. PIC 虚拟化
 
@@ -169,7 +169,7 @@ struct kvm_userspace_memory_region {
 
    （3）设置待处理中断标识
 
-   虚拟 PIC 是被动中断，需要设置中断变量，等 VM entry 时 KVM 会检查是否有中断请求，如果有，则将需要处理的中断信息写入 VMCS 中。
+   虚拟 PIC 是被动中断，需要设置中断变量，**等 VM entry 时 KVM 会检查是否有中断请求，如果有，则将需要处理的中断信息写入 VMCS 中**。
 
    （4）中断评估
 
@@ -177,13 +177,13 @@ struct kvm_userspace_memory_region {
 
    （5）中断注入
 
-   VMCS 中有字段：`VM-entry interruption-information`，在 VM-entry 时 CPU 会检查这个字段。如果 CPU 正处在 guest 模式，则等待下一次 VM exit 和 VM 	entry；如果 VCPU 正在睡眠状态，则 kick。
+   VMCS 中有字段：`VM-entry interruption-information`，在 VM-entry 时 CPU 会检查这个字段。如果 CPU 正处在 guest 模式，则等待下一次 VM exit 和 VM entry；如果 VCPU 正在睡眠状态，则 kick。
 
 3. APIC 虚拟化
 
    APIC( Advanced Programmable Interrupt Controller)，其可以将接收到的中断按需分给不同的 processor 进行处理，而 PIC 只能应用于单核。
 
-   APIC 包含两个部分：`LAPIC`和`I/O APIC`， LAPIC 位于处理器一端，接收来自 I/O APIC 的中断和核间中断 IPI(Inter Processor Interrupt)；I/O APIC 一般位于南桥芯片，相应来自外部设备的中断，并将中断发送给 LAPIC。其中断过程和 PIC 类似。
+   APIC 包含两个部分：`LAPIC` 和 `I/O APIC`， LAPIC 位于处理器一端，接收来自 I/O APIC 的中断和核间中断 IPI(Inter Processor Interrupt)；I/O APIC 一般位于南桥芯片，相应来自外部设备的中断，并将中断发送给 LAPIC。其中断过程和 PIC 类似。
 
    （1）核间中断过程
 
@@ -197,11 +197,11 @@ struct kvm_userspace_memory_region {
 
    在基于软件虚拟中断芯片中，只能在 VM entry 时向 guest 注入中断，必须触发一次 VM exit，这是中断虚拟化的主要开销。
 
-   （1）`virtual-APIC page`。LAPIC 中有一个 4KB 大小的页面，intel 称之为 APIC page，LAPIC 的所有寄存器都存在这个页面上。当内核访问这些寄存器时，将触发 guest 退出到 host 的 KVM 模块中的虚拟 LAPIC。intel 在 guest 模式下实现了一个用于存储中断寄存器的 `virtual-APIC page`。配置之后的中断逻辑处理，很多中断就无需 vmm 介入。但发送 IPI 还是需要触发 VM exit。通过 `virtual-APIC page`维护寄存器的状态，guest 读取这些寄存器时无需切换状态，而写入时需要切换状态。
+   （1）`virtual-APIC page`。LAPIC 中有一个 4KB 大小的页面，intel 称之为 APIC page，LAPIC 的所有寄存器都存在这个页面上。当内核访问这些寄存器时，将触发 guest 退出到 host 的 KVM 模块中的虚拟 LAPIC。intel 在 guest 模式下实现了一个用于存储中断寄存器的 `virtual-APIC page`。配置之后的中断逻辑处理，很多中断就无需 vmm 介入。但发送 IPI 还是需要触发 VM exit。通过 `virtual-APIC page` 维护寄存器的状态，guest 读取这些寄存器时无需切换状态，而写入时需要切换状态。
 
-   （2）guest 模式下的中断评估逻辑。guest 模式下的 CPU 借助 VMCS 中的字段`guest interrupt status`评估中断。当 guest 开中断或者执行完不能中断的指令后，CPU 会检查这个字段是否有中断需要处理。（这个检查的过程是谁规定的？guest 模式下的 CPU 自动检查 VMCS）。
+   （2）guest 模式下的中断评估逻辑。guest 模式下的 CPU 借助 VMCS 中的字段 `guest interrupt status` 评估中断。当 guest 开中断或者执行完不能中断的指令后，CPU 会检查这个字段是否有中断需要处理。（这个检查的过程是谁规定的？guest 模式下的 CPU 自动检查 VMCS）。
 
-   （3）`posted-interrupt processing`。当 CPU 支持在 guest 模式下的中断评估逻辑后，虚拟中断芯片可以在收到中断请求后，由 guest 模式下的中断评估逻辑评估后，将中断信息更新到`posted-interrupt descriptor`中，然后向处于 guest 模式下的 CPU 发送`posted-interrupt notification`，向 guest 模式下的 CPU 直接递交中断。
+   （3）`posted-interrupt processing`。当 CPU 支持在 guest 模式下的中断评估逻辑后，虚拟中断芯片可以在收到中断请求后，由 guest 模式下的中断评估逻辑评估后，将中断信息更新到 `posted-interrupt descriptor` 中，然后向处于 guest 模式下的 CPU 发送 `posted-interrupt notification`，向 guest 模式下的 CPU 直接递交中断。
 
 ### 四、设备虚拟化
 
@@ -213,9 +213,9 @@ struct kvm_userspace_memory_region {
 
    新的 PCI 设备会**自动**向 OS 申请需要的地址空间大小等，然后将这些需求即如在配置空间的寄存器 BAR 中。在系统初始化时 BIOS 会查询所有设备的 BAR 寄存器，统一为 PCI 设备分配地址空间。
 
-   PCI 总线通过 PCI host bridge 和 CPU 总线相连，PCI host bridge 和 PCI 设备之间通过 PCI 总线通信。PCI host bridge 内部有两个寄存器用于系统软件访问 PCI 设备的配置空间，一个是`CONFIG_ADDRESS`，另一个是`CONFIG_DATA`。当系统软件访问 PCI 设备配置空间中的寄存器时，首先将目标地址写入寄存器`CONFIG_ADDRESS`中，然后向寄存器`CONFIG_DATA`发起访问操作。当 PCI host bridge 接收到访问`CONFIG_DATA`的信号，其将`CONFIG_ADDRESS`中的地址转换成 PCI 总线地址格式，根据地址信息片选 PCI 设备，然后根据其中的功能号和寄存器号发送到 PCI 总线上。目标 PCI 设备在接收到信息后，发送数据。
+   PCI 总线通过 PCI host bridge 和 CPU 总线相连，PCI host bridge 和 PCI 设备之间通过 PCI 总线通信。PCI host bridge 内部有两个寄存器用于系统软件访问 PCI 设备的配置空间，一个是 `CONFIG_ADDRESS`，另一个是 `CONFIG_DATA`。当系统软件访问 PCI 设备配置空间中的寄存器时，首先将目标地址写入寄存器 `CONFIG_ADDRESS` 中，然后向寄存器 `CONFIG_DATA` 发起访问操作。当 PCI host bridge 接收到访问 `CONFIG_DATA` 的信号，其将 `CONFIG_ADDRESS` 中的地址转换成 PCI 总线地址格式，根据地址信息片选 PCI 设备，然后根据其中的功能号和寄存器号发送到 PCI 总线上。目标 PCI 设备在接收到信息后，发送数据。
 
-   当 guest 访问`CONFIG_ADDRESS`时会触发 VM exit 陷入 VMM，VMM 进行模拟处理。而之后 guest 将通过访问`CONFIG_DATA`读写 PCI 配置空间头的信息，这个操作也会触发 VM exit，进入 KVM（一次访问设备需要两次 exit，加上设备准备好之后的请求中断，也需要 exit，效率很低）。
+   当 guest 访问 `CONFIG_ADDRESS` 时会触发 VM exit 陷入 VMM，VMM 进行模拟处理。而之后 guest 将通过访问 `CONFIG_DATA` 读写 PCI 配置空间头的信息，这个操作也会触发 VM exit，进入 KVM（一次访问设备需要两次 exit，加上设备准备好之后的请求中断，也需要 exit，效率很低）。
 
 2. 设备透传
 
