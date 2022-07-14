@@ -1388,7 +1388,7 @@ int copy_thread(unsigned long clone_flags, unsigned long sp, unsigned long arg,
 进程的终止主要有 2 中方法：
 
 - 自愿终止
-  - 从 `main` 函数返回，连接程序会自动的添加 `exit` 系统调用
+  - 从 `main` 函数返回，链接程序会自动的添加 `exit` 系统调用
   - 主动调用 `exit` 系统调用
 - 被动终止
   - 进程收到一个自己不能处理的信号
@@ -1420,7 +1420,7 @@ int copy_thread(unsigned long clone_flags, unsigned long sp, unsigned long arg,
 
 #### 经典调度算法
 
-现代操作系统的进程调度器的设计大多受多级反馈队列算法的影响。多级反馈队列算法的核心是**把进程按优先级分成多个队列，相同优先级的进程在同一个队列**。它最大的特点再与能够根据判断正在运行的进程属于哪种进程，如 I/O 消耗型或 CPU 消耗型，作出不同的反馈，然后**动态的修改进程的优先级**。
+现代操作系统的进程调度器的设计大多受**多级反馈队列算法**的影响。多级反馈队列算法的核心是**把进程按优先级分成多个队列，相同优先级的进程在同一个队列**。它最大的特点再与能够根据判断正在运行的进程属于哪种进程，如 I/O 消耗型或 CPU 消耗型，作出不同的反馈，然后**动态的修改进程的优先级**。
 
 其有如下几条基本规则：
 
@@ -1581,7 +1581,7 @@ struct sched_entity {
 
 ##### rq
 
-这个数据结构是**每个 CPU 通用就绪队列的描述符**。它包含了多个调度策略的就绪队列，可以理解为一个 CPU 总的就绪队列，所有相关的信息都可以在里面找到。其中有很多负载均衡方面的变量，这个暂时不分析。
+这个数据结构是**每个 CPU 通用就绪队列的描述符**。它**包含了多个调度策略的就绪队列，可以理解为一个 CPU 总的就绪队列**，所有相关的信息都可以在里面找到。其中有很多负载均衡方面的变量，这个暂时不分析。
 
 ```c
 struct rq {
@@ -1848,7 +1848,7 @@ DEFINE_SCHED_CLASS(fair) = {
 
 #### 进程创建中的相关初始化
 
-[关键函数copy_process](#关键函数copy_process)中介绍了通过 `clone`, `vfork`, `fork` 等系统调用创建进程的过程，在创建的过程中也会初始化进程调度相关的数据结构。
+[关键函数copy_process](#关键函数copy_process) 中介绍了通过 `clone`, `vfork`, `fork` 等系统调用创建进程的过程，在创建的过程中也会初始化进程调度相关的数据结构。
 
 ```c
 static __latent_entropy struct task_struct *copy_process(
@@ -2126,7 +2126,7 @@ static u64 __sched_period(unsigned long nr_running)
 #12 0xffffffff81000107 in secondary_startup_64 () at arch/x86/kernel/head_64.S:283
 ```
 
-在[关键函数kernel_clone](#关键函数kernel_clone)中我们知道进程创建完后需要将其加入到就绪队列接受调度、运行，这里我们进一步分析 `wake_up_new_task`。
+在[关键函数kernel_clone](#关键函数kernel_clone) 中我们知道进程创建完后需要将其加入到就绪队列接受调度、运行，这里我们进一步分析 `wake_up_new_task`。
 
 ```c
 pid_t kernel_clone(struct kernel_clone_args *args)
@@ -2333,7 +2333,7 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 - 在**中断返回前和系统调用返回用户空间时**，检查 `TIF_NEED_RESCHED` 标志位以判断是否需要调度；
 - 将要被唤醒的进程不会马上调用 `schedule`，而是会将其调度实体被添加到 CFS 的就绪队列中（这在前面就已经分析了），并且设置 `TIF_NEED_RESCHED` 标志位；
 
-而被唤醒的进程（加入的调度时机根据内核是否可以被抢占可分成两种情况：
+而被唤醒的进程加入的调度时机根据内核是否可以被抢占可分成两种情况：
 
 - 内核可抢占
   - 如果唤醒动作（何为唤醒动作，将进程插入到就绪队列么）发生在系统调用或异常处理上下文中，在下一次调用 `preempt_enable` 时会检查是否需要抢占调度；
@@ -2758,11 +2758,11 @@ do {									\
 
 ![switch_to.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/switch_to.png?raw=true)
 
-假设进程 A 在 CPU 0 上主动执行 `switch_to` 切换到 B 执行，那么 A 执行了 A0，然后运行了 `switch_to`。在 `switch_to` 中 CPU 0 切换到 B 上硬件上下文，运行 B，A 被换出了，这时 B 直接运行自己的代码段，而 A1 还没有执行，所以需要 `last` 指向 A。
+假设进程 A 在 CPU 0 上主动执行 `switch_to` 切换到 B 执行，那么 A 执行了 A0，然后运行了 `switch_to`。在 `switch_to` 中 CPU 0 切换到 B 上硬件上下文，运行 B，A 被换出了，这时 B 直接运行自己的代码段，**而 A1 还没有执行，所以需要 `last` 指向 A**。
 
 那为何不直接使用 `prev` 呢？在 `switch_to` 执行前，`prev` 指向 A，但是  `switch_to` 执行完后，此时内核栈已经从 A 的内核栈切换到 B 的内核栈，读取 `prev` 变成了读取 B 的 `prev` 参数，而不是 A 的 `prev` 参数，所以读出来的 `prev` 不一定指向 A。**那为什么 `__switch_to_asm` 能够返回指向 A 的指针？**因为 `__switch_to` 会返回 `prev`。
 
-经过一段时间，某个 CPU 上的进程 X 主动执行 `switch_to` 切换到 A 执行，即 A 从 CPU 0 切换到 CPU n。这时 X 进入睡眠，而 A 从上次的睡眠点开始运行，也就是说开始运行 A1，而这时 `last` 执行 X。通常 A1 是 `finish_task_switch`，即 A 重新运行前需要通过这个函数对 X 进行一些清理工作，而 `last` 就是传给 `finish_task_switch` 的参数。
+经过一段时间，某个 CPU 上的进程 X 主动执行 `switch_to` 切换到 A 执行，即 A 从 CPU 0 切换到 CPU n。这时 X 进入睡眠，而 A 从上次的睡眠点开始运行，也就是说开始运行 A1，而这时 `last` 指向 X。通常 A1 是 `finish_task_switch`，即 **A 重新运行前需要通过这个函数对 X 进行一些清理工作**，而 `last` 就是传给 `finish_task_switch` 的参数。
 
 ```c
 .pushsection .text, "ax"
@@ -2981,7 +2981,7 @@ struct thread_struct {
 
 ##### 关键函数finish_task_switch
 
-这个函数是在 next 进程上下文中为 prev 进程收尾的，大概了解以下它做了哪些工作。
+这个函数是**在 next 进程上下文中为 prev 进程收尾的**，大概了解以下它做了哪些工作。
 
 ```C
 /**

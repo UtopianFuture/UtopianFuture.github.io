@@ -283,7 +283,7 @@ struct page {
 ##### pglist_data
 
 ```c
-*
+/*
  * The pg_data_t structure is used in machines with CONFIG_DISCONTIGMEM
  * (mostly NUMA machines?) to denote a higher-level memory zone than the
  * zone denotes.
@@ -1001,7 +1001,7 @@ EXPORT_SYMBOL(alloc_pages);
 
 8. `__rmqueue`
 
-   这个函数同样是调用 `__rmqueue_smallest`，但是如果 `__rmqueue_smallest` 分配失败，其会调用 `__rmqueue_fallback`。这个函数会从其他类型的页块中挪用页块，这是基于页面迁移类型做的优化，这里就不做进一步分析。
+   这个函数同样是调用 `__rmqueue_smallest`，但是如果 `__rmqueue_smallest` 分配失败，其会调用 `__rmqueue_fallback`。这个函数会**从其他类型的页块中挪用页块**，这是基于页面迁移类型做的优化，这里就不做进一步分析。
 
    ```c
    static __always_inline struct page *
@@ -1219,7 +1219,7 @@ static inline void free_the_page(struct page *page, unsigned int order)
 
 伙伴系统算法采用页框作为基本内存区，但一个页框一般是 4KB，而程序很多时候都是申请很小的内存，比如几百字节，十几 KB，这时分配一个页会造成很大的浪费，**slab 分配器解决的就是对小内存区的请求**。
 
-slab 机制是基于对象进行管理的，**所谓的对象就是内核中的数据结构（例如：`task_struct`, `file_struct` 等）**。相同类型的对象归为一类，每当要申请这样一个对象时，就从对应的 slab 描述符的本地对象缓冲池、共享对象缓冲池或 slab 链表中分配一个这样大小的单元出去，而当要释放时，**将其重新保存在该 slab 描述符中，而不是直接返回给伙伴系统**，从而避免内部碎片。slab 机制并不丢弃已经分配的对象，而是释放并把它们保存在内存中。slab 分配对象时，会使用最近释放的对象的内存块，因此其驻留在 cpu 高速缓存中的概率会大大提高（soga）。
+slab 机制是基于对象进行管理的，**所谓的对象就是内核中的数据结构（例如：`task_struct`, `file_struct` 等）**。相同类型的对象归为一类，每当要申请这样一个对象时，就从对应的 slab 描述符的本地对象缓冲池、共享对象缓冲池或 slab 链表中分配一个这样大小的单元出去，而当要释放时，**将其重新保存在该 slab 描述符中，而不是直接返回给伙伴系统**，从而避免内部碎片。slab 机制并不丢弃已经分配的对象，而是释放并把它们保存在内存中。slab 分配对象时，会使用最近释放的对象的内存块，**因此其驻留在 cpu 高速缓存中的概率会大大提高**（soga）。
 
 slab 分配器最终还是使用伙伴系统来分配实际的物理页面，只不过 slab 分配器**在这些连续的物理页面上实现了自己的管理机制**。
 
@@ -1813,7 +1813,7 @@ slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure
           - 判断本地对象缓冲池中是否有空闲对象，如果有就直接 `objp = ac->entry[--ac->avail];`
           - 没有，调用 `cache_alloc_refill` 分配
             - `cache_alloc_refill`
-              - `get_node` 获取该 slab 描述符对应的节点（kmem_cache_node）
+              - `get_node` 获取该 slab 描述符对应的节点（`kmem_cache_node`）
 
 1. `____cache_alloc`
 
@@ -2381,7 +2381,7 @@ vmalloc 分配的空间在 [内存分布](# 内存分布) 小节中的图中有�
    ```
 
    - `alloc_vmap_area` 负责分配 vmalloc 区域。其在 vmalloc 区域中查找一块大小合适的并且没有使用的空间，这段空间称为缝隙（hole）。
-     - 从 vmalloc 区域的起始位置 `VMALLOC_START` 开始，首先从红黑树 `vmap_area_root` 上查找，这棵树存放着系统正在使用的 vmalloc 区域，遍历左叶子节点赵区域地址最小的区域。如果区域的开始地址等于 `VMALLOC_START` ，说明这个区域是第一个 vmalloc 区域；如果红黑树没有一个节点，说明整个 vmalloc 区域都是空的。
+     - 从 vmalloc 区域的起始位置 `VMALLOC_START` 开始，首先从红黑树 `vmap_area_root` 上查找，这棵树存放着系统正在使用的 vmalloc 区域，遍历左叶子节点寻找区域地址最小的区域。如果区域的开始地址等于 `VMALLOC_START` ，说明这个区域是第一个 vmalloc 区域；如果红黑树没有一个节点，说明整个 vmalloc 区域都是空的。
      - 从 `VMALLOC_START` 开始查找每个已存在的 vmalloc 区域的缝隙能够容纳目前申请的大小。如果已有的 vmalloc 区域的缝隙不能容纳，那么从最后一块 vmalloc 区域的结束地址开辟一个新的 vmalloc 区域。
      - 找到新的区域缝隙后，调用 `insert_vmap_area` 将其注册到红黑树。
 
@@ -2997,7 +2997,7 @@ mmap 机制在内核中的实现和 brk 类似，但其和缺页中断机制结�
 从触发缺页异常到 CPU 根据中断号跳转到对应的处理函数这个过程在之前做项目时已经跟踪过，就不再分析，这里主要分析 `handle_mm_fault` 相关的处理函数。
 
 - `DEFINE_IDTENTRY_RAW_ERRORCODE(exc_page_fault)`
-  - `unsigned long address = read_cr2();` 在 X86 架构中，cr2 寄存器保存着访存时引发 #PF 异常的线性地址，cr3 寄存器提供页表的基地址。
+  - `unsigned long address = read_cr2();` 在 X86 架构中，cr2 寄存器保存着访存时引发 #PF 异常的线性地址，cr3 寄存器提供页表的基地址；
   - `handle_page_fault`
     - `do_kern_addr_fault` 内核地址空间引发的中断；
     - `do_user_addr_fault` 用户地址空间引发的中断；
@@ -3592,7 +3592,7 @@ RMAP 的主要目的是**从物理页面的 page 数据结构中找到有哪些�
 
 ##### anon_vma
 
-其主要用于连接物理页面的 page 数据结构和 VMA，这个数据结构和 VMA 有相似之处啊。
+其主要**用于连接物理页面的 page 数据结构和 VMA**，这个数据结构和 VMA 有相似之处啊。
 
 ```c
 struct anon_vma {
@@ -3645,7 +3645,7 @@ struct anon_vma_chain {
 
 每个进程的每个 VMA 都有一个 `anon_vma` 结构，即（`AVp` 和 `AVc`），VMA 相关的物理页面 `page->mapping` 都指向 `anon_vma`，av 中的 `rb_root` 指向一颗红黑树，之后 avc 都会插入到该树中（直接看 `anon_vma_chain_link` 代码会更清晰）。同时还有一个 avc 结构，每个 VMA 对应一个 avc，avc 中的 VMA 指向该 VMA，`anon_vma` 指向该 VMA 的 av，然后所有的 avc 组成一个单链表，每个 VMA 中都能访问该链表。然后有一个枢纽 avc，这个 avc 会插入到父进程的 av 红黑树中和子进程的 avc 链表中，但是其 VMA 变量指向的是子进程的 VMA。所有的子进程都有一个 avc 枢纽。
 
-当需要找到某个 page 对应的所有 VMA 时，只需要通过 `page->mapping` 找到父进程的 av 结构，然后扫描 av 指向的 av 红黑树。而子进程的的 VMA 通过插入到父进程的枢纽 avc 也可以遍历到。这里是每个 VMA 都有对应的 av，所以不要遍历所有的 VMA。
+当需要找到某个 page 对应的所有 VMA 时，只需要**通过 `page->mapping` 找到父进程的 av 结构，然后扫描 av 指向的 av 红黑树**。而子进程的的 VMA 通过插入到父进程的枢纽 avc 也可以遍历到。这里是每个 VMA 都有对应的 av，所以不要遍历所有的 VMA。
 
 #### 父进程产生匿名页面
 
@@ -4058,7 +4058,7 @@ static void rmap_walk_anon(struct page *page, struct rmap_walk_control *rwc,
 
 #### kswapd内核线程
 
-内核线程 kswapd 负责在内存不足时回收页面。kswapd 内核线程在初始化时会为系统中每个内存节点创建一个 "kswapd%d" 的内核线程。从调用栈可以看出 kswapd 是通过 1 号内核线程 `kernel_init` 创建的。
+**内核线程 kswapd 负责在内存不足时回收页面**。kswapd 内核线程在初始化时会为系统中每个内存节点创建一个 "kswapd%d" 的内核线程。从调用栈可以看出 kswapd 是通过 1 号内核线程 `kernel_init` 创建的。
 
 ```
 #0  kswapd_run (nid=0) at mm/vmscan.c:4435
@@ -4535,7 +4535,7 @@ out:
 }
 ```
 
-总结一下，页面迁移的本质是将一系列的 page 迁移到新的 page，那么这其中自然会涉及到物理页的分配、断开旧页面的 PTE、复制旧物理页的内容到新页面、设置新的 PTE，最后释放旧的物理页，这其中根据页面的属性又有不同的处理方式，跟着这个思路走就可以理解页面迁移（大致应该是这样，不过我还没有对细节了如指掌，时间啊！）。
+总结一下，页面迁移的本质是将一系列的 page 迁移到新的 page，那么这其中自然会涉及到**物理页的分配、断开旧页面的 PTE、复制旧物理页的内容到新页面、设置新的 PTE，最后释放旧的物理页**，这其中根据页面的属性又有不同的处理方式，跟着这个思路走就可以理解页面迁移（大致应该是这样，不过我还没有对细节了如指掌，时间啊！）。
 
 ![page_migrate.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/page_migrate.png?raw=true)
 
@@ -4545,7 +4545,7 @@ out:
 
 内存规整是为了解决内核碎片化出现的一个功能，当物理设备需要大段的连续的物理内存，而内核无法满足，则会发生内核错误，因此需要**将多个小空闲内存块重新整理以凑出大块连续的物理内存**。
 
-内存规整的核心思想是将内存页面按照可移动、可回收、不可移动等特性进行分类。可移动页面通常指用户态进程分配的内存，移动这些页面仅仅需要修改页表映射关系；可回收页面指不可移动但可释放的页面。其运行流程总结起来很好理解（但是实现又是另一回事:joy:）。有两个方向的扫描者：一个从 zone 的头部向 zone 的尾部方向扫描，查找哪些页面是可移动的；另一个从 zone 的尾部向 zone 的头部方向扫描，查找哪些页面是空闲页面。当这两个扫描者在 zone 中间相遇或已经满足分配大块内存的需求（能分配处所需要的大块内存并且满足最低的水位要求）时，就可以退出扫描。
+内存规整的核心思想是**将内存页面按照可移动、可回收、不可移动等特性进行分类**。可移动页面通常指用户态进程分配的内存，移动这些页面仅仅需要修改页表映射关系；可回收页面指不可移动但可释放的页面。其运行流程总结起来很好理解（但是实现又是另一回事:joy:）。有两个方向的扫描者：一个从 zone 的头部向 zone 的尾部方向扫描，查找哪些页面是可移动的；另一个从 zone 的尾部向 zone 的头部方向扫描，查找哪些页面是空闲页面。当这两个扫描者在 zone 中间相遇或已经满足分配大块内存的需求（能分配处所需要的大块内存并且满足最低的水位要求）时，就可以退出扫描。
 
 ![memory_compact.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/memory_compact.png?raw=true)
 
