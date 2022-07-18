@@ -1,10 +1,85 @@
 ## CPU Virtualization
 
-### 1. QEMU 侧虚拟机的建立
+### QEMU 侧虚拟机的建立
 
-QEMU 侧创建虚拟机比较简单，主要是在 `kvm_init` 中调用 `ioctl(KVM_CREATE_VM)` ，保存一个返回句柄 fd 在 `KVM_State` 中，这样再其他地方也能使用这个句柄。QEMU 中使用 `KVM_State` 表示 KVM 相关的数据结构。
+QEMU 侧创建虚拟机比较简单，主要是在 `kvm_init` 中调用 `ioctl(KVM_CREATE_VM)` ，保存一个返回句柄 fd 在 `KVM_State->vmfd` 中，这样在其他地方也能使用这个句柄。QEMU 中使用 `KVM_State` 表示 KVM 相关的数据结构。
 
-### 2. KVM 侧虚拟机的建立
+#### KVMState
+
+老规矩，我们来看看这个重要的数据结构，
+
+```c
+struct KVMState
+{
+    AccelState parent_obj; // 因为 QEMU 能够支持 tcg, kvm 等不同加速方式，所以有个父类
+
+    int nr_slots; // 内存条，这些都是从 KVM 中获取的
+    int fd; // 表示内核中的 /dev/kvm 模块，内核要支持 KVM 才能进行下一步操作
+    int vmfd; // 这个句柄表示的就是 KVM 中创建的虚拟机
+    int coalesced_mmio; // 这个就是在 KVM 中分配页面专门用来做 mmio，访问到这个地址就会触发异常
+    int coalesced_pio;
+    struct kvm_coalesced_mmio_ring *coalesced_mmio_ring;
+    bool coalesced_flush_in_progress;
+    int vcpu_events;
+    int robust_singlestep;
+    int debugregs;
+#ifdef KVM_CAP_SET_GUEST_DEBUG
+    QTAILQ_HEAD(, kvm_sw_breakpoint) kvm_sw_breakpoints;
+#endif
+    int max_nested_state_len;
+    int many_ioeventfds;
+    int intx_set_mask;
+    int kvm_shadow_mem;
+    bool kernel_irqchip_allowed;
+    bool kernel_irqchip_required;
+    OnOffAuto kernel_irqchip_split;
+    bool sync_mmu;
+    uint64_t manual_dirty_log_protect;
+    /* The man page (and posix) say ioctl numbers are signed int, but
+     * they're not.  Linux, glibc and *BSD all treat ioctl numbers as
+     * unsigned, and treating them as signed here can break things */
+    unsigned irq_set_ioctl;
+    unsigned int sigmask_len;
+    GHashTable *gsimap;
+#ifdef KVM_CAP_IRQ_ROUTING
+    struct kvm_irq_routing *irq_routes;
+    int nr_allocated_irq_routes;
+    unsigned long *used_gsi_bitmap;
+    unsigned int gsi_count;
+    QTAILQ_HEAD(, KVMMSIRoute) msi_hashtab[KVM_MSI_HASHTAB_SIZE];
+#endif
+    KVMMemoryListener memory_listener;
+    QLIST_HEAD(, KVMParkedVcpu) kvm_parked_vcpus;
+
+    /* For "info mtree -f" to tell if an MR is registered in KVM */
+    int nr_as;
+    struct KVMAs {
+        KVMMemoryListener *ml;
+        AddressSpace *as;
+    } *as; // 该虚拟机的注册的内存可以用这里开始找到
+    // 不知道啥是dirty ring,j
+    uint64_t kvm_dirty_ring_bytes;  /* Size of the per-vcpu dirty ring */
+    uint32_t kvm_dirty_ring_size;   /* Number of dirty GFNs per ring */
+    struct KVMDirtyRingReaper reaper;
+};
+```
+
+这是调用过程，
+
+```c
+#0  kvm_init (ms=0x55555699a400) at ../accel/kvm/kvm-all.c:2307
+#1  0x0000555555af387b in accel_init_machine (accel=0x55555681c140, ms=0x55555699a400) at ../accel/accel-softmmu.c:39
+#2  0x0000555555c0752b in do_configure_accelerator (opaque=0x7fffffffda0d, opts=0x555556a448e0, errp=0x55555677c100 <error_fatal>) at ../softmmu/vl.c:2348
+#3  0x0000555555f01307 in qemu_opts_foreach (list=0x5555566a18c0 <qemu_accel_opts>, func=0x555555c07401 <do_configure_accelerator>, opaque=0x7fffffffda0d, errp=0x55555677c100 <error_fatal>)
+    at ../util/qemu-option.c:1135
+#4  0x0000555555c07790 in configure_accelerators (progname=0x7fffffffe0c5 "/home/guanshun/gitlab/qemu-newest/build/qemu-system-x86_64") at ../softmmu/vl.c:2414
+#5  0x0000555555c0a834 in qemu_init (argc=13, argv=0x7fffffffdcc8, envp=0x7fffffffdd38) at ../softmmu/vl.c:3724 // qemu 的参数解析就是在这里完成的
+#6  0x000055555583b6f5 in main (argc=13, argv=0x7fffffffdcc8, envp=0x7fffffffdd38) at ../softmmu/main.c:49
+```
+
+总的来说 `kvm_init` 在使用 KVM 的情况下是同时 `ioctl` 来确定 KVM 能够使用哪些功能，当然，最重要的还是确定 `vmfd`。
+
+### KVM 侧虚拟机的建立
 
 `kvm_dev_ioctl` 向用户层 QEMU 提供 `ioctl` ，根据不同类型的请求提供不同的服务，如果是 `KVM_CREATE_VM` 就调用 `kvm_dev_ioctl_create_vm` 创建一个虚拟机，然后返回一个文件描述符到用户态，QEMU 用该描述符操作虚拟机。
 
@@ -50,7 +125,93 @@ out:
 }
 ```
 
-该函数的主要任务是调用 `kvm_create_vm` 创建虚拟机实例，每一个虚拟机实例用 kvm 结构体表示。
+该函数的主要任务是调用 `kvm_create_vm` 创建虚拟机实例，每一个虚拟机实例用 `kvm` 结构体表示。
+
+#### kvm
+
+这里又涉及各种各样的情况，先记录下来，之后一点点补。
+
+```c
+struct kvm {
+
+    ... // 各种锁
+
+	struct mm_struct *mm; /* userspace tied to this vm */
+	struct kvm_memslots __rcu *memslots[KVM_ADDRESS_SPACE_NUM];
+	struct kvm_vcpu *vcpus[KVM_MAX_VCPUS]; // 每个虚拟机都有一个或多个 VCPU
+
+	/* Used to wait for completion of MMU notifiers.  */
+	spinlock_t mn_invalidate_lock;
+	unsigned long mn_active_invalidate_count;
+	struct rcuwait mn_memslots_update_rcuwait;
+
+	/*
+	 * created_vcpus is protected by kvm->lock, and is incremented
+	 * at the beginning of KVM_CREATE_VCPU.  online_vcpus is only
+	 * incremented after storing the kvm_vcpu pointer in vcpus,
+	 * and is accessed atomically.
+	 */
+	atomic_t online_vcpus;
+	int created_vcpus;
+	int last_boosted_vcpu;
+	struct list_head vm_list;
+	struct mutex lock;
+	struct kvm_io_bus __rcu *buses[KVM_NR_BUSES];
+#ifdef CONFIG_HAVE_KVM_EVENTFD
+	struct {
+		spinlock_t        lock;
+		struct list_head  items;
+		struct list_head  resampler_list;
+		struct mutex      resampler_lock;
+	} irqfds;
+	struct list_head ioeventfds;
+#endif
+	struct kvm_vm_stat stat;
+	struct kvm_arch arch;
+	refcount_t users_count;
+#ifdef CONFIG_KVM_MMIO
+	struct kvm_coalesced_mmio_ring *coalesced_mmio_ring;
+	spinlock_t ring_lock;
+	struct list_head coalesced_zones;
+#endif
+
+	struct mutex irq_lock;
+#ifdef CONFIG_HAVE_KVM_IRQCHIP
+	/*
+	 * Update side is protected by irq_lock.
+	 */
+	struct kvm_irq_routing_table __rcu *irq_routing;
+#endif
+#ifdef CONFIG_HAVE_KVM_IRQFD
+	struct hlist_head irq_ack_notifier_list;
+#endif
+
+#if defined(CONFIG_MMU_NOTIFIER) && defined(KVM_ARCH_WANT_MMU_NOTIFIER)
+	struct mmu_notifier mmu_notifier;
+	unsigned long mmu_notifier_seq;
+	long mmu_notifier_count;
+	unsigned long mmu_notifier_range_start;
+	unsigned long mmu_notifier_range_end;
+#endif
+	struct list_head devices;
+	u64 manual_dirty_log_protect;
+	struct dentry *debugfs_dentry;
+	struct kvm_stat_data **debugfs_stat_data;
+	struct srcu_struct srcu;
+	struct srcu_struct irq_srcu;
+	pid_t userspace_pid;
+	unsigned int max_halt_poll_ns;
+	u32 dirty_ring_size;
+	bool vm_bugged;
+
+#ifdef CONFIG_HAVE_KVM_PM_NOTIFIER
+	struct notifier_block pm_notifier;
+#endif
+	char stats_id[KVM_STATS_NAME_SIZE];
+};
+```
+
+这里主要是调用 `kvm_create_vm` 函数来初始化各种结构体。
 
 ```c
 static int kvm_dev_ioctl_create_vm(unsigned long type)
@@ -63,7 +224,7 @@ static int kvm_dev_ioctl_create_vm(unsigned long type)
 	if (IS_ERR(kvm))
 		return PTR_ERR(kvm);
 #ifdef CONFIG_KVM_MMIO
-	r = kvm_coalesced_mmio_init(kvm);
+	r = kvm_coalesced_mmio_init(kvm); // 分配页面作为 mmio
 	if (r < 0)
 		goto put_kvm;
 #endif
@@ -98,12 +259,12 @@ static int kvm_dev_ioctl_create_vm(unsigned long type)
 	return r;
 
 put_kvm:
-	kvm_put_kvm(kvm);
+	kvm_put_kvm(kvm); // 创建失败，直接销毁
 	return r;
 }
 ```
 
-### 3. QEMU CPU 的创建
+### QEMU CPU 的创建
 
 前面两节讲的是整个虚拟机的建立，而虚拟机又可以使用多个 VCPU ，接下来分析 VCPU 的建立。
 
@@ -119,37 +280,23 @@ static void x86_cpu_realizefn(DeviceState *dev, Error **errp)
     Error *local_err = NULL;
     static bool ht_warned;
 
-    if (xcc->host_cpuid_required) {
-        if (!accel_uses_host_cpuid()) {
-            g_autofree char *name = x86_cpu_class_get_model_name(xcc);
-            error_setg(&local_err, "CPU model '%s' requires KVM", name);
-            goto out;
-        }
-    }
-
     ...
 
+    // 根据 QEMU 的命令行参数解析出来的 CPU 特性对 CPU 实例中的属性设置 TRUE 或 FALSE
     x86_cpu_expand_features(cpu, &local_err);
     if (local_err) {
         goto out;
     }
 
+    // 用来检测宿主机 CPU 特性能否支持创建的 CPU 对象
     x86_cpu_filter_features(cpu, cpu->check_cpuid || cpu->enforce_cpuid);
-
-    if (cpu->enforce_cpuid && x86_cpu_have_filtered_features(cpu)) {
-        error_setg(&local_err,
-                   accel_uses_host_cpuid() ?
-                       "Host doesn't support requested features" :
-                       "TCG doesn't support requested features");
-        goto out;
-    }
 
     ...
 
     /* Process Hyper-V enlightenments */
-    x86_cpu_hyperv_realize(cpu);
+    x86_cpu_hyperv_realize(cpu); // 用来初始化 CPU 实例中的 hyperv 相关的变量
 
-    cpu_exec_realizefn(cs, &local_err);
+    cpu_exec_realizefn(cs, &local_err); // 调用 cpu_list_add 将正在初始化的 CPU 对象添加到一个全局链表 cpus 上
     if (local_err != NULL) {
         error_propagate(errp, local_err);
         return;
@@ -167,10 +314,12 @@ static void x86_cpu_realizefn(DeviceState *dev, Error **errp)
     }
 #endif
 
-    mce_init(cpu);
+    mce_init(cpu); // 目前还不清楚这个机制是干嘛的
 
 	...
 
+    // 根据 QEMU 使用的加速器 cpus_accel->create_vcpu_thread(cpu);
+    // 来决定执行哪个初始化函数，加速方式在 accel 目录下
     qemu_init_vcpu(cs);
 
     ...
@@ -244,16 +393,16 @@ X86CPU |  			 |		   |
 	   \			 +---------+
 ```
 
-另外 `X86CPUClass` 是静态变量，其中的变量也是所有 CPU 共有的。
+另外 `X86CPUClass` 是**静态变量**，其中的变量也是所有 X86 CPU 共有的。
 
-`x86_cpu_expand_features` 根据 QEMU 的命令行参数解析出来的 CPU 特性对 CPU 实例中的属性设置 TRUE 或 FALSE 。`x86_cpu_filter_features` 用来检测宿主机 CPU 特性能否支持创建的 CPU 对象。`x86_cpu_hyperv_realize` 用来初始化 CPU 实例中的 hyperv 相关的变量。`cpu_exec_realizefn` 调用 `cpu_list_add` 将正在初始化的 CPU 对象添加到一个全局链表 cpus 上。接下来的重要函数是 `qemu_init_vcpu` ，它会根据 QEMU 使用用的加速器 `cpus_accel->create_vcpu_thread(cpu);` 来决定执行哪个初始化函数，加速方式在 accel 目录下。
+接下来进一步分析 `qemu_init_vcpu`，
 
 ```c
 void qemu_init_vcpu(CPUState *cpu)
 {
     MachineState *ms = MACHINE(qdev_get_machine());
 
-    cpu->nr_cores = ms->smp.cores;
+    cpu->nr_cores = ms->smp.cores; // 这些都很好理解
     cpu->nr_threads =  ms->smp.threads;
     cpu->stopped = true;
     cpu->random_seed = qemu_guest_random_seed_thread_part1();
@@ -293,7 +442,7 @@ static void kvm_start_vcpu_thread(CPUState *cpu)
 }
 ```
 
-该函数通过 `kvm_vcpu_thread_fn` 创建 VCPU 线程并运行。
+该函数通过 `kvm_vcpu_thread_fn` 创建 VCPU 线程并**运行**。
 
 ```c
 static void *kvm_vcpu_thread_fn(void *arg)
@@ -318,15 +467,15 @@ static void *kvm_vcpu_thread_fn(void *arg)
 
     do {
         if (cpu_can_run(cpu)) {
-            r = kvm_cpu_exec(cpu);
+            r = kvm_cpu_exec(cpu); // 运行该 cpu
             if (r == EXCP_DEBUG) {
                 cpu_handle_guest_debug(cpu);
             }
         }
-        qemu_wait_io_event(cpu);
+        qemu_wait_io_event(cpu); // 因为 QEMU 分为主线程和 I/O 线程，I/O 线程是用来处理设备读写的
     } while (!cpu->unplug || cpu_can_run(cpu));
 
-    kvm_destroy_vcpu(cpu);
+    kvm_destroy_vcpu(cpu); // 退出循环就之间销毁
     cpu_thread_signal_destroyed(cpu);
     qemu_mutex_unlock_iothread();
     rcu_unregister_thread();
@@ -334,7 +483,7 @@ static void *kvm_vcpu_thread_fn(void *arg)
 }
 ```
 
-这个函数首先调用 `kvm_init_vcpu` ，用于在 KVM 中创建 VCPU，这里 `KVMState` 是 QEMU 中用来表示 KVM 相关的数据结构，操作虚拟机的 fd 就保存在这里。
+这个函数首先调用 `kvm_init_vcpu` ，用于在 KVM 中创建 VCPU，这里 `KVMState` 是 QEMU 中用来表示 KVM 相关的数据结构，操作虚拟机的 vmfd 就保存在这里，**注意这里有个容易搞混的地方，KVM 里是通过 `kvm` 结构来表示虚拟机的**。
 
 ```c
 int kvm_init_vcpu(CPUState *cpu, Error **errp)
@@ -374,7 +523,7 @@ err:
 }
 ```
 
-`kvm_get_vcpu` 首先会从已有的 VCPU 队列中查询是否有对应 `vcpu_id` 的 VCPU ，如果没有的话就用 `ioctl` 向 KVM 发起一个 `KVM_CREATE_VCPU` 的请求，并把对应的 `vcpu_id` 传进去。
+`kvm_get_vcpu` 首先会**从已有的 VCPU 队列中查询是否有对应 `vcpu_id` 的 VCPU** ，如果没有的话就用 `ioctl` 向 KVM 发起一个 `KVM_CREATE_VCPU` 的请求，并把对应的 `vcpu_id` 传进去。
 
 ```c
 static int kvm_get_vcpu(KVMState *s, unsigned long vcpu_id)
@@ -420,9 +569,9 @@ int kvm_vm_ioctl(KVMState *s, int type, ...)
 
 然后调用 `kvm_init_cpu_signals` 初始化 CPU 的信号处理，使 CPU 线程能够处理 IPI 中断。
 
-接下来的 `do while` 循环是最重要的，通过 `cpu_can_run` 判断 CPU 是否能够运行，如果可以则调用 `kvm_cpu_exec` ，该函数会调用 `kvm_vcpu_ioctl` ，即 KVM 提供的 `ioctl(KVM_RUN)` ，让 VCPU 在物理 CPU 上运行起来。然后应用层就阻塞在这里，当 guestOS 产生 `VM Exit` 时内核再根据退出原因进行处理，然后再循环运行，完成 CPU 的虚拟化。
+接下来的 `do while` 循环是最重要的，通过 `cpu_can_run` 判断 CPU 是否能够运行，如果可以则调用 `kvm_cpu_exec` 。该函数会调用 `kvm_vcpu_ioctl` ，即 KVM 提供的 `ioctl(KVM_RUN)` ，让 VCPU 在物理 CPU 上运行起来，然后应用层就阻塞在这里，当 guestOS 产生 `VM Exit` 时内核**再根据退出原因进行处理**，然后再循环运行，完成 CPU 的虚拟化。
 
-### 4. KVM CPU 的创建
+### KVM CPU 的创建
 
 [前面](#2. KVM 侧虚拟机的建立)讲到 `kvm_dev_ioctl_create_vm` 会创建一个匿名的文件，用来表示一台虚拟机，并且返回 fd 到用户态， QEMU 通过这个文件描述符来操作虚拟机，即下面这行代码：
 
@@ -474,14 +623,7 @@ static int kvm_vm_ioctl_create_vcpu(struct kvm *kvm, u32 id)
 	struct kvm_vcpu *vcpu;
 	struct page *page;
 
-	if (id >= KVM_MAX_VCPU_ID)
-		return -EINVAL;
-
-	mutex_lock(&kvm->lock);
-	if (kvm->created_vcpus == KVM_MAX_VCPUS) {
-		mutex_unlock(&kvm->lock);
-		return -EINVAL;
-	}
+	...
 
 	kvm->created_vcpus++;
 	mutex_unlock(&kvm->lock);
@@ -490,7 +632,7 @@ static int kvm_vm_ioctl_create_vcpu(struct kvm *kvm, u32 id)
 	if (r)
 		goto vcpu_decrement;
 
-	vcpu = kmem_cache_zalloc(kvm_vcpu_cache, GFP_KERNEL_ACCOUNT);
+	vcpu = kmem_cache_zalloc(kvm_vcpu_cache, GFP_KERNEL_ACCOUNT); // 分配结构体
 	if (!vcpu) {
 		r = -ENOMEM;
 		goto vcpu_decrement;
@@ -504,24 +646,13 @@ static int kvm_vm_ioctl_create_vcpu(struct kvm *kvm, u32 id)
 	}
 	vcpu->run = page_address(page);
 
-	kvm_vcpu_init(vcpu, kvm, id);
+	kvm_vcpu_init(vcpu, kvm, id); // 初始化 vcpu 中的变量
 
 	r = kvm_arch_vcpu_create(vcpu);
 	if (r)
 		goto vcpu_free_run_page;
 
-	if (kvm->dirty_ring_size) {
-		r = kvm_dirty_ring_alloc(&vcpu->dirty_ring,
-					 id, kvm->dirty_ring_size);
-		if (r)
-			goto arch_vcpu_destroy;
-	}
-
-	mutex_lock(&kvm->lock);
-	if (kvm_get_vcpu_by_id(kvm, id)) {
-		r = -EEXIST;
-		goto unlock_vcpu_destroy;
-	}
+	...
 
 	vcpu->vcpu_idx = atomic_read(&kvm->online_vcpus);
 	BUG_ON(kvm->vcpus[vcpu->vcpu_idx]);
@@ -538,7 +669,7 @@ static int kvm_vm_ioctl_create_vcpu(struct kvm *kvm, u32 id)
 		goto unlock_vcpu_destroy;
 	}
 
-	kvm->vcpus[vcpu->vcpu_idx] = vcpu;
+	kvm->vcpus[vcpu->vcpu_idx] = vcpu; // 将创建的 vcpu 保存到对应的虚拟机中
 
 	/*
 	 * Pairs with smp_rmb() in kvm_get_vcpu.  Write kvm->vcpus
@@ -603,42 +734,7 @@ int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu)
 		goto fail_free_pio_data;
 	vcpu->arch.mcg_cap = KVM_MAX_MCE_BANKS;
 
-	if (!zalloc_cpumask_var(&vcpu->arch.wbinvd_dirty_mask,
-				GFP_KERNEL_ACCOUNT))
-		goto fail_free_mce_banks;
-
-	if (!alloc_emulate_ctxt(vcpu))
-		goto free_wbinvd_dirty_mask;
-
-	vcpu->arch.user_fpu = kmem_cache_zalloc(x86_fpu_cache,
-						GFP_KERNEL_ACCOUNT);
-	if (!vcpu->arch.user_fpu) {
-		pr_err("kvm: failed to allocate userspace's fpu\n");
-		goto free_emulate_ctxt;
-	}
-
-	vcpu->arch.guest_fpu = kmem_cache_zalloc(x86_fpu_cache,
-						 GFP_KERNEL_ACCOUNT);
-	if (!vcpu->arch.guest_fpu) {
-		pr_err("kvm: failed to allocate vcpu's fpu\n");
-		goto free_user_fpu;
-	}
-	fx_init(vcpu);
-
-	vcpu->arch.maxphyaddr = cpuid_query_maxphyaddr(vcpu);
-	vcpu->arch.reserved_gpa_bits = kvm_vcpu_reserved_gpa_bits_raw(vcpu);
-
-	vcpu->arch.pat = MSR_IA32_CR_PAT_DEFAULT;
-
-	kvm_async_pf_hash_reset(vcpu);
-	kvm_pmu_init(vcpu);
-
-	vcpu->arch.pending_external_vector = -1;
-	vcpu->arch.preempted_in_kernel = false;
-
-#if IS_ENABLED(CONFIG_HYPERV)
-	vcpu->arch.hv_root_tdp = INVALID_PAGE;
-#endif
+	...
 
     // 这里会调用到回调函数 vmx_create_vcpu，这个函数很关键
 	r = static_call(kvm_x86_vcpu_create)(vcpu);
@@ -660,13 +756,15 @@ int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu)
 }
 ```
 
-除了做进一步初始化的工作，`kvm_arch_vcpu_create` 在 X86 下会调用 `vmx_create_vcpu`，架构相关的数据都是在这里进行初始化。
+除了做进一步初始化的工作，`kvm_arch_vcpu_create` 在 X86 下会调用 `vmx_create_vcpu`，架构相关的数据都是在这里进行初始化，包括 VMCS 的设置。
 
 ```c
 static int vmx_create_vcpu(struct kvm_vcpu *vcpu)
 {
 	struct vmx_uret_msr *tsx_ctrl;
-	struct vcpu_vmx *vmx; // vmx 的 VCPU 用该结构体表示
+    // vmx 的 VCPU 用该结构体表示，因为内核需要支持多种架构
+    // kvm_vcpu 相当于一个父类，子类继承
+	struct vcpu_vmx *vmx;
 	int i, cpu, err;
 
 	BUILD_BUG_ON(offsetof(struct vcpu_vmx, vcpu) != 0);
@@ -677,17 +775,7 @@ static int vmx_create_vcpu(struct kvm_vcpu *vcpu)
     // 每个 vcpu 与 vpid 相关
 	vmx->vpid = allocate_vpid();
 
-	/*
-	 * If PML is turned on, failure on enabling PML just results in failure
-	 * of creating the vcpu, therefore we can simplify PML logic (by
-	 * avoiding dealing with cases, such as enabling PML partially on vcpus
-	 * for the guest), etc.
-	 */
-	if (enable_pml) {
-		vmx->pml_pg = alloc_page(GFP_KERNEL_ACCOUNT | __GFP_ZERO);
-		if (!vmx->pml_pg)
-			goto free_vpid;
-	}
+	...
 
 	for (i = 0; i < kvm_nr_uret_msrs; ++i) {
 		vmx->guest_uret_msrs[i].data = 0;
@@ -713,20 +801,8 @@ static int vmx_create_vcpu(struct kvm_vcpu *vcpu)
 	bitmap_fill(vmx->shadow_msr_intercept.write, MAX_POSSIBLE_PASSTHROUGH_MSRS);
 
 	vmx_disable_intercept_for_msr(vcpu, MSR_IA32_TSC, MSR_TYPE_R);
-#ifdef CONFIG_X86_64
-	vmx_disable_intercept_for_msr(vcpu, MSR_FS_BASE, MSR_TYPE_RW);
-	vmx_disable_intercept_for_msr(vcpu, MSR_GS_BASE, MSR_TYPE_RW);
-	vmx_disable_intercept_for_msr(vcpu, MSR_KERNEL_GS_BASE, MSR_TYPE_RW);
-#endif
-	vmx_disable_intercept_for_msr(vcpu, MSR_IA32_SYSENTER_CS, MSR_TYPE_RW);
-	vmx_disable_intercept_for_msr(vcpu, MSR_IA32_SYSENTER_ESP, MSR_TYPE_RW);
-	vmx_disable_intercept_for_msr(vcpu, MSR_IA32_SYSENTER_EIP, MSR_TYPE_RW);
-	if (kvm_cstate_in_guest(vcpu->kvm)) {
-		vmx_disable_intercept_for_msr(vcpu, MSR_CORE_C1_RES, MSR_TYPE_R);
-		vmx_disable_intercept_for_msr(vcpu, MSR_CORE_C3_RESIDENCY, MSR_TYPE_R);
-		vmx_disable_intercept_for_msr(vcpu, MSR_CORE_C6_RESIDENCY, MSR_TYPE_R);
-		vmx_disable_intercept_for_msr(vcpu, MSR_CORE_C7_RESIDENCY, MSR_TYPE_R);
-	}
+
+    ...
 
     //  loaded_vmcs 指向当前 VCPU 对应的 VMCS 区域， vmcs01 表示普通虚拟化，
     // 如果是嵌套虚拟化，对应的是其他值。
@@ -736,7 +812,7 @@ static int vmx_create_vcpu(struct kvm_vcpu *vcpu)
     // 将 vcpu 与当前 cpu 绑定
 	vmx_vcpu_load(vcpu, cpu);
 	vcpu->cpu = cpu;
-	init_vmcs(vmx);
+	init_vmcs(vmx); // 这两个函数是从 guest 切换到 host 的关键函数，如果向进一步了解 VMCS 可以从这里入手
 	vmx_vcpu_put(vcpu);
 	put_cpu();
 	if (cpu_need_virtualize_apic_accesses(vcpu)) {
@@ -766,7 +842,7 @@ static int vmx_create_vcpu(struct kvm_vcpu *vcpu)
 kvm->vcpus[vcpu->vcpu_idx] = vcpu;
 ```
 
-### 5. QEMU 与 KVM 之间的共享数据
+### QEMU 与 KVM 之间的共享数据
 
 QEMU 和 KVM 之间经常需要共享数据，如 KVM 将 VM Exit 的信息放到共享内存中， QEMU 可以通过共享内存去获取这些数据。在 QEMU 通知 KVM 创建 VCPU 的起点函数 `kvm_vcpu_thread_fn` 中，会调用 `kvm_init_vcpu`，其会查询 QEMU 的 VCPU 列表，看是否有符合条件的 VCPU，如果没有则使用 ioctl 通知 KVM 创建一个。然后调用 `ioctl(KVM_GET_VCPU_MMAP_SIZE)` ，该接口返回 KVM 和 QEMU 共享内存的大小，代码如下：
 
@@ -798,32 +874,6 @@ int kvm_init_vcpu(CPUState *cpu, Error **errp)
                         cpu->kvm_fd, 0);
     ...
 
-    if (s->coalesced_mmio && !s->coalesced_mmio_ring) {
-        s->coalesced_mmio_ring =
-            (void *)cpu->kvm_run + s->coalesced_mmio * PAGE_SIZE;
-    }
-
-    if (s->kvm_dirty_ring_size) {
-        /* Use MAP_SHARED to share pages with the kernel */
-        cpu->kvm_dirty_gfns = mmap(NULL, s->kvm_dirty_ring_bytes,
-                                   PROT_READ | PROT_WRITE, MAP_SHARED,
-                                   cpu->kvm_fd,
-                                   PAGE_SIZE * KVM_DIRTY_LOG_PAGE_OFFSET);
-        if (cpu->kvm_dirty_gfns == MAP_FAILED) {
-            ret = -errno;
-            DPRINTF("mmap'ing vcpu dirty gfns failed: %d\n", ret);
-            goto err;
-        }
-    }
-
-    // 构造 VCPU 信息
-    ret = kvm_arch_init_vcpu(cpu);
-    if (ret < 0) {
-        error_setg_errno(errp, -ret,
-                         "kvm_init_vcpu: kvm_arch_init_vcpu failed (%lu)",
-                         kvm_arch_vcpu_id(cpu));
-    }
-err:
     return ret;
 }
 ```
@@ -844,17 +894,17 @@ err:
 		break;
 ```
 
-获取到内存大小后，QEMU 调用 mmap 映射将 KVM 的中的虚拟机句柄 fd 映射到 `cpu->kvm_run` 和 `cpu->kvm_dirty_gfns`。也就是说如果在 QEMU 访问 `cpu->kvm_run` 实际上访问的是 KVM 中的 `kvm_run` 信息。
+获取到内存大小后，QEMU 调用 mmap 将 KVM 的中的虚拟机句柄 fd 映射到 `cpu->kvm_run` 和 `cpu->kvm_dirty_gfns`。也就是说如果在 QEMU 访问 `cpu->kvm_run` 实际上访问的是 KVM 中的 `kvm_run` 信息。
 
-### 6. VCPU CPUID 构造
+### VCPU CPUID 构造
 
 `kvm_init_vcpu` 最后调用`kvm_arch_init_vcpu` 完成 VCPU 架构相关的初始化，大部分工作是构造虚拟机 VCPU 的 CPUID。通过 CPUID 虚拟机可以获得 CPU 的型号，具体性能参数等信息。
 
-QEMU 命令行中指定 CPU 类型及其增加的或去掉的 CPU 特性，QEMU 通过这些特性构造出一个 cpuid_data，然后调用 VCPU 的`ioctl(KVM_SET_CPUID2)` 将构造的 CPUID 数据传到 KVM 中的 VCPU 相关的数据结构中，之后虚拟机内部执行 CPUID 指令会导致 VM Exit，然后陷入 KVM，KVM 会把数据返回给虚拟机。
+QEMU 命令行中指定 CPU 类型及其增加的或去掉的 CPU 特性，**QEMU 通过这些特性构造出一个 `cpuid_data`**，然后调用 VCPU 的`ioctl(KVM_SET_CPUID2)` 将构造的 CPUID 数据传到 KVM 中的 VCPU 相关的数据结构中，之后虚拟机内部执行 CPUID 指令会导致 VM Exit，然后陷入 KVM，KVM 会把数据返回给虚拟机。因为 CPUID 是特权指令，必须有 root 态下的内核进行处理。
 
-### 7. VCPU 的运行
+### VCPU 的运行
 
-首先每个 VCPU 都会对应一个 VMCS ，VMCS 对于 VCPU 的作用类似与进程描述符对于进程的作用。其用来管理 VMX non-root Operation 的转换以及控制 VCPU 的行为。操作 VMCS 的指令包括 VMCLEAR、VMPTRLD、VMREAD 和 VMWRITE。VMCS 的区域大小为 4KB，VMM 通过它的 64 位地址进行访问。
+首先**每个 VCPU 都会对应一个 VMCS，VMCS 对于 VCPU 的作用类似与进程描述符对于进程的作用**。其用来管理 VMX non-root Operation 的转换以及控制 VCPU 的行为。操作 VMCS 的指令包括 VMCLEAR、VMPTRLD、VMREAD 和 VMWRITE。VMCS 的区域大小为 4KB，VMM 通过它的 64 位地址进行访问。
 
 [前面](#3. QEMU CPU 的创建)讲到 `kvm_vcpu_thread_fn` 创建 VCPU 线程并运行，并且跟踪了 QEMU 是怎样通过 `kvm_init_vcpu` 让 KVM 创建 VCPU 的，现在我们继续分析重要的 `do while` 循环。
 
@@ -870,7 +920,7 @@ QEMU 命令行中指定 CPU 类型及其增加的或去掉的 CPU 特性，QEMU 
     } while (!cpu->unplug || cpu_can_run(cpu));
 ```
 
-调用 `cpu_can_run` 检查当前 cpu 是否可运行。这里有个问题，为什么用的是 `CPUState`，而不是 `X86CPU`。
+调用 `cpu_can_run` 检查当前 cpu 是否可运行。这里有个问题，为什么用的是 `CPUState`，而不是 `X86CPU`，应该是 `CPUState` 中的数据就足够了。
 
 ```c
 bool cpu_can_run(CPUState *cpu)
@@ -1082,7 +1132,7 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 	struct kvm_run *kvm_run = vcpu->run;
 	int r;
 
-	vcpu_load(vcpu);
+	vcpu_load(vcpu); // 将 vcpu 中的 vmcs 数据加载到物理 cpu 中
 	kvm_sigset_activate(vcpu);
 	kvm_run->flags = 0;
 	kvm_load_guest_fpu(vcpu);
@@ -1096,12 +1146,12 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 
 	...j
 
-	vcpu_put(vcpu);
+	vcpu_put(vcpu); // 恢复 host 现场
 	return r;
 }
 ```
 
-`kvm_arch_vcpu_ioctl_run` 主要调用 `vcpu_run` 。
+`kvm_arch_vcpu_ioctl_run` 主要调用 `vcpu_run` ，
 
 ```c
 static int vcpu_run(struct kvm_vcpu *vcpu)
@@ -1375,7 +1425,7 @@ static struct kvm_x86_ops vmx_x86_ops __initdata = {
 
 最后处理完中断后根据 `vcpu_enter_guest` 的返回值判断是否需要返回到 QEMU ，如果 `vcpu_enter_guest` 返回值小于等于 0 ，会导致退出循环，进而该 `ioctl` 返回到用户态 QEMU ，如果返回 1 ，则 KVM 能处理，继续下一轮执行。
 
-如果 `kvm_vcpu_running` 判断出该 cpu 不能执行，那么就会调用 `vcpu_block` ，最终调用 `schedule` 请求调度，让出物理 cpu 。
+如果 `kvm_vcpu_running` 判断出该 cpu 不能执行，那么就会调用 `vcpu_block` ，最终调用 `schedule` 请求调度，**让出物理 cpu** 。
 
 我们再来看看 tcg 是怎样让 vcpu 运行的。
 
@@ -1441,9 +1491,9 @@ static void *mttcg_cpu_thread_fn(void *arg)
 }
 ```
 
-### 8. VCPU 的调度
+### VCPU 的调度
 
-虚拟机的每个 VCPU 都对应宿主机中的一个线程，通过宿主及内核调度器进行统一调度管理。如果不将虚拟机的 VCPU 线程绑定到物理 CPU 上，那么 VCPU 线程可能每次运行时被调度到不同的物理 CPU 上。每个物理 CPU 都有一个指向当前 VMCS 的指针——current_vmcs。而 VCPU 调度的本质就是将物理 CPU 的 per_current 指向需要调度的 VCPU 的 VMCS。这里设计到两个重要的函数：
+虚拟机的**每个 VCPU 都对应宿主机中的一个线程，通过宿主及内核调度器进行统一调度管理**。如果不将虚拟机的 VCPU 线程绑定到物理 CPU 上，那么 VCPU 线程可能每次运行时被调度到不同的物理 CPU 上。每个物理 CPU 都有一个指向当前 VMCS 的指针——`current_vmcs`。而 VCPU 调度的本质就是**将物理 CPU 的 per_current 指向需要调度的 VCPU 的 VMCS**。这里设计到两个重要的函数：
 
 `vcpu_load` 负责将 VCPU 状态加载到物理 CPU 上，`vcpu_put` 负责将当前物理 CPU 上运行的 VCPU 的 VMCS 调度出去并保存。
 
