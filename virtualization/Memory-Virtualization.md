@@ -16,6 +16,86 @@ The MemoryRegion is the link between guest physical address space and the RAMBlo
 
 ![qemu-address-space](https://raw.githubusercontent.com/UtopianFuture/UtopianFuture.github.io/fd62f363c30f80ffb2711c56f4c7a989eb916195/image/qemu-address-space.svg)
 
+#### 32 位系统的地址空间布局
+
+再看看正常的 QEMU 中给 guestos 注册的内存是怎样的，
+
+```plain
+memory-region: memory
+  0000000000000000-ffffffffffffffff (prio 0, i/o): system
+    0000000000000000-00000000bfffffff (prio 0, i/o): alias ram-below-4g @pc.ram 0000000000000000-00000000bfffffff
+    0000000000000000-ffffffffffffffff (prio -1, i/o): pci
+      00000000000a0000-00000000000bffff (prio 1, i/o): vga-lowmem
+      00000000000c0000-00000000000dffff (prio 1, rom): pc.rom
+      00000000000e0000-00000000000fffff (prio 1, i/o): alias isa-bios @pc.bios 0000000000020000-000000000003ffff
+      00000000fd000000-00000000fdffffff (prio 1, ram): vga.vram
+      00000000febc0000-00000000febdffff (prio 1, i/o): e1000-mmio
+      00000000febf0000-00000000febf0fff (prio 1, i/o): vga.mmio
+        00000000febf0000-00000000febf00ff (prio 0, i/o): edid
+        00000000febf0400-00000000febf041f (prio 0, i/o): vga ioports remapped
+        00000000febf0500-00000000febf0515 (prio 0, i/o): bochs dispi interface
+        00000000febf0600-00000000febf0607 (prio 0, i/o): qemu extended regs
+      00000000fffc0000-00000000ffffffff (prio 0, rom): pc.bios
+    00000000000a0000-00000000000bffff (prio 1, i/o): alias smram-region @pci 00000000000a0000-00000000000bffff
+    00000000000c0000-00000000000c3fff (prio 1, i/o): alias pam-ram @pc.ram 00000000000c0000-00000000000c3fff [disabled]
+    00000000000c0000-00000000000c3fff (prio 1, i/o): alias pam-pci @pc.ram 00000000000c0000-00000000000c3fff [disabled]
+    00000000000c0000-00000000000c3fff (prio 1, i/o): alias pam-rom @pc.ram 00000000000c0000-00000000000c3fff
+    00000000000c0000-00000000000c3fff (prio 1, i/o): alias pam-pci @pci 00000000000c0000-00000000000c3fff [disabled]
+    00000000000c4000-00000000000c7fff (prio 1, i/o): alias pam-ram @pc.ram 00000000000c4000-00000000000c7fff [disabled]
+    00000000000c4000-00000000000c7fff (prio 1, i/o): alias pam-pci @pc.ram 00000000000c4000-00000000000c7fff [disabled]
+    00000000000c4000-00000000000c7fff (prio 1, i/o): alias pam-rom @pc.ram 00000000000c4000-00000000000c7fff
+    00000000000c4000-00000000000c7fff (prio 1, i/o): alias pam-pci @pci 00000000000c4000-00000000000c7fff [disabled]
+    00000000000c8000-00000000000cbfff (prio 1, i/o): alias pam-ram @pc.ram 00000000000c8000-00000000000cbfff [disabled]
+    00000000000c8000-00000000000cbfff (prio 1, i/o): alias pam-pci @pc.ram 00000000000c8000-00000000000cbfff [disabled]
+    00000000000c8000-00000000000cbfff (prio 1, i/o): alias pam-rom @pc.ram 00000000000c8000-00000000000cbfff
+    00000000000c8000-00000000000cbfff (prio 1, i/o): alias pam-pci @pci 00000000000c8000-00000000000cbfff [disabled]
+    00000000000cb000-00000000000cdfff (prio 1000, i/o): alias kvmvapic-rom @pc.ram 00000000000cb000-00000000000cdfff
+    00000000000cc000-00000000000cffff (prio 1, i/o): alias pam-ram @pc.ram 00000000000cc000-00000000000cffff [disabled]
+    00000000000cc000-00000000000cffff (prio 1, i/o): alias pam-pci @pc.ram 00000000000cc000-00000000000cffff [disabled]
+    00000000000cc000-00000000000cffff (prio 1, i/o): alias pam-rom @pc.ram 00000000000cc000-00000000000cffff
+    00000000000cc000-00000000000cffff (prio 1, i/o): alias pam-pci @pci 00000000000cc000-00000000000cffff [disabled]
+    00000000000d0000-00000000000d3fff (prio 1, i/o): alias pam-ram @pc.ram 00000000000d0000-00000000000d3fff [disabled]
+    00000000000d0000-00000000000d3fff (prio 1, i/o): alias pam-pci @pc.ram 00000000000d0000-00000000000d3fff [disabled]
+    00000000000d0000-00000000000d3fff (prio 1, i/o): alias pam-rom @pc.ram 00000000000d0000-00000000000d3fff
+    00000000000d0000-00000000000d3fff (prio 1, i/o): alias pam-pci @pci 00000000000d0000-00000000000d3fff [disabled]
+    00000000000d4000-00000000000d7fff (prio 1, i/o): alias pam-ram @pc.ram 00000000000d4000-00000000000d7fff [disabled]
+    00000000000d4000-00000000000d7fff (prio 1, i/o): alias pam-pci @pc.ram 00000000000d4000-00000000000d7fff [disabled]
+    00000000000d4000-00000000000d7fff (prio 1, i/o): alias pam-rom @pc.ram 00000000000d4000-00000000000d7fff
+    00000000000d4000-00000000000d7fff (prio 1, i/o): alias pam-pci @pci 00000000000d4000-00000000000d7fff [disabled]
+    00000000000d8000-00000000000dbfff (prio 1, i/o): alias pam-ram @pc.ram 00000000000d8000-00000000000dbfff [disabled]
+    00000000000d8000-00000000000dbfff (prio 1, i/o): alias pam-pci @pc.ram 00000000000d8000-00000000000dbfff [disabled]
+    00000000000d8000-00000000000dbfff (prio 1, i/o): alias pam-rom @pc.ram 00000000000d8000-00000000000dbfff
+    00000000000d8000-00000000000dbfff (prio 1, i/o): alias pam-pci @pci 00000000000d8000-00000000000dbfff [disabled]
+    00000000000dc000-00000000000dffff (prio 1, i/o): alias pam-ram @pc.ram 00000000000dc000-00000000000dffff [disabled]
+    00000000000dc000-00000000000dffff (prio 1, i/o): alias pam-pci @pc.ram 00000000000dc000-00000000000dffff [disabled]
+    00000000000dc000-00000000000dffff (prio 1, i/o): alias pam-rom @pc.ram 00000000000dc000-00000000000dffff
+    00000000000dc000-00000000000dffff (prio 1, i/o): alias pam-pci @pci 00000000000dc000-00000000000dffff [disabled]
+    00000000000e0000-00000000000e3fff (prio 1, i/o): alias pam-ram @pc.ram 00000000000e0000-00000000000e3fff [disabled]
+    00000000000e0000-00000000000e3fff (prio 1, i/o): alias pam-pci @pc.ram 00000000000e0000-00000000000e3fff [disabled]
+00000000000e0000-00000000000e3fff (prio 1, i/o): alias pam-rom @pc.ram 00000000000e0000-00000000000e3fff
+00000000000e0000-00000000000e3fff (prio 1, i/o): alias pam-pci @pci 00000000000e0000-00000000000e3fff [disabled]
+00000000000e4000-00000000000e7fff (prio 1, i/o): alias pam-ram @pc.ram 00000000000e4000-00000000000e7fff [disabled]
+00000000000e4000-00000000000e7fff (prio 1, i/o): alias pam-pci @pc.ram 00000000000e4000-00000000000e7fff [disabled]
+00000000000e4000-00000000000e7fff (prio 1, i/o): alias pam-rom @pc.ram 00000000000e4000-00000000000e7fff
+00000000000e4000-00000000000e7fff (prio 1, i/o): alias pam-pci @pci 00000000000e4000-00000000000e7fff [disabled]
+00000000000e8000-00000000000ebfff (prio 1, i/o): alias pam-ram @pc.ram 00000000000e8000-00000000000ebfff
+00000000000e8000-00000000000ebfff (prio 1, i/o): alias pam-pci @pc.ram 00000000000e8000-00000000000ebfff [disabled]
+00000000000e8000-00000000000ebfff (prio 1, i/o): alias pam-rom @pc.ram 00000000000e8000-00000000000ebfff [disabled]
+00000000000e8000-00000000000ebfff (prio 1, i/o): alias pam-pci @pci 00000000000e8000-00000000000ebfff [disabled]
+00000000000ec000-00000000000effff (prio 1, i/o): alias pam-ram @pc.ram 00000000000ec000-00000000000effff
+00000000000ec000-00000000000effff (prio 1, i/o): alias pam-pci @pc.ram 00000000000ec000-00000000000effff [disabled]
+00000000000ec000-00000000000effff (prio 1, i/o): alias pam-rom @pc.ram 00000000000ec000-00000000000effff [disabled]
+00000000000ec000-00000000000effff (prio 1, i/o): alias pam-pci @pci 00000000000ec000-00000000000effff [disabled]
+00000000000f0000-00000000000fffff (prio 1, i/o): alias pam-ram @pc.ram 00000000000f0000-00000000000fffff [disabled]
+00000000000f0000-00000000000fffff (prio 1, i/o): alias pam-pci @pc.ram 00000000000f0000-00000000000fffff [disabled]
+00000000000f0000-00000000000fffff (prio 1, i/o): alias pam-rom @pc.ram 00000000000f0000-00000000000fffff
+00000000000f0000-00000000000fffff (prio 1, i/o): alias pam-pci @pci 00000000000f0000-00000000000fffff [disabled]
+00000000fec00000-00000000fec00fff (prio 0, i/o): kvm-ioapic
+00000000fed00000-00000000fed003ff (prio 0, i/o): hpet
+00000000fee00000-00000000feefffff (prio 4096, i/o): kvm-apic-msi
+0000000100000000-000000023fffffff (prio 0, i/o): alias ram-above-4g @pc.ram 00000000c0000000-00000001ffffffff
+```
+
 然后从基本的数据结构入手，首先介绍 `AddressSpace` 结构体，QEMU 用其表示一个虚拟机所能够访问的所有物理地址。
 
 ```c
@@ -26,10 +106,10 @@ struct AddressSpace {
     /* private: */
     struct rcu_head rcu;
     char *name;
-    MemoryRegion *root; //
+    MemoryRegion *root; // memory region 是树状的，这个相当于根节点
 
     /* Accessed via RCU.  */
-    struct FlatView *current_map;
+    struct FlatView *current_map; // 这个是将 memory region 压平了看到的内存模型
 
     int ioeventfd_nb;
     struct MemoryRegionIoeventfd *ioeventfds;
@@ -40,7 +120,7 @@ struct AddressSpace {
 
 虽然地址空间是同一块，但是不同设备对这块地址空间的视角不同，而 `AddressSpace` 描述的就是不同设备的视角。
 
-`MemoryRegion` 表示虚拟机的一段内存区域，其是内存模拟的核心结构，整个内存空间就是 `MemoryRegion` 构成的无环图。
+`MemoryRegion` 表示虚拟机的一段内存区域，其是内存模拟的核心结构，**整个内存空间就是 `MemoryRegion` 构成的无环图**。
 
 ```c
 struct MemoryRegion {
@@ -140,6 +220,66 @@ static void memory_map_init(void)
 ```
 
 `system_memory` 和 `system_io` 就是对应的 root mr。它们均为全局变量，在系统中会多次使用。
+
+而如果 guestos 写相同的地址，在 system_memory 的空间和 system_io 空间的效果不同的。
+
+```c
+int kvm_cpu_exec(CPUState *cpu)
+{
+    struct kvm_run *run = cpu->kvm_run;
+    int ret, run_ret;
+
+    ...
+
+    do {
+        ...
+
+        run_ret = kvm_vcpu_ioctl(cpu, KVM_RUN, 0);
+
+        attrs = kvm_arch_post_run(cpu, run);
+
+        ...
+
+        trace_kvm_run_exit(cpu->cpu_index, run->exit_reason); // KVM 中无法处理的异常则返回到用户态 QEMU 处理
+        switch (run->exit_reason) {
+        case KVM_EXIT_IO:
+            DPRINTF("handle_io\n");
+            /* Called outside BQL */
+            kvm_handle_io(run->io.port, attrs,
+                          (uint8_t *)run + run->io.data_offset,
+                          run->io.direction,
+                          run->io.size,
+                          run->io.count);
+            ret = 0;
+            break;
+        case KVM_EXIT_MMIO:
+            DPRINTF("handle_mmio\n");
+            /* Called outside BQL */
+            address_space_rw(&address_space_memory,
+                             run->mmio.phys_addr, attrs,
+                             run->mmio.data,
+                             run->mmio.len,
+                             run->mmio.is_write);
+            ret = 0;
+            break;
+
+        ...
+
+        default:
+            DPRINTF("kvm_arch_handle_exit\n");
+            ret = kvm_arch_handle_exit(cpu, run);
+            break;
+        }
+    } while (ret == 0);
+
+    cpu_exec_end(cpu);
+    qemu_mutex_lock_iothread();
+
+   	...
+
+    return ret;
+}
+```
 
 ```c
 void address_space_init(AddressSpace *as, MemoryRegion *root, const char *name)
@@ -322,11 +462,27 @@ RAMBlock *qemu_ram_alloc_internal(ram_addr_t size, ram_addr_t max_size,
 
 而除了 ram 会分配内存外，pc.bios, pc.rom, vga.vram 等虚拟设备的 ROM 也会分配虚拟机的物理内存。
 
+总体来说，MemoryRegion 用于描述一个范围内的映射规则，AddressSpace 用于描述整个地址空间的映射关系。有了映射关系，当 guest 访问到这些地址的时候，就可以知道具体应该进行什么操作了。
+
+但是这里有一个问题，这些 memory region 逐层嵌套，如果不做简化处理，为了确定一个地址到底落到了哪一个 MemoryRegion，每次都需要 从顶层 memory region 逐个找其 child memory region，其中还需要处理 alias 和 priority 的问题，而且到底命中哪一个 memory region 需要这个比较范围。 为此，QEMU 会进行一个平坦化的操作，具体过程下面会分析:
+
+- 将 memory region 压平为 FlatView 中的 FlatRange，避免逐级查询 memory region；
+- 将 FlatRange 变为树的查询，将查询从 O(n) 的查询修改为 O(log(N))；
+
+然后还有一个问题：为什么 memory region 重叠，为什么需要制作出现 alias 的概念。 其实，很简单，**这样写代码比较方便**，
+
+- 如果不让 memory region 可以 overlap，**那么一个模块在构建 memory region 的时候需要考虑另一个另一个模块的 memory region 的大小**，
+  - **pci 空间是覆盖了 64 bit 的空间，和 ram-below-4g 和 ram-above-4g 是 overlap 的**，而 ram 的大小是动态确定，如果禁止 overlap，那么 pci 的范围也需要动态调整。
+- 使用 alias 可以**将一个 memory region 的一部分放到另一个 memory region 上**，就 ram-below-4g 和 ram-above-4g 的例子而言，就是将创建的 ram-below-4g 是 pc.ram 的一部分，然后放到 MemoryRegion system 上。
+  - 如果不采用这种方法，而是创建两个分裂的 pc.ram, 那么就要 mmap 两次，之后的种种操作也都需要进行两次。
+
+即 guestos 的内存由于不同的用途，如映射给 PCI 或映射给 RAM 会发生重叠，而在访问的时候需要根据访问的对象来进行平坦操作。
+
 ### 内存布局的提交
 
 #### 内存更改通知
 
-as 和 mr 构成的无环图描述了在 QEMU 用户空间是怎样构成虚拟机的物理空间的，为了让 EPT 正常工作，每次 QEMU 修改空间布局需要通知 KVM 修改 EPT，这一工作是通过 `MemoryListener` 来实现的。
+address space 和 memory region 构成的无环图描述了在 QEMU 用户空间是怎样构成虚拟机的物理空间的，为了让 EPT 正常工作，每次 QEMU 修改空间布局需要通知 KVM 修改 EPT，这一工作是通过 `MemoryListener` 来实现的。
 
 ```c
 struct MemoryListener {
@@ -496,9 +652,9 @@ void memory_region_transaction_commit(void)
 
 #### 虚拟机内存平坦化
 
-KVM 中通过 `ioctl(KVM_SET_USER_MEMORY_REGION)` 来设置 QEMU 的虚拟地址与虚拟机物理地址的映射(HVA -> GPA)。虚拟机内存的平坦化指将 as 根 mr 表示的虚拟机内存地址空间转变成一个平坦的线性地址空间，每一段线性空间的属性和其所属的 `MemoryRegion` 都一致，每一段线性地址空间都与虚拟机的物理地址相关联。
+KVM 中通过 `ioctl(KVM_SET_USER_MEMORY_REGION)` 来设置 QEMU 的虚拟地址与虚拟机物理地址的映射(HVA -> GPA)。虚拟机内存的平坦化指**将 as 根 mr 表示的虚拟机内存地址空间转变成一个平坦的线性地址空间，每一段线性空间的属性和其所属的 `MemoryRegion` 都一致，每一段线性地址空间都与虚拟机的物理地址相关联**。
 
-FlatView 表示虚拟机的平坦内存，as 结构体中有一个类型为 `FlatView` 的 `current_map` 成员来表示该 as 对应的平坦视角，
+`FlatView` 表示虚拟机的平坦内存，as 结构体中有一个类型为 `FlatView` 的 `current_map` 成员来表示该 as 对应的平坦视角，
 
 ```c
 struct FlatView {
@@ -525,10 +681,6 @@ struct FlatRange {
     bool nonvolatile;
 };
 ```
-
-它们之间的关系如下图：
-
-
 
 而与平坦化相关的函数是 `generate_memory_topology`，
 
@@ -560,7 +712,7 @@ static FlatView *generate_memory_topology(MemoryRegion *mr)
 }
 ```
 
-其中 `render_memory_region` 会将 mr 展开并地址信息记录到 `FlatView` 中，而 `flatview_simplify` 将 `FlatView` 中能够合并的 `FlatRange` 合并。`render_memory_region` 是平坦化的核心函数，我们来详细分析一下，
+其中 `render_memory_region` 会将 mr 展开并将地址信息记录到 `FlatView` 中，而 `flatview_simplify` 将 `FlatView` 中能够合并的 `FlatRange` 合并。`render_memory_region` 是平坦化的核心函数，我们来详细分析一下，
 
 ```c
 static void render_memory_region(FlatView *view,  // 该 as 的 FlatView
@@ -804,7 +956,7 @@ struct AddressSpaceDispatch {
 };
 ```
 
-寻址过程和正常的多级页表寻址类似，`AddressSpaceDispatch` 中的 `phys_map` 就相当于 x86 的 cr3 寄存器，指向第一级页表，`PhysPageMap` 可以理解为一个页表，其中有一些基本信息，还有页表项的指针 `nodes`。而每个页表的页表项就是 `PhysPageEntry` 其可以指向下一级页表，也可以执行最终的最终的 `MemoryRegionSection`。`MemoryRegionSection` 就是就是 mr，只是增加了一些辅助信息。
+寻址过程和正常的多级页表寻址类似，`AddressSpaceDispatch` 中的 `phys_map` 就相当于 x86 的 cr3 寄存器，指向第一级页表，`PhysPageMap` 可以理解为一个页表，其中有一些基本信息，还有页表项的指针 `nodes`。而每个页表的页表项就是 `PhysPageEntry` 其可以指向下一级页表，也可以指向最终的 `MemoryRegionSection`。**`MemoryRegionSection` 就是就是 mr，只是增加了一些辅助信息**。
 
 映射的建立流程如下：
 
@@ -950,7 +1102,7 @@ static MemoryRegionSection *address_space_lookup_region(AddressSpaceDispatch *d,
 
 ### KVM 内存虚拟化
 
-这部分涉及的内容也很多，之后有需要再分析。
+这部分涉及的内容也很多，主要是 EPT 页面的使用，之后有需要再分析。
 
 ### MMIO 机制
 
@@ -958,19 +1110,19 @@ static MemoryRegionSection *address_space_lookup_region(AddressSpaceDispatch *d,
 
 在 X86 下可以通过 PIO 或 MMIO 两种方式访问设备。PIO 即通过专门的访问设备指令进行访问，而 MMIO 是将设备地址映射到内存空间，访问外设和访问内存是一样的，那么 MMIO 是怎样实现的呢？这里先简单介绍 MMIO 的机制，具体的实现在设备虚拟化部分分析。
 
-（1）**QEMU 申明一段内存作为 MMIO 内存**，这里只是建立一个映射关系，不会立即分配内存空间。
+- **QEMU 申明一段内存作为 MMIO 内存**，这里只是建立一个映射关系，不会立即分配内存空间；
 
-（2）SeaBIOS 会分配好所有设备 MMIO 对应的基址。
+- SeaBIOS 会分配好所有设备 MMIO 对应的基址；
 
-（3）当 guestos 第一次访问 MMIO 的地址时，会发生 EPT violation，产生 VM Exit。
+- 当 guestos 第一次访问 MMIO 的地址时，会发生 EPT violation，产生 VM Exit；
 
-（4）KVM 创建一个 EPT 也表，并设置页表项特殊标志。
+- KVM 创建一个 EPT 页表，并设置页表项特殊标志；
 
-（5）虚拟机之后再访问对应的 MMIO 地址时会产生 EPT misconfig，从而产生 VM Exit，退出到 KVM，然后 KVM 负责将该事件分发到 QEMU。
+- 虚拟机之后再访问对应的 MMIO 地址时会产生 EPT miss，从而产生 VM Exit，退出到 KVM，然后 KVM 发现无法在内核态处理，进入到用户态 QEMU 处理；
 
 #### coalesced MMIO
 
-根据 MMIO 的实现原理，我们知道每次发生 MMIO 都会导致虚拟机退出到 QEMU 应用层，但是往往是多个 MMIO 一起操作，这时可以将多个 MMIO 操作暂存，等到最后一个 MMIO 时再退出到 QEMU 一起处理，这就是 coalesced MMIO。
+根据 MMIO 的实现原理，我们知道每次发生 MMIO 都会导致虚拟机退出到 QEMU 应用层，但是往往是**多个 MMIO 一起操作**，这时可以**将多个 MMIO 操作暂存，等到最后一个 MMIO 时再退出到 QEMU 一起处理，这就是 coalesced MMIO**。
 
 ### 虚拟机脏页跟踪
 
