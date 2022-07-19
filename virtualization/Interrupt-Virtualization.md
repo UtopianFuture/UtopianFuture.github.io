@@ -40,7 +40,7 @@
 
 对于软件虚拟的中断芯片而言，**“引脚”只是一个变量**。如果 KVM 发现虚拟中断芯片有中断请求，则向 `VMCS` 中的 `VM-entry control` 部分的 `VM-entry interruption-information field` 字段写入中断信息，在切入 non-root guest 时，**CPU** 将检查这个字段，如同检查 CPU 引脚，如果有中断，则进入中断执行过程。
 
-non-root 模式的 CPU 不能检测虚拟中断芯片的引脚，只能在 VM entry 时由 KVM 模块代为检查，然后写入 `VMCS`，一旦有中断注入，那么处于 non-root 模式的 CPU 一定需要通过 VM exit 退出到 root 模式，这个上下文切换很麻烦。
+**non-root 模式的 CPU 不能检测虚拟中断芯片的引脚**，只能在 VM entry 时由 KVM 模块代为检查，然后写入 `VMCS`，一旦有中断注入，那么处于 non-root 模式的 CPU 一定需要通过 VM exit 退出到 root 模式，这个上下文切换很麻烦。
 
 在硬件层面增加对虚拟化的支持。在 non-root 模式下实现 `virtual-APIC page` 页面和虚拟中断逻辑。遇到中断时，将中断信息写入`posted-interrupt descriptor`，然后通过特殊的核间中断 `posted-interrupt notification` 通知 CPU，non-root 模式下的 CPU 就可以借助虚拟中断逻辑处理中断。
 
@@ -64,13 +64,13 @@ guest 需要读取外设数据时，通过写 I/O 端口触发 CPU 从 non-root 
 
 （5）中断注入
 
-VMCS 中有字段：`VM-entry interruption-information`，在 VM-entry 时 CPU 会检查这个字段。如果 CPU 正处在 non-root 模式，则等待下一次 VM exit 和 VM entry；如果 VCPU 正在睡眠状态，则 kick。
+VMCS 中有字段：`VM-entry interruption-information`，在 VM-entry 时 CPU 会检查这个字段。**如果 CPU 正处在 non-root 模式，则等待下一次 VM exit 和 VM entry；如果 VCPU 正在睡眠状态，则 kick**。
 
 #### APIC虚拟化
 
 APIC( Advanced Programmable Interrupt Controller)，其可以将接收到的中断按需分给不同的 processor 进行处理，而 PIC 只能应用于单核。
 
-APIC 包含两个部分：`LAPIC`和`I/O APIC`， LAPIC 位于处理器一端，接收来自 I/O APIC 的中断和核间中断 IPI(Inter Processor Interrupt)；I/O APIC 一般位于南桥芯片，相应来自外部设备的中断，并将中断发送给 LAPIC。其中断过程和 PIC 类似。
+APIC 包含两个部分：`LAPIC `和 `I/O APIC`， LAPIC 位于处理器一端，接收来自 I/O APIC 的中断和核间中断 IPI(Inter Processor Interrupt)；I/O APIC 一般位于南桥芯片，响应来自外部设备的中断，并将中断发送给 LAPIC。其中断过程和 PIC 类似。
 
 （1）核间中断过程
 
@@ -82,7 +82,7 @@ APIC 包含两个部分：`LAPIC`和`I/O APIC`， LAPIC 位于处理器一端，
 
 ##### MSI
 
-MSI 是在 PCIe 的基础上设计的中断方式，关于 PCIe 的介绍可以看[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Device-Virtualization.md#pci%E8%AE%BE%E5%A4%87%E6%A8%A1%E6%8B%9F)。从 PCI 2.1 开始，如果设备需要扩展某种特性，可以向配置空间中的 Capabilities List 中增加一个 Capability，MSI 利用这个特性，将 I/O APIC 中的功能扩展到设备自身。我们来看看 MSI Capability 有哪些域。MSI Capability的ID为5， 共有四种组成方式，分别是 32 和 64 位的 Message 结构，32 位和 64 位带中断Masking 的结构。
+MSI 是在 PCIe 的基础上设计的中断方式，关于 PCIe 的介绍可以看[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Device-Virtualization.md#pci%E8%AE%BE%E5%A4%87%E6%A8%A1%E6%8B%9F)。从 PCI 2.1 开始，如果设备需要扩展某种特性，可以向配置空间中的 Capabilities List 中增加一个 Capability，MSI 利用这个特性，将 I/O APIC 中的功能扩展到设备自身。我们来看看 MSI Capability 有哪些域。MSI Capability 的 ID 为 5， 共有四种组成方式，分别是 32 和 64 位的 Message 结构，32 位和 64 位带中断 Masking 的结构。
 
 ![MSI-capability.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/MSI-capability.png?raw=true)
 
@@ -142,7 +142,7 @@ MSI 是在 PCIe 的基础上设计的中断方式，关于 PCIe 的介绍可以�
 
 MSI-X Table 中的 vector control 表示 PCIe 设备是否能够使用该 Entry 提交中断请求，类似 MSI 的 mask 位。
 
-当外设准备发送中断信息时，其从 Capability Structure 中提取相关信息，信息地址取自 Message Address，其中 bits 20 - 31 是一个固定值 `0x0FEEH`。PCI 总线根据信息地址得知这是一个中断信息，会将其发送给 PCI-HOST 桥，PCI-HOST 桥将其发送到目的 CPU（LAPIC），信息体取自 message data，主要部分是中断向量。
+当外设准备发送中断信息时，其从 Capability Structure 中提取相关信息，信息地址取自 Message Address，其中 bits 20 - 31 是一个固定值 `0x0FEEH`。PCI 总线根据信息地址得知这是一个中断信息，会将其发送给 PCI-HOST 桥，**PCI-HOST 桥将其发送到目的 CPU（LAPIC）**，信息体取自 message data，主要部分是中断向量。
 
 #### 硬件虚拟化支持（需要深入了解）
 
@@ -176,7 +176,7 @@ guest 模式下的 CPU 借助 VMCS 中的字段 `guest interrupt status` 评估�
 #### IRQ号，中断向量和GSI
 
 - **IRQ 号是 PIC 时代引入的概念**，由于 ISA 设备通常是直接连接到到固定的引脚，所以对于 IRQ 号描述了设备连接到了 PIC 的哪个引脚上，同 IRQ 号直接和中断优先级相关，例如 IRQ0 比 IRQ3 的中断优先级更高。
-- **GSI 号是 ACPI 引入的概念**，全称是 Global System Interrupt，用于为系统中每个中断源指定一个唯一的中断编号。注：ACPI Spec 规定 PIC 的 IRQ 号必须对应到 GSI0-GSI15 上。kvm 默认支持最大 1024 个 GSI。
+- **GSI 号是 ACPI 引入的概念**，全称是 Global System Interrupt，用于为系统中每个中断源指定一个唯一的中断编号。注：ACPI Spec 规定 PIC 的 IRQ 号必须对应到 GSI0 - GSI15 上。kvm 默认支持最大 1024 个 GSI。
 - 中断向量是针对逻辑 CPU 的概念，用来表示中断在 IDT 表的索引号，每个 IRQ（或者 GSI）最后都会被定向到某个 Vecotor 上。对于 PIC 上的中断，中断向量 = 32(start vector) + IRQ 号。在 IOAPIC 上的中断被分配的中断向量则是由操作系统分配。
 
 ### 中断模拟
@@ -203,8 +203,8 @@ KVM 端：
 
 QEMU 端：
 | -- pc_init1()
-    | -- pc_gsi_create() // PIC中断向量的初始化，初始化完后PIC设备就能分发中断   (1)
-    	| -- qemu_allocate_irqs() // 24个中断向量
+    | -- pc_gsi_create() // PIC中断向量的初始化，初始化完后PIC设备就能分发中断 (1)
+    	| -- qemu_allocate_irqs() // 24 个中断向量
     		| -- qemu_entend_irqs()
 ```
 
@@ -260,8 +260,8 @@ static int inject_pending_event(struct kvm_vcpu *vcpu, bool *req_immediate_exit)
 		if (vcpu->arch.nmi_injected) {
 			static_call(kvm_x86_set_nmi)(vcpu);
 			can_inject = false;
-		} else if (vcpu->arch.interrupt.injected) { // 为啥这里就 set_irq 了
-			static_call(kvm_x86_set_irq)(vcpu);
+		} else if (vcpu->arch.interrupt.injected) { // 为啥这里就 set_irq 了，
+			static_call(kvm_x86_set_irq)(vcpu);		// 应该是 nmi 是另一种类型的中断，不用 set_irq
 			can_inject = false;
 		}
 	}
@@ -453,7 +453,7 @@ static int kvm_init(MachineState *ms)
     } while (ret == -EINTR);
 
     if (s->kernel_irqchip_allowed) {
-        kvm_irqchip_create(s);
+        kvm_irqchip_create(s); // 创建 irqchip
     }
 
 	...
@@ -518,7 +518,7 @@ long kvm_arch_vm_ioctl(struct file *filp,
 }
 ```
 
-`KVM_CREATE_IRQCHIP` 主要调用 `kvm_pic_init` 创建 PIC 设备，`kvm_ioapic_init` 创建 IOAPIC 设备，它在下一节在分析，`kvm_setup_default_irq_routing` 初始化中断路由表。
+`KVM_CREATE_IRQCHIP` 主要调用 `kvm_pic_init` 创建 PIC 设备，`kvm_ioapic_init` 创建 IOAPIC 设备，它在下一节再分析，`kvm_setup_default_irq_routing` 初始化中断路由表。
 
 ```c
 int kvm_pic_init(struct kvm *kvm)
@@ -561,7 +561,7 @@ int kvm_pic_init(struct kvm *kvm)
 
 这里比较复杂的是初始化中断路由表。`default_routing` 是默认路由信息。中断路由到底是个什么东西，为什么需要中断路由，没有完全搞懂，还需要进一步分析。
 
-中断路由其实就是通过中断号找到对应的处理函数。
+**中断路由其实就是通过中断号找到对应的处理函数**。
 
 ```c
 // gsi 表示该中断在系统全局范围的中断号，type 用来决定中断的种类
@@ -677,7 +677,7 @@ int kvm_set_irq_routing(struct kvm *kvm,
 
 `setup_routing_entry` 将 `kvm_irq_routing_entry` 中的 gsi 和 type 复制到 `kvm_kernel_irq_routing_entry` 中，并根据 `kvm_irq_routing_entry` 中的中断类型**设置回调函数**。那虚拟机的中断处理流程是怎样的呢，还没有完全搞懂。
 
-当设备向虚拟中断控制器发起中断时，根据设备注册的 gsi，首先会在 `kvm_irq_routing_table` 中寻找映射信息，然后根据 map 中找到对应的 `kvm_kernel_irq_routing_entry` ，而 `kvm_kernel_irq_routing_entry` 中根据 gsi 注册的回调函数 `kvm_set_pic_irq` 和 `kvm_set_ioapic_irq` 发起中断。这个流程在下面的章节会进一步分析。
+当 QEMU 中的虚拟设备向虚拟中断控制器发起中断时，进入到内核后，会根据设备注册的 gsi，首先会在 `kvm_irq_routing_table` 中寻找映射信息，然后根据 map 中找到对应的 `kvm_kernel_irq_routing_entry` ，而 `kvm_kernel_irq_routing_entry` 中根据 gsi 注册的回调函数 `kvm_set_pic_irq` 和 `kvm_set_ioapic_irq` 发起中断。这个流程在下面的章节会进一步分析。
 
 ```c
 static int setup_routing_entry(struct kvm *kvm,
@@ -925,7 +925,7 @@ void pc_i8259_create(ISABus *isa_bus, qemu_irq *i8259_irqs)
 }
 ```
 
-对于 kvm 模拟，使用的是 `kvm_i8259_init` ， 并指定控制器的回调函数为 `kvm_pic_set_irq` 。
+对于 kvm 模拟，使用的是 `kvm_i8259_init` ，并指定控制器的回调函数为 `kvm_pic_set_irq` 。
 
 ```c
 qemu_irq *kvm_i8259_init(ISABus *bus)
@@ -939,7 +939,7 @@ qemu_irq *kvm_i8259_init(ISABus *bus)
 }
 ```
 
-它会通过 `kvm_pic_set_irq` -> `kvm_set_irq` -> `kvm_vm_ioctl(s, s->irq_set_ioctl, &event)` 向 kvm 发起中断。
+**它会通过 `kvm_pic_set_irq` -> `kvm_set_irq` -> `kvm_vm_ioctl(s, s->irq_set_ioctl, &event)` 向 kvm 发起中断**。
 
 而对于用 tcg 模拟，使用的是 `i8259_init` 。
 
@@ -1088,7 +1088,7 @@ void tcg_handle_interrupt(CPUState *cpu, int mask)
 // 用 epoll 处理 host 发来的中断，即物理设备完成工作，发起中断，host 将其发送给 QEMU
 // QEMU 再转发给对应的虚拟设备，虚拟设备再发起中断，由虚拟中断控制器再通过 ioctl 交由 KVM 处理
 // KVM 进行中断注入
-// 这样走一边就知道设备直通能够大幅提升性能了吧
+// 这样走一遍就知道设备直通能够大幅提升性能了吧
 #12 0x00007ffff773a04e in g_main_context_dispatch ()
    from /lib/x86_64-linux-gnu/libglib-2.0.so.0
 #13 0x0000555555f1dd0d in glib_pollfds_poll () at ../util/main-loop.c:232
@@ -1229,7 +1229,7 @@ static void kvm_pic_set_irq(void *opaque, int irq, int level)
 }
 ```
 
-`kvm_set_irq` 通过 `kvm_vm_ioctl(s, s->irq_set_ioctl, &event)` 系统调用将中断传到 kvm 中，再由 kvm 根据前面分析的中断路由表注入到 guestos 中。`s->irq_set_ioctl` 会设置成 `KVM_IRQ_LINE_STATUS` 。
+`kvm_set_irq` 通过 `kvm_vm_ioctl(s, s->irq_set_ioctl, &event)` 系统调用将中断传到 kvm 中，再由 kvm 根据前面分析的中断路由表注入到 guestos 中。`s->irq_set_ioctl` 会设置成 `KVM_IRQ_LINE_STATUS` 。****
 
 ```c
 int kvm_set_irq(KVMState *s, int irq, int level)
@@ -1253,7 +1253,7 @@ int kvm_set_irq(KVMState *s, int irq, int level)
 
 我们看看具体的执行流程（这个调用流程不是键鼠的，而是 piix3，不过意思都一样）：
 
-```plain
+```c
 #0  kvm_pic_set_irq (opaque=0x0, irq=10, level=0) at ../hw/i386/kvm/i8259.c:118
 #1  0x0000555555d4018c in qemu_set_irq (irq=0x555556fdb980, level=0) at ../hw/core/irq.c:45
 #2  0x0000555555b39e8a in gsi_handler (opaque=0x555556b991a0, n=10, level=0) at ../hw/i386/x86.c:599
@@ -1271,6 +1271,7 @@ int kvm_set_irq(KVMState *s, int irq, int level)
 #12 0x0000555555bf4c09 in access_with_adjusted_size (addr=0, value=0x7ffff228f3f8, size=1, access_size_min=1, access_size_max=4, access_fn=0x555555bf48c1 <memory_region_write_accessor>,
     mr=0x555556b9e520, attrs=...) at ../softmmu/memory.c:554
 #13 0x0000555555bf7d07 in memory_region_dispatch_write (mr=0x555556b9e520, addr=0, data=10, op=MO_8, attrs=...) at ../softmmu/memory.c:1504
+// 先进行平坦化操作再 dispatch
 #14 0x0000555555beaa5c in flatview_write_continue (fv=0x7ffde40417b0, addr=3324, attrs=..., ptr=0x7ffff7fc7000, len=1, addr1=0, l=1, mr=0x555556b9e520) at ../softmmu/physmem.c:2782
 #15 0x0000555555beaba5 in flatview_write (fv=0x7ffde40417b0, addr=3324, attrs=..., buf=0x7ffff7fc7000, len=1) at ../softmmu/physmem.c:2822
 #16 0x0000555555beaf1f in address_space_write (as=0x55555675cda0 <address_space_io>, addr=3324, attrs=..., buf=0x7ffff7fc7000, len=1) at ../softmmu/physmem.c:2914
@@ -1285,7 +1286,7 @@ int kvm_set_irq(KVMState *s, int irq, int level)
 #23 0x00007ffff6678163 in clone () from /lib/x86_64-linux-gnu/libc.so.6
 ```
 
-解释一下就是 `kvm_cpu_exec` 在调用 `ioctl(KVM_RUN)` 进入到 KVM 执行后，KVM 遇到了不能处理的事情（在这里是 I/O 访问），返回到 QEMU 执行，QEMU 在执行完 I/O 操作后通过 pic 中断通过 KVM I/O 的活我这边处理完了，剩下了你自己搞定。下面就是 KVM 怎样处理从 QEMU 传入的中断。
+解释一下就是 `kvm_cpu_exec` 在调用 `ioctl(KVM_RUN)` 进入到 KVM 执行后，**KVM 遇到了不能处理的事情（在这里是 I/O 访问），返回到 QEMU 执行，QEMU 在执行完 I/O 操作后通过 pic 中断通过 KVM I/O 的活我这边处理完了，剩下了你自己搞定**。下面就是 KVM 怎样处理从 QEMU 传入的中断。
 
 KVM 在 `kvm_vm_ioctl` 中处理所有的虚拟机有关的系统调用，在 `KVM_IRQ_LINE_STATUS` 中处理中断。
 
