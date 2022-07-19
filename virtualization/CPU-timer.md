@@ -1,16 +1,16 @@
 ## CPU timer
 
-初步思路：LA 中有指令`rdtime.d rd, rj` 可以将恒定频率计时器 Stable Counter 的信息写入通用寄存器 rd 中，将每个计时器的软件可配置的全局唯一编号 Count ID 信息写入 rj 中。那么我只需要用 rdtime.d 指令获取时间，然后保存在一个 64 位变量中就可以实现定时的功能。
+初步思路：LA 中有指令 `rdtime.d rd, rj` 可以将恒定频率计时器 Stable Counter 的信息写入通用寄存器 rd 中，将每个计时器的软件可配置的全局唯一编号 Count ID 信息写入 rj 中。那么我只需要用 `rdtime.d` 指令获取时间，然后保存在一个 64 位变量中就可以实现定时的功能。
 
 ### 1. 硬定时器
 
 #### 1.1. 实时时钟（RTC）
 
-所有的 PC 都包含一个实时时钟（Renl Time Clock, RTC），它是独立于 CPU 和所有其他芯片的。即是当 PC 被切断电源，RTC 还继续工作，因为它靠一个小电池供电。Linux 只用 RTC 来获取时间和日期。内核通过 0x70, 0x71 I/O 端口访问 RTC，LA 应该类似。
+所有的 PC 都包含一个实时时钟（Renl Time Clock, RTC），它是**独立于 CPU 和所有其他芯片的，即是当 PC 被切断电源，RTC 还继续工作，因为它靠一个小电池供电**。Linux 只用 RTC 来获取时间和日期。内核通过 `0x70`, `0x71` I/O 端口访问 RTC，LA 应该类似。
 
 #### 1.2. 时间戳计数器（TSC）
 
-所有的 x86 处理器都包含一条 CLK 输入引线，它接受外部振荡器的时钟信号，同时实现一个 64 位的时间戳计数器（Time Stamp Counter, TSC）寄存器，它在每个时钟信号到达时加 1，可以用汇编指令 rdtsc 读这个寄存器。在 LA 中这个寄存器是 SC（Stable Counter），用指令 rdtime.d 可以读取。
+**所有的 x86 处理器都包含一条 CLK 输入引线**，它接受外部振荡器的时钟信号，同时实现一个 64 位的时间戳计数器（Time Stamp Counter, TSC）寄存器，它在每个时钟信号到达时加 1，可以用汇编指令 `rdtsc` 读这个寄存器。在 LA 中这个寄存器是 SC（Stable Counter），用指令 `rdtime.d` 可以读取。
 
 #### 1.3. 可编程间隔定时器（PIT）
 
@@ -30,9 +30,9 @@
 
 ### 2. 周期性输出 Hello World
 
-这个比较简单，只要用`rdtime.d rd, rj`指令获取到 Stable Counter，然后再设置多少个时钟周期输出一次即可。
+这个比较简单，只要用 `rdtime.d rd, rj` 指令获取到 Stable Counter，然后再设置多少个时钟周期输出一次即可。
 
-```plain
+```c
 asm(".long 0x1badb002, 0, (-(0x1badb002 + 0))");
 
 #define NSEC_PER_SEC	1000000000L

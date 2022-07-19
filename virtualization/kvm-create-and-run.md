@@ -10,7 +10,7 @@ qemu: qemu-6.2.0-rc4(commit id: a3607def89f9cd68c1b994e1030527df33aa91d0)
 
 qemu - kvm
 
-QEMU 和 KVM 是通过 IOCTL 进行配合的，qemu 通过 `kvm_ioctl` `kvm_vm_ioctl`、`kvm_vcpu_ioctl`、`kvm_device_ioctl`等函数向 kvm 发起请求。
+QEMU 和 KVM 是通过 IOCTL 进行配合的，qemu 通过 `kvm_ioctl`、 `kvm_vm_ioctl`、`kvm_vcpu_ioctl`、`kvm_device_ioctl` 等函数向 kvm 发起请求。
 
 ```c
 int kvm_ioctl(KVMState *s, int type, ...)

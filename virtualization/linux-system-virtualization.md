@@ -26,7 +26,7 @@
 
 ### 一、CPU 虚拟化
 
-​      物理 CPU 同时运行 host 和 guest，**在不同模式间按需切换**，每个模式需要保存上下文。VMX 设计了`VMCS`，每个 guest 都有自己的`VMCS`。通过 `VMLaunch `切换到 not root 模式，即进入 guest(vm entry)，当需要执行敏感指令时，退回到 root 模式，即退出 guest(vm exit)。
+​      物理 CPU 同时运行 host 和 guest，**在不同模式间按需切换**，每个模式需要保存上下文。VMX 设计了 `VMCS`，每个 guest 的每个 VCPU 都有自己的 `VMCS`，在进行 guest 和 host 切换时就是将 `VMCS` 中的内容加载到 CPU 中和将 CPU 中的内容保存到 `VMCS` 对应的域中。通过 `VMLaunch ` 切换到 not root 模式，即进入 guest(vm entry)，当需要执行敏感指令时，退回到 root 模式，即退出 guest(vm exit)。
 
 #### 陷入和模拟
 
@@ -44,7 +44,7 @@
 
    （1）CPUID
 
-   KVM 的用户空间通过 `cpuid` 指令获取 Host 的 CPU 特征，加上用户空间的配置，定义好 VCPU 支持的 CPU 特性，传递给 KVM 内核模块。
+   QEMU 在 KVM 的用户空间通过 `cpuid` 指令获取 Host 的 CPU 特征，然后加上用户空间的配置，定义好 VCPU 支持的 CPU 特性，传递给 KVM 内核模块。
 
    KVM 用户空间按照如下结构体组织好 CPU 特性后传递给内核模块：
 
@@ -56,24 +56,24 @@
    }
    ```
 
-​	`kvm_cpuid_entry`就是 kvm 内核模块定义的 VCPU 特性结构体：
+   `kvm_cpuid_entry`就是 kvm 内核模块定义的 VCPU 特性结构体：
 
-```c
-struct kvm_cpuid_entry {
-	__u32 function;
-	__u32 eax;
-	__u32 ebx;
-	__u32 ecx;
-	__u32 edx;
-	__u32 padding;
-};
-```
+   ```c
+   struct kvm_cpuid_entry {
+   	__u32 function;
+   	__u32 eax;
+   	__u32 ebx;
+   	__u32 ecx;
+   	__u32 edx;
+   	__u32 padding;
+   };
+   ```
 
-​		guest 执行 cpuid 时发生 VM exit，KVM 会根据 `eax` 中的功能号以及`ecx`中的子功能号，从 `kvm_cpuid_entry` 实例中所以到相应的 entry，使用 entry 中的 `eax`, `ebx`, `ecx`, `edx` 覆盖结构体 vcpu 中的 regs 数组对应的字段，当再次切入 guest 时，KVM 会将他们加载到物理 CPU 的通用寄存器，guest 就可以正常的读取。
+   guest 执行 cpuid 时发生 VM exit，KVM 会根据 `eax` 中的功能号以及 `ecx` 中的子功能号，从 `kvm_cpuid_entry` 实例中所以到相应的 entry，使用 entry 中的 `eax`, `ebx`, `ecx`, `edx` 覆盖结构体 vcpu 中的 regs 数组对应的字段，当再次切入 guest 时，KVM 会将他们加载到物理 CPU 的通用寄存器，guest 就可以正常的读取。
 
-​	（2）hlt
+​		（2）hlt
 
-​	guest 执行 hlt 只是暂停逻辑核。VCPU 调用内核的 `schedule()` 将自己挂起。
+​		guest 执行 hlt 只是暂停逻辑核。VCPU 调用内核的 `schedule()` 将自己挂起。
 
 #### 对称多处理器虚拟化
 
@@ -131,7 +131,7 @@ struct kvm_userspace_memory_region {
 
    在没有虚拟化的情况下，cr3 寄存器指向的是 GPA 到 HPA 转换的映射表。但在虚拟化需要在 guest 中将 GVA 转换成 GPA，然后 MMU 将 GPA 转换成 HPA。
 
-   影子页表：KVM 建立的一张将 GVA 转换成 HPA 的表，这张表需要根据 guest 内部页表的信息更新。guest 中每个任务都有对应的也表，所有当 guest 任务切换时，影子页表也需要跟着切换。
+   影子页表：**KVM 建立的一张将 GVA 转换成 HPA 的表，这张表需要根据 guest 内部页表的信息更新**。guest 中每个进程都有对应的页表，所有当 guest 任务切换时，影子页表也需要跟着切换，所以需要维护的页表是非常多的。
 
 3. EPT
 
