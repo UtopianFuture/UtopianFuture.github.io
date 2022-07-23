@@ -935,3 +935,7 @@ SMP(Symmetric Multi-processing)模式：SMP 模式的操作系统构架是多核
 ### What is Systemctl?
 
 Systemctl is a Linux command-line utility used to control and manage systemd and services. You can think of Systemctl as a control interface for Systemd init service, allowing you to communicate with systemd and perform operations.
+
+### new and malloc
+
+https://zhuanlan.zhihu.com/p/338489910
