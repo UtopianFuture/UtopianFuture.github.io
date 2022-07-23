@@ -21,7 +21,7 @@ extern unsigned long volatile __jiffy_data jiffies;
 ```c
 #define time_after(a,b)         \
         (typecheck(unsigned long, a) && \
-         typecheck(unsigned long, b) && \
+         typecheck(unsigned long, b)	 && \
          ((long)(b) - (long)(a) < 0))
 #define time_before(a,b)        time_after(b,a)
 #define time_after_eq(a,b)      \
@@ -30,6 +30,50 @@ extern unsigned long volatile __jiffy_data jiffies;
          ((long)(a) - (long)(b) >= 0))
 #define time_before_eq(a,b)     time_after_eq(b,a)
 ```
+
+在内核的启动过程中是这样打印时间戳 log 的，
+
+```
+#0  print_time (buf=<optimized out>, ts=<optimized out>) at kernel/printk/printk.c:1044
+#1  print_prefix (msg=0xc1c57730 <__log_buf+8336>, syslog=<optimized out>, buf=0x0)
+    at kernel/printk/printk.c:1075
+#2  0xc10914dd in msg_print_text (msg=<optimized out>, prev=<optimized out>,
+    syslog=<optimized out>,
+    buf=0xc1c54a00 <text> "\n ACPI AML tables successfully acquired and loaded1\nue calculated
+ using timer frequency.. 112604467 ns\n32 kB)\n[    0.000000]     pkmap   : 0xff800000 - 0xffc
+00000   (4096 kB)\n[    0.000000]     vmallo"..., size=1024) at kernel/printk/printk.c:1112
+#3  0xc1092ed6 in console_unlock () at kernel/printk/printk.c:2305
+#4  console_unlock () at kernel/printk/printk.c:2229
+#5  0xc1093336 in vprintk_emit (facility=0, level=<optimized out>, dict=0x0, dictlen=0,
+    fmt=0xc1a1c8e4 "\001\066Security Framework initialized\n", args=<optimized out>)
+    at kernel/printk/printk.c:1824
+#6  0xc1093656 in vprintk_default (fmt=<optimized out>, args=<optimized out>)
+    at kernel/printk/printk.c:1864
+#7  0xc110df47 in printk (fmt=0xc1a1c8e4 "\001\066Security Framework initialized\n")
+    at kernel/printk/printk.c:1914
+```
+
+即调用 `print_time`，
+
+```c
+static size_t print_time(u64 ts, char *buf)
+{
+	unsigned long rem_nsec;
+
+	if (!printk_time) // 这个变量是通过 CONFIG_PRINTK_TIME 配置的，所以可以在 .config 中设置是否打印时间戳
+		return 0;
+
+	rem_nsec = do_div(ts, 1000000000);
+
+	if (!buf)
+		return snprintf(NULL, 0, "[%5lu.000000] ", (unsigned long)ts);
+
+	return sprintf(buf, "[%5lu.%06lu] ",
+		       (unsigned long)ts, rem_nsec / 1000);
+}
+```
+
+
 
 ### Reference
 

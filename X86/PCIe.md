@@ -60,7 +60,7 @@ Bus 001 Device 002: ID 062a:5918 MosArt Semiconductor Corp. 2.4G Keyboard Mouse
 Bus 001 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
 ```
 
-这里的位置信息就更清晰了。哦，原来不是所有的雷电 3 接口都是我能看到的。但是 U 盘是挂载在 `0x04` 总线上，不是 PCI 总线？`0x04` 总线是什么？
+这里的位置信息就更清晰了。哦，原来不是所有的雷电 3 接口都是我能看到的。但是 U 盘是挂载在 `0x04` 总线上，不是 PCI 总线？`0x04` 总线是什么？应该是 USB 总线，挂载在 PCI 总线上的低速总线。
 
 ### 架构
 
@@ -68,15 +68,15 @@ Bus 001 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
 
 ### PCI device 配置空间
 
-PCI 设备有自己的地址空间，叫做 PCI 地址空间，HOST-PCI 桥完成 CPU 访问的内存地址到 PCI 总线地址的转换。每个 PCI 设备都有一个配置空间，该空间至少有 256 字节，前 64 字节是标准化的，所有的设备都是这个格式，叫做 *PCI configuration register header*，后面的内容由设备自己决定，叫做 *device-specific PCI configuration register*。如上图所示，PCI 设备可以分成 PCI device 和 PCI bus，它们的配置空间不完全一样。下面是 PCI device 的配置空间的前 64 字节。
+PCI 设备有自己的地址空间，叫做 PCI 地址空间，**HOST-PCI 桥完成 CPU 访问的内存地址到 PCI 总线地址的转换**。每个 PCI 设备都有一个配置空间，该空间至少有 256 字节，前 64 字节是标准化的，所有的设备都是这个格式，叫做 *PCI configuration register header*，后面的内容由设备自己决定，叫做 *device-specific PCI configuration register*。如上图所示，PCI 设备可以分成 PCI device 和 PCI bus，它们的配置空间不完全一样。下面是 PCI device 的配置空间的前 64 字节。
 
 ![PCI-DEVICE-config-space.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/PCI-DEVICE-config-space.png?raw=true)
 
-Vendor ID, Device ID, Class Code 用来表明设备的身份，有时还会配置 Subsystem Vendor ID 和 Subsystem Device ID。6 个 Base Address 表示 PCI 设备的 I/O 地址空间（这么大么），还可能有一个 ROM 的 BAR。两个与中断设置相关的域，IRQ Line 表示该设备使用哪个中断号（BIOS 中注册的 IVT），如传统的 8259 中断控制器，有 0 ~ 15 号 line，IRQ Line 表示的是用哪根线。而 IRQ Pin 表示使用哪个引脚连接中断控制器，PCI 总线上的设备可以通过 4 根中断引脚 INTA ~ D# 向中断控制器提交中断请求。
+Vendor ID, Device ID, Class Code 用来表明设备的身份，有时还会配置 Subsystem Vendor ID 和 Subsystem Device ID。6 个 Base Address 表示 PCI 设备的 I/O 地址空间（这么大么），还可能有一个 ROM 的 BAR。两个与中断设置相关的域，IRQ Line 表示该设备使用哪个中断号（BIOS 中注册的 IVT），如传统的 8259 中断控制器，有 0 ~ 15 号 line，**IRQ Line 表示的是用哪根线**。而 IRQ Pin 表示使用哪个引脚连接中断控制器，PCI 总线上的设备可以通过 4 根中断引脚 INTA ~ D# 向中断控制器提交中断请求。
 
 ### BAR(base address register)
 
-关于 BAR 只需要记住一句话：将 PCI 设备上的 RAM 存储设备映射到系统内存表中，XROMBAR 映射 PCI 设备上的扩展 ROM 存储设备到系统内存表中。
+关于 BAR 只需要记住一句话：**将 PCI 设备上的 RAM 存储设备映射到系统内存表中**，XROMBAR 映射 PCI 设备上的扩展 ROM 存储设备到系统内存表中。
 
 ```
 === PCI bus & bridge init ===

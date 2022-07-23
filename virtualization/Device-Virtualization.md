@@ -14,7 +14,7 @@ guest 访问 VF 的数据不需要经过 VMM，guest 的 I/O 性能提高了，�
 
 #### DMA 重映射
 
-由于虚拟机在指定设备 DMA 的时候能够随意指定地址，所以需要有一种机制来**对设备 DMA 地址访问进行隔离**。换句话说，采用设备透传时，如果设备的 DMA 访问没有隔离，该设备就能够访问物理机上所有的地址空间，即**guest 能够访问该设备下其他 guest 和 host 的内存**，导致安全隐患。为此，设计了 DMA 重映射机制。
+由于虚拟机在指定设备 DMA 的时候能够随意指定地址，所以需要有一种机制来**对设备 DMA 地址访问进行隔离**。换句话说，采用设备透传时，如果设备的 DMA 访问没有隔离，该设备就能够访问物理机上所有的地址空间，即 **guest 能够访问该设备下其他 guest 和 host 的内存**，导致安全隐患。为此，设计了 DMA 重映射机制。
 
 当 VMM 处理透传给 guest 的外设时，VMM 将请求 kernel 为 guest 建立一个页表，这个页表的翻译由 DMA 重映射硬件负责，**它限制了外设只能访问这个页面覆盖的内存**。当外设访问内存时，内存地址首先到达 DMA 重映射硬件，DMA 重映射硬件根据这个外设的总线号、设备号和功能号确定其对应的页表，查表的出物理内存地址，然后将地址送上总线。
 
@@ -26,7 +26,7 @@ guest 访问 VF 的数据不需要经过 VMM，guest 的 I/O 性能提高了，�
 
 #### 中断重映射
 
-为避免外设编程发送一些恶意的中断引入了中断虚拟化机制，即在外设和 CPU 之间加了一个硬件中断重映射单元(IOMMU)。当接收到中断时，该单元会对中断请求的来源进行有效性验证，然后以中断号为索引查询中断重映射表，之后代发中断。中断映射表由 VMM 进行设置。
+为避免外设编程发送一些恶意的中断引入了中断虚拟化机制，即在外设和 CPU 之间加了一个硬件中断重映射单元(IOMMU)。当接收到中断时，该单元会对中断请求的来源进行有效性验证，然后**以中断号为索引查询中断重映射表，之后代发中断**。中断映射表由 VMM 进行设置。
 
 ### Virtio虚拟化
 
@@ -36,11 +36,11 @@ guest 访问 VF 的数据不需要经过 VMM，guest 的 I/O 性能提高了，�
 
 下面以 virtio-blk 为例，简单描述一下 read request 从发出到读到数据的过程。
 
-- VM 中，guest OS 的用户空间进程通过系统调用发出 read request，进程被挂起，等待数据（同步 read）。此时进入到内核空间，request 依次经过 vfs、page cache、具体 fs（通常是 ext4 或者 xfs）、buffer cache、generic block layer 后，来到了 virtio-blk 的驱动中。
+- VM 中，**guest OS 的用户空间进程通过系统调用发出 read request**，进程被挂起，等待数据（同步 read）。此时进入到内核空间，request 依次经过 vfs、page cache、具体 fs（通常是 ext4 或者 xfs）、buffer cache、generic block layer 后，来到了 virtio-blk 的驱动中。
 
 - virtio-blk 驱动将 request 放入 virtio 的 vring 中的 avail ring 中，vring 是一个包含 2 个 ring buffer 的结构，一个 ring buffer 用于发送 request，称为 avail ring，另一个用于接收数据和资源回收，称为 used ring。在适当的时机，guest 会通知 host 有 request 需要处理，此动作称为 kick，在此之前会将 avail ring 中管理的 desc 链挂入 used ring 中，后续在 host 中可以通过 used ring 找到所有的 desc，每个 desc 用于管理一段 buffer。
 
-- host 收到 kick 信号，就开始处理 avail ring 中的 request。主要是通过 avail ring 中的 index 去 desc 数组中找到真正的 request，建立起 desc 对应的 buffer 的内存映射，即建立 guest kernel 地址 GPA 与 qemu 进程空间地址 HVA 的映射，然后将 request 转发到 qemu 的设备模拟层中（此时没有内存的 copy），qemu 设备模拟层再把 request 经过合并排序形成新的 request 后，将新 request 转发给 host 的 linux IO 栈，也就是通过系统调用，进入 host 内核的 IO 栈，由内核把新 request 发给真实的外设（磁盘）。真实的外设收到新 request 后，将数据通过 DMA 的方式传输到 DDR 中 host 的内核空间，然后通过中断通知 host 内核 request 已经处理完成。host 的中断处理程序会将读到的数据 copy 到 qemu 的地址空间，然后通知 qemu 数据已经准备好了。qemu 再将数据放入 vring 的 used ring 管理的 desc 中（也即 avail ring 中的 desc，由 avail ring 挂入到了 used ring 中的），这里也没有数据的 copy，通过使用之前建立的 GPA 和 HVA 的映射完成。host 再通过虚拟中断通知 guest 数据已经就绪。4）guest 收到中断，中断处理程序依次处理如下：a）回收 desc 资源。存放读到的数据的 buffer 在不同的层有不同的描述方式，在 virtio 层中是通过 desc 来描述的，在 block 层中是通过 sglist 描述的。在 guest kernel 发出 read request 的时候，已经分别在 block 层和 virtio 层建立了 buffer 的描述方式，即在任何层可以都找到 buffer。具体请参考附件 pdf。所以此时回收 desc 不会导致 block 层找不到读到的数据。b）将数据 copy 到等待数据的用户进程（即发出 read request 的用户进程)。
+- host 收到 kick 信号，就开始处理 avail ring 中的 request。主要是通过 avail ring 中的 index 去 desc 数组中找到真正的 request，建立起 desc 对应的 buffer 的内存映射，即建立 guest kernel 地址 GPA 与 qemu 进程空间地址 HVA 的映射，然后将 request 转发到 qemu 的设备模拟层中（此时没有内存的 copy），qemu 设备模拟层再把 request 经过合并排序形成新的 request 后，将新 request 转发给 host 的 linux IO 栈，也就是通过**系统调用**，进入 host 内核的 IO 栈，由内核把新 request 发给真实的外设（磁盘）。真实的外设收到新 request 后，将数据通过 DMA 的方式传输到 DDR 中 host 的内核空间，然后通过中断通知 host 内核 request 已经处理完成。host 的中断处理程序会将读到的数据 copy 到 qemu 的地址空间，然后通知 qemu 数据已经准备好了。qemu 再将数据放入 vring 的 used ring 管理的 desc 中（也即 avail ring 中的 desc，由 avail ring 挂入到了 used ring 中的），这里也没有数据的 copy，通过使用之前建立的 GPA 和 HVA 的映射完成。host 再通过虚拟中断通知 guest 数据已经就绪。4）guest 收到中断，中断处理程序依次处理如下：a）回收 desc 资源。存放读到的数据的 buffer 在不同的层有不同的描述方式，在 virtio 层中是通过 desc 来描述的，在 block 层中是通过 sglist 描述的。在 guest kernel 发出 read request 的时候，已经分别在 block 层和 virtio 层建立了 buffer 的描述方式，即在任何层可以都找到 buffer。具体请参考附件 pdf。所以此时回收 desc 不会导致 block 层找不到读到的数据。b）将数据 copy 到等待数据的用户进程（即发出 read request 的用户进程)。
 
 至此，read request 流程结束。write request 与 read request 的处理流程相同。
 
@@ -212,7 +212,7 @@ static void pci_qdev_realize(DeviceState *qdev, Error **errp)
 	...
 
     /* rom loading */
-    // 有些 PCI 设备有 ROM 存储设备（？）
+    // 有些 PCI 设备有 ROM 存储设备
     is_default_rom = false;
     // QEMU 命令行没有指定 ROM，使用 PCI 设备默认的
     if (pci_dev->romfile == NULL && pc->romfile != NULL) {
@@ -501,7 +501,7 @@ static void piix3_write_config(PCIDevice *dev,
 }
 ```
 
-并且使用了 PCI 设备默认的读写函数，并且使用 msi 机制进行读写，这个之后再分析。
+并且使用了 PCI 设备默认的读写函数，使用 msi 机制进行读写，这个之后再分析。
 
 ```c
 void pci_default_write_config(PCIDevice *d, uint32_t addr, uint32_t val_in, int l)
@@ -821,9 +821,9 @@ void pci_host_config_write_common(PCIDevice *pci_dev, uint32_t addr,
 
 OK，但是这里还有一个问题，通过 `pci_default_write_config` 访问设备时是怎样知道不同设备的配置空间的地址？也就是说 PCI-HOST 怎样将读写请求转发到对应的 PCI 设备？
 
-在每个 PCI 设备初始化的时候会将 `devfn` 写入 PCI-HOST bridge，然后 guest 或 Seabios 访问设备的配置空间是通过 dfn，这样 PCI-HOST bridge 就可以转发。但这只是配置空间，还有 MMIO 空间也需要配置，这个工作是 Seabios 完成的，可以看[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/Analysis-Seabios.md#pci-%E8%AE%BE%E5%A4%87)的分析。
+在每个 PCI 设备初始化的时候**会将 `devfn` 写入 PCI-HOST bridge，然后 guest 或 Seabios 访问设备的配置空间是通过 dfn**，这样 PCI-HOST bridge 就可以转发。但这只是配置空间，还有 MMIO 空间也需要配置，这个工作是 Seabios 完成的，可以看[这里](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/Analysis-Seabios.md#pci-%E8%AE%BE%E5%A4%87)的分析。
 
-总的来说是 BIOS 会探测 PCI 设备，然后按照将各个 PCI 设备的总线号、设备号、功能号（？）将 BAR 地址写入 i440fx 的配置空间（`0xcfc`），之后 QEMU 就能根据这些信息建立地址映射。当然 QEMU 工作在用户态，不能直接访问物理设备，这些访问最终会通过中断发送给 host 进行处理。
+总的来说是 BIOS 会探测 PCI 设备，然后按照将各个 PCI 设备的总线号、设备号、功能号（？）将 BAR 地址写入 i440fx 的配置空间（`0xcfc`），之后 QEMU 就能根据这些信息建立地址映射。当然 QEMU 工作在用户态，不能直接访问物理设备，这些访问最终会通过系统调用发送给 host 进行处理。
 
 #### 关键函数pci_default_write_config
 
@@ -1027,8 +1027,6 @@ static int pci_slot_get_pirq(PCIDevice *pci_dev, int pci_intx)
     return (pci_intx + slot_addend) & 3;
 }
 ```
-
-
 
 ### 网卡模拟
 
