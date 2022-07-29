@@ -939,3 +939,9 @@ Systemctl is a Linux command-line utility used to control and manage systemd and
 ### new and malloc
 
 https://zhuanlan.zhihu.com/p/338489910
+
+### 硬中断和软中断
+
+**软中断是执行中断指令产生的，而硬中断是由外设引发的**。
+
+硬中断的中断号是由中断控制器提供的，软中断的中断号由指令直接指出，int是软中断指令，无需使用中断控制器。硬中断是可屏蔽的，软中断不可屏蔽。硬中断处理程序要确保它能快速地完成任务，这样程序执行时才不会等待较长时间，称为上半部。软中断处理硬中断未完成的工作，是一种推后执行的机制，属于下半部。
