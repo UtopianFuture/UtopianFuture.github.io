@@ -37,7 +37,7 @@
 
 ![Seabios-structure.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/Seabios-structure.png?raw=true)
 
-SeaBIOS 是一个 16bit 的 x86 BIOS 的开源实现，常用于 QEMU 等仿真器中使用。本文将结合[SeaBIOS Execution and code flow](https://www.seabios.org/Execution_and_code_flow)和[SeaBIOS 的源码](https://github.com/coreboot/seabios/)对 SeaBIOS 的全过程进行简单分析。需要注意，本文不是深入的分析，对于一些比较复杂和繁琐的部分直接跳过了。
+SeaBIOS 是一个 16bit 的 x86 BIOS 的开源实现，常用于 QEMU 等仿真器中使用。本文将结合 [SeaBIOS Execution and code flow](https://www.seabios.org/Execution_and_code_flow) 和[SeaBIOS 的源码](https://github.com/coreboot/seabios/)对 SeaBIOS 的全过程进行简单分析。需要注意，本文不是深入的分析，对于一些比较复杂和繁琐的部分直接跳过了。
 
 从整体角度出发，SeaBIOS 包含四个阶段。
 
@@ -381,7 +381,7 @@ handle_post(void)
 
 #### 关于make_bios_writable
 
-该函数的作用是允许更改 RAM 中的 BIOS ROM 区域。在介绍 `make_bios_writable` 之前，首先对 Shadow RAM 做一些介绍。实际上，尽管在启动的时候，是从 `F000:FFF0` 加载第一条指令的，你可能会觉得在启动的时候代码段段基址是 `0xF0000`。其实，并不是这样的。在计算机启动的时候，代码段段基地址实际上是是 `0xFFFF0000`（这里就不符合那个乘 16 的计算方式了）。笔者猜测这一一点的实现方式是通过段描述符高速缓冲寄存器实现的（实模式下也是通过查询这个寄存器来获得段基址的），开机的时候代码段的对应基址项被设置成 `0xFFFF0000`。
+该函数的作用是允许更改 RAM 中的 BIOS ROM 区域。在介绍 `make_bios_writable` 之前，首先对 Shadow RAM 做一些介绍。实际上，尽管在启动的时候，是从 `F000:FFF0` 加载第一条指令的，你可能会觉得在启动的时候代码段段基址是 `0xF0000`。其实，并不是这样的。在计算机启动的时候，代码段段基地址实际上是是 `0xFFFF0000`（这里就不符合那个乘 16 的计算方式了）。笔者猜测这一点的实现方式是通过段描述符高速缓冲寄存器实现的（实模式下也是通过查询这个寄存器来获得段基址的），开机的时候代码段的对应基址项被设置成 `0xFFFF0000`。
 
 为什么从这里开始呢？我们知道 BIOS 是存储在 ROM 当中的。而 Intel 有一个习惯，**将 BIOS 固件代码从 ROM 中映射到可寻址地址的末端（最后 64K 内）**。这里的“映射”，并不是复制，而是当读取这个地址的时候，就直接读取 ROM 存储器当中的值。在 8086 时期，可寻址的地址为 `0x00000-0xFFFFF`，所以说它的“末端”确实是从我们理解的 `0xF0000` 开始的。所以在 8086 时期，硬件设备会将原本存储于 ROM 的 BIOS 映射到 `F000:0000-F000:FFFF`。然而，到了后面有 32 根地址线，实际上末端应该是 `0xFFFF0000-0xFFFFFFFF` 这一部分。此时的计算机，实际上是将 BIOS 固件代码映射到 `0xFFFF0000-0xFFFFFFFF` 中。
 
@@ -1006,7 +1006,6 @@ pci_setup(void)
 /****************************************************************
  * Bus initialization
  ****************************************************************/
-
 static void
 pci_bios_init_bus_rec(int bus, u8 *pci_bus)
 {
@@ -1131,8 +1130,8 @@ static int pci_bios_check_devices(struct pci_bus *busses)
 
             if (type != PCI_REGION_TYPE_IO && size < PCI_DEVICE_MEM_MIN)
                 size = PCI_DEVICE_MEM_MIN;
-            struct pci_region_entry *entry = pci_region_create_entry(
-                bus, pci, i, size, size, type, is64);
+            struct pci_region_entry *entry = pci_region_create_entry( // 计算出该 pci 设备需要读大的地址空间
+                bus, pci, i, size, size, type, is64); // 将信息写入 entry，之后 bios 会统一分配
             if (!entry)
                 return -1;
 
@@ -1203,7 +1202,7 @@ pci_bios_get_bar(struct pci_device *pci, int bar,
 
 ##### 关键函数pci_bios_map_devices
 
-上一个函数计算了每个 PCI 需要多大的内存空间，这里根据计算结果和基址建立地址映射表。
+上一个函数计算了每个 PCI 需要多大的内存空间，这里**根据计算结果和基址建立地址映射表**。
 
 传入的参数 `busses` 是在 `pci_bios_check_devices` 中配置的，所以这些基址信息也是在其中初始化的。
 
@@ -1259,7 +1258,7 @@ enum pci_region_type {
 
 ##### 关键函数pci_region_map_one_entry
 
-这个函数设备每个 PCI 设备的 BAR 地址。
+这个函数设置每个 PCI 设备的 BAR 地址。
 
 ```c
 static void pci_region_map_entries(struct pci_bus *busses, struct pci_region *r)
