@@ -19,7 +19,7 @@
 
 ## Virtualization
 - [kvm 原理简介](./virtualization/kvm.md)
-- [linux 系统虚拟化](./virtualization/linux-system-virtualization.md)
+- [System Virtualization](./virtualization/System-Virtualization.md)
 - [run "hello world" in LA bare metal](./virtualization/run-helloworld-in-LA-bare-metal.md)
 - [CPU Virtualization](./virtualization/CPU-Virtualization.md)
 - [Memory Virtualization](./virtualization/Memory-Virtualization.md)
