@@ -144,7 +144,7 @@ MSI-X Table 中的 vector control 表示 PCIe 设备是否能够使用该 Entry 
 
 当外设准备发送中断信息时，其从 Capability Structure 中提取相关信息，信息地址取自 Message Address，其中 bits 20 - 31 是一个固定值 `0x0FEEH`。PCI 总线根据信息地址得知这是一个中断信息，会将其发送给 PCI-HOST 桥，**PCI-HOST 桥将其发送到目的 CPU（LAPIC）**，信息体取自 message data，主要部分是中断向量。
 
-#### 硬件虚拟化支持（需要深入了解）
+#### 硬件虚拟化支持
 
 在基于软件虚拟中断芯片中，只能在 VM entry 时向 guest 注入中断，必须触发一次 VM exit，这是中断虚拟化的主要开销。
 
@@ -939,7 +939,7 @@ qemu_irq *kvm_i8259_init(ISABus *bus)
 }
 ```
 
-**它会通过 `kvm_pic_set_irq` -> `kvm_set_irq` -> `kvm_vm_ioctl(s, s->irq_set_ioctl, &event)` 向 kvm 发起中断**。
+**它会通过 `kvm_pic_set_irq` -> `kvm_set_irq` -> `kvm_vm_ioctl(s, s->irq_set_ioctl, &event)` 向 kvm 发起系统调用**。
 
 而对于用 tcg 模拟，使用的是 `i8259_init` 。
 
@@ -1229,7 +1229,7 @@ static void kvm_pic_set_irq(void *opaque, int irq, int level)
 }
 ```
 
-`kvm_set_irq` 通过 `kvm_vm_ioctl(s, s->irq_set_ioctl, &event)` 系统调用将中断传到 kvm 中，再由 kvm 根据前面分析的中断路由表注入到 guestos 中。`s->irq_set_ioctl` 会设置成 `KVM_IRQ_LINE_STATUS` 。****
+`kvm_set_irq` 通过 `kvm_vm_ioctl(s, s->irq_set_ioctl, &event)` 系统调用将中断传到 kvm 中，再由 kvm 根据前面分析的中断路由表注入到 guestos 中。`s->irq_set_ioctl` 会设置成 `KVM_IRQ_LINE_STATUS` 。
 
 ```c
 int kvm_set_irq(KVMState *s, int irq, int level)
@@ -1286,7 +1286,7 @@ int kvm_set_irq(KVMState *s, int irq, int level)
 #23 0x00007ffff6678163 in clone () from /lib/x86_64-linux-gnu/libc.so.6
 ```
 
-解释一下就是 `kvm_cpu_exec` 在调用 `ioctl(KVM_RUN)` 进入到 KVM 执行后，**KVM 遇到了不能处理的事情（在这里是 I/O 访问），返回到 QEMU 执行，QEMU 在执行完 I/O 操作后通过 pic 中断通过 KVM I/O 的活我这边处理完了，剩下了你自己搞定**。下面就是 KVM 怎样处理从 QEMU 传入的中断。
+解释一下就是 `kvm_cpu_exec` 在调用 `ioctl(KVM_RUN)` 进入到 KVM 执行后，**KVM 遇到了不能处理的事情（在这里是 I/O 访问），返回到 QEMU 执行，QEMU 在执行完 I/O 操作后通过 pic 中断通知 KVM I/O 的活我这边处理完了，剩下了你自己搞定**。下面就是 KVM 怎样处理从 QEMU 传入的中断。
 
 KVM 在 `kvm_vm_ioctl` 中处理所有的虚拟机有关的系统调用，在 `KVM_IRQ_LINE_STATUS` 中处理中断。
 
