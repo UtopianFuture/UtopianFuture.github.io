@@ -637,7 +637,7 @@ EXPORT_SYMBOL(alloc_pages);
      }
      ```
 
-     内存管理去修饰符使用 gfp_mask 的低 4 位来表示，
+     内存管理区修饰符使用 `gfp_mask` 的低 4 位来表示，
 
      ```c
      enum zone_type {
@@ -1033,7 +1033,7 @@ EXPORT_SYMBOL(alloc_pages);
 
 首先物理页面都是存放在 zone 中的 `free_area` 中，伙伴系统将所有的空闲页框分组为 11 个块链表，每个块链表分别包含大小为 1、2、4、8、16、32、64、128、256、512 和 1024 个连续页框的页框块。内核可以使用多个接口来申请物理页面，这些接口最后都是调用 `__alloc_pages`。`__alloc_pages` 首先会进行分配前的准备工作，比如设置第一个 zone（大部分情况下从第一个 zone 中分配页面），设置分配掩码等等，而后调用 `get_page_from_freelist`。`get_page_from_freelist` 会遍历所有 zone，检查该 zone 的 watermark 是否满足要求，**watermark 是伙伴系统用来提高分配效率的机制**，每个 zone 都有 3 个 watermark，根据这些 watermark 在适当的时候做页面回收等工作。如果该 zone 的 watermark 满足要求，就调用 `rmqueue` 去分配物理页面。这里又根据需要分配页面的大小采用不同的分配策略。如果 `order == 0`，即只需要分配 1 个页面（内核大部分情况是这样的），那么直接调用 `rmqueue_pcplist` -> `__rmqueue_pcplist` 使用 `per_cpu_pages` 中的每 CPU 页框高速缓存来分配，这样就不需要使用 zone 的锁，提高效率。当然，如果每 CPU 页框高速缓存如果也没有物理页面了，那么还是先需要通过 `rmqueue_bulk` -> `__rmqueue` 来增加页面列表的。如果需要分配多个物理页面，那么就需要通过 `__rmqueue_smallest` 来分配页面。这个分配流程就很简单了，从 `free_area` 的第 `order`  个块链表开始遍历， 知道找到符合条件的块链表。
 
-我觉得整个分配流程到不难，**难的是要考虑到各种应用场景，理解如果设置分配掩码**，理解如何根据 zone 的 watermark 去进行空间回收。不过这些现在还没有时间去学习，之后有需要再进一步分析。
+我觉得整个分配流程到不难，**难的是要考虑到各种应用场景，理解如何设置分配掩码**，理解如何根据 zone 的 watermark 去进行空间回收。不过这些现在还没有时间去学习，之后有需要再进一步分析。
 
 ##### 释放页框
 
@@ -1283,7 +1283,7 @@ struct kmem_cache_node {
   	spinlock_t list_lock;
 
   #ifdef CONFIG_SLAB
-    // 这里需要理解，slab 分配器其实就是一个 page，上面也分析过，page 结构体中有专门支持 slab 机制的变量
+    // 这里需要理解，slab 分配器其实就是一个或多个 page，上面也分析过，page 结构体中有专门支持 slab 机制的变量
     // 所谓满的、部分满的、空的 slab 分配器，其实就是该 page 中的空闲对象的数量
     // 新创建的 slab 分配器都需要插入这 3 个链表之一
     // 而这 3 个链表又属于某一个 slab 描述的 slab 节点
@@ -2123,7 +2123,7 @@ static struct page *kmem_getpages(struct kmem_cache *cachep, gfp_t flags,
 
 上文提到管理区可以看作一个 freelist 数组，数组的每个成员大小为 1 字节，每个成员管理一个 slab 对象。这里我们看看 freelist 是怎样管理 slab 分配器中的对象的。
 
-在 [分配 slab 对象](#分配slab对象)中介绍到 `cache_alloc_refill` 会判断本地/共享对象缓冲池中是否有空闲对象，如果没有的话就需要调用 `cache_grow_begin` 创建一个新的 slab 分配器。而在 `cache_init_objs` 中会把管理区中的 `freelist` 数组按顺序标号。
+在[分配 slab 对象](#分配slab对象)中介绍到 `cache_alloc_refill` 会判断本地/共享对象缓冲池中是否有空闲对象，如果没有的话就需要调用 `cache_grow_begin` 创建一个新的 slab 分配器。而在 `cache_init_objs` 中会把管理区中的 `freelist` 数组按顺序标号。
 
 ![freelist_init_state.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/freelist_init_state.png?raw=true)
 
@@ -2287,7 +2287,7 @@ void *__vmalloc_node(unsigned long size, unsigned long align,
 }
 ```
 
-vmalloc 分配的空间在 [内存分布](# 内存分布) 小节中的图中有清晰的说明（不同架构的内存布局是不一样的，因为这篇文章的时间跨度较大，参考多本书籍，所以混合了 arm 内核、Loongarch 内核和 x86 内核的源码，这是个问题，之后要想想怎么解决。在 64 位 x86 内核中，该区域为 `0xffffc90000000000 ~ 0xffffe8ffffffffff`）。
+`vmalloc` 分配的空间在[内存分布](# 内存分布)小节中的图中有清晰的说明（不同架构的内存布局是不一样的，因为这篇文章的时间跨度较大，参考多本书籍，所以混合了 arm 内核、Loongarch 内核和 x86 内核的源码，这是个问题，之后要想想怎么解决。在 64 位 x86 内核中，该区域为 `0xffffc90000000000 ~ 0xffffe8ffffffffff`）。
 
 1. vmalloc 的核心功能都是在 `__vmalloc_node_range` 函数中实现的。分配内存套路都是一样的，先分配虚拟地址，再根据需要决定是否要分配物理地址，最后建立映射。
 
@@ -2380,7 +2380,7 @@ vmalloc 分配的空间在 [内存分布](# 内存分布) 小节中的图中有�
    }
    ```
 
-   - `alloc_vmap_area` 负责分配 vmalloc 区域。其在 vmalloc 区域中查找一块大小合适的并且没有使用的空间，这段空间称为缝隙（hole）。
+   - `alloc_vmap_area` 负责分配 vmalloc 区域。其**在 vmalloc 区域中查找一块大小合适的并且没有使用的空间**，这段空间称为缝隙（hole）。
      - 从 vmalloc 区域的起始位置 `VMALLOC_START` 开始，首先从红黑树 `vmap_area_root` 上查找，这棵树存放着系统正在使用的 vmalloc 区域，遍历左叶子节点寻找区域地址最小的区域。如果区域的开始地址等于 `VMALLOC_START` ，说明这个区域是第一个 vmalloc 区域；如果红黑树没有一个节点，说明整个 vmalloc 区域都是空的。
      - 从 `VMALLOC_START` 开始查找每个已存在的 vmalloc 区域的缝隙能够容纳目前申请的大小。如果已有的 vmalloc 区域的缝隙不能容纳，那么从最后一块 vmalloc 区域的结束地址开辟一个新的 vmalloc 区域。
      - 找到新的区域缝隙后，调用 `insert_vmap_area` 将其注册到红黑树。
@@ -2566,7 +2566,7 @@ struct mm_struct {
 
 #### VMA
 
-VMA 描述的是进程用 mmap，malloc 等函数分配的地址空间，或者说它描述的是进程地址空间的一个区间。所有的 `vm_area_struct` 构成一个单链表和一颗红黑树，通过 `mm_struct` 就可以找到所有的 `vm_area_struct`，再结合虚拟地址就可以找到对应的 `vm_area_struct`。
+VMA 描述的是进程用 mmap，malloc 等函数分配的地址空间，或者说它**描述的是进程地址空间的一个区间**。所有的 `vm_area_struct` 构成一个单链表和一颗红黑树，通过 `mm_struct` 就可以找到所有的 `vm_area_struct`，再结合虚拟地址就可以找到对应的 `vm_area_struct`。
 
 有个问题，VMA 如何和物理地址建立映射？
 
@@ -2667,7 +2667,7 @@ malloc 函数是标准 C 库封装的一个核心函数，C 标准库最终会�
    	__SYSCALL_DEFINEx(x, sname, __VA_ARGS__)
    ```
 
-   所有的系统调用展开后的地址都会保存在系统调用表 sys_call_table 中。
+   所有的系统调用展开后的地址都会保存在系统调用表 `sys_call_table` 中。
 
    brk 系统调用最后展开成 `__do_sys_brk`，
 
@@ -2965,7 +2965,7 @@ malloc 函数是标准 C 库封装的一个核心函数，C 标准库最终会�
    }
    ```
 
-5. `follow_page_mask` 主要用于遍历页表并返回物理页面的 page 数据结构，这个应该比较复杂，但也是核心函数，之后再分析。这里有个问题，就是遍历页表不是由 MMU 做的，为什么这里还要用软件遍历？
+5. `follow_page_mask` 主要用于遍历页表并返回物理页面的 page 数据结构，这个应该比较复杂，但也是核心函数，之后再分析。这里有个问题，就是遍历页表不是由 MMU 做的，为什么这里还要用软件遍历？这里并不是访存，所以不会用到 MMU。
 
 简单总结一下 malloc 的操作流程。标准 C 库函数 malloc 最后使用的系统调用是 brk，传入的参数只有 brk 的结束地址，用这个地址和`mm -> brk` 比较，确定是释放内存还是分配内存。而需要分配内存的大小为 `newbrk-oldbrk`，这里 `newbrk` 就是传入的参数，`oldbrk` 是` mm -> brk`。brk 系统调用申请的内存空间貌似都是 `0x21000`。同时根据传入的 brk 在 VMA 的红黑树中寻找是否存在已经分配的内存块，如果有的话那么就不需要从新分配，否则就调用 `do_brk_flags` 分配新的 VMA，然后进行初始化，更新该进程的 `mm`。这样来看就是创建一个 VMA嘛，物理空间都是发生 #PF 才分配的。
 
@@ -3274,7 +3274,8 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 
 	...
 
-	entry = mk_pte(page, vma->vm_page_prot); // 基于分配的物理页面设置新的 PTE
+    // 基于分配的物理页面设置新的 PTE，这里就是建立物理地址和虚拟地址的映射关系
+	entry = mk_pte(page, vma->vm_page_prot);
 	entry = pte_sw_mkyoung(entry);
 	if (vma->vm_flags & VM_WRITE)
 		entry = pte_mkwrite(pte_mkdirty(entry));
@@ -4340,6 +4341,27 @@ out:
 `balance_pgdat` -> `kswapd_shrink_node` -> `shrink_node`
 
 该函数用于扫描内存节点中所有可回收的页面。
+
+#### 回收页面类型
+
+那么接下来考虑一个问题，哪些页面会被回收？
+
+属于内核的大部分页框是不能回收的，包括内核栈，内核的代码段，内核数据段等，**kernel主要对进程使用的内存页进行回收**，主要包括如下页面：
+
+- 进程堆、栈、数据段使用的匿名页： 存放到 swap 分区中；
+- 进程代码段映射的可执行文件的文件页： 直接释放；
+- 打开文件进行读写使用的文件页： 如果页中数据与文件数据不一致，则进行回写到磁盘对应文件中，如果一致，则直接释放；
+- 进行文件映射 mmap 共享内存时使用的页： 如果页中数据与文件数据不一致，则进行回写到磁盘对应文件中，如果一致，则直接释放；
+- 进行匿名 mmap 共享内存时使用的页： 存放到 swap 分区中；
+- 进行 shmem 共享内存时使用的页：存放到 swap 分区中；
+
+可以看出， 内存回收的时候，会筛选出一些不经常使用的文件页或匿名页，针对上述不同的内存页，有两种处理方式：
+
+- 直接释放。 如进程代码段的页，这些页是只读的；干净的文件页（文件页中保存的内容与磁盘中文件对应内容一致）
+
+- 将页回写后再释放。匿名页直接将它们写入到swap分区中；脏页（文件页保存的数据与磁盘中文件对应的数据不一致）需要先将此文件页回写到磁盘中对应数据所在位置上。
+
+  由此可见，如果系统没有配置 swap 分区，那么只有文件页能被回收。
 
 ### 页面迁移
 
