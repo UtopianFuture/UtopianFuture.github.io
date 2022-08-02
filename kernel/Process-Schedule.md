@@ -598,7 +598,7 @@ static __always_inline struct task_struct *get_current(void)
 
 #### 内核线程
 
-内核线程就是运行在内核地址空间的进程，它**没有独立的进程地址空间**，所有的内核线程都共享内核地址空间，即 `task_struct` 结构中的 `mm_struct` 指针设为 null。但内核线程也和普通进程一样参与系统调度。
+内核线程就是运行在内核地址空间的进程，它**没有独立的进程地址空间，所有的内核线程都共享内核地址空间**，即 `task_struct` 结构中的 `mm_struct` 指针设为 null。但内核线程也和普通进程一样参与系统调度。
 
 ### 进程创建与终止
 
@@ -634,7 +634,7 @@ SYSCALL_DEFINE0(fork)
 
 ##### vfork
 
-和  `fork` 类似，但是 `vfork` 的**父进程会一直阻塞**，直到子进程调用 `exit` 或 `execve` 为止，其可以避免复制父进程的页表项。
+和  `fork` 类似，但是 `vfork` 的**父进程会一直阻塞**，直到子进程调用 `exit` 或 `execve` 为止，其可以**避免复制父进程的页表项**。
 
 ```c
 #ifdef __ARCH_WANT_SYS_VFORK
@@ -694,7 +694,7 @@ SYSCALL_DEFINE5(clone, unsigned long, clone_flags, unsigned long, newsp,
 
 ##### 关键函数 kernel_clone
 
-在 5.15 的内核中，这些创建用户态进程和内核线程的接口最后都是调用 `kernel_clone`，只是传入的参数不一样。和书中介绍的不一样，5.15 的内核传入 `kernel_clone` 的参数是 `kernel_clone_args`，而不是之前的多个型参。
+在 5.15 的内核中，这些创建用户态进程和内核线程的接口最后都是调用 `kernel_clone`，只是传入的参数不一样。和书中介绍的不一样，5.15 的内核传入 `kernel_clone` 的参数是 `kernel_clone_args`，而不是之前的多个形参。
 
 ```c
 struct kernel_clone_args {
@@ -709,7 +709,7 @@ struct kernel_clone_args {
 	pid_t *set_tid;
 	/* Number of elements in *set_tid */
 	size_t set_tid_size;
-	int cgroup; // 这个应该是虚拟化支持的一种机制，之后再分析
+	int cgroup; // 这个是虚拟化支持的一种机制，之后再分析
 	int io_thread;
 	struct cgroup *cgrp;
 	struct css_set *cset;
@@ -1411,12 +1411,12 @@ int copy_thread(unsigned long clone_flags, unsigned long sp, unsigned long arg,
 |   CFS    | SCHED_NORMAL、 SCHED_BATCH、 SCHED_IDLE |         普通进程。优先级为 100 ~ 139         |                        由 CFS 来调度                         |
 |   idle   |                   无                    |               最低优先级的进程               | 当继续队列中没有其他进程时进入 idle 调度类。idle 调度类会让 CPU 进入低功耗模式 |
 
-- `SCHED_DEADLINE`：限期进程调度策略，使 task 选择Deadline调度器来调度运行；
+- `SCHED_DEADLINE`：限期进程调度策略，使 task 选择 Deadline 调度器来调度运行；
 - `SCHED_FIFO`：实时进程调度策略，先进先出调度没有时间片，没有更高优先级的情况下，只能等待主动让出 CPU；
 - `SCHED_RR`：实时进程调度策略，时间片轮转，进程用完时间片后加入优先级对应运行队列的尾部，把 CPU 让给同优先级的其他进程；
-- `SCHED_NORMAL`：普通进程调度策略，使 task 选择CFS调度器来调度运行；
-- `SCHED_BATCH`：普通进程调度策略，批量处理，使 task 选择CFS调度器来调度运行；
-- `SCHED_IDLE`：普通进程调度策略，使 task 以最低优先级选择CFS调度器来调度运行；
+- `SCHED_NORMAL`：普通进程调度策略，使 task 选择 CFS 调度器来调度运行；
+- `SCHED_BATCH`：普通进程调度策略，批量处理，使 task 选择 CFS 调度器来调度运行；
+- `SCHED_IDLE`：普通进程调度策略，使 task 以最低优先级选择 CFS 调度器来调度运行；
 
 #### 经典调度算法
 
