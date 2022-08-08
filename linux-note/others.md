@@ -661,6 +661,21 @@ For instance, a disk-driver that is needed to access the hard drive might have f
 
 Another distinct possibility is that **the file system has become corrupt**. In this case, you may need to try to boot the machine into a "recovery mode" *(depending on your distro),* or boot from a DVD or memory-stick. For instance, the startup menu on the installation disk for most Linux distros contains a "recovery" option which will attempt to check for and fix errors on the boot drive. Boot the system from that DVD and select this option. Any unexplained mis-behavior of a disk drive is also a strong indication that the drive may very soon need to be replaced.
 
+### 用户态和内核态切换
+
+- 系统调用
+  这是用户态进程主动要求切换到内核态的一种方式，用户态进程通过系统调用申请使用操作系统提供的服务程序完成工作，比如`fork()` 实际上就是执行了一个创建新进程的系统调用。而系统调用的机制其核心还是使用了操作系统为用户特别开放的一个中断来实现，例如 Linux 的 `int 0x80h` 中断。
+  系统调用实质上是一个中断，而汇编指令 `int` （软中断）就可以实现用户态向内核态切换，`iret` 实现内核态向用户态切换。
+
+- 异常
+  当 CPU 在执行运行在用户态下的程序时，发生了某些事先不可知的异常，这时会触发由当前运行进程切换到处理此异常的内核相关程序中，也就转到了内核态，比如**缺页异常**。
+
+- 外围设备的中断
+  当外围设备完成用户请求的操作后，会向 CPU 发出相应的中断信号，这时 CPU 会暂停执行下一条即将要执行的指合转而去执行与中断信号对应的处理程序，**如果先前执行的指合是用户态下的程序，那么这个转换的过程自然也就发生了由用户态到内核态的切换**。比如硬盘读写操作完成，系统会切换到硬盘读写的中断处理程序中执行后续操作等。
+  这3种方式是系统在运行时由用户态转到内核态的最主要方式，其中系统调用可以认为是用户进程主动发起的，异常和外围设备中断则是被动的。
+
+而当 CPU 处于内核态，可以随意进入用户态。
+
 ### 系统态和用户态
 
 You can tell if you're in user-mode or kernel-mode from the privilege level set **in the code-segment register (CS)**. Every instruction loaded into the CPU from the memory pointed to by the RIP(EIP) will read from the segment described in the global descriptor table (GDT) by the **current code-segment descriptor**. **The lower two-bits of the code segment descriptor will determine the current privilege level that the code is executing at**. When a syscall is made, which is typically done through a software interrupt, the CPU will check the current privilege-level, and if it's in user-mode, will exchange the current code-segment descriptor for a kernel-level one as determined by the syscall's software interrupt gate descriptor, as well as **make a stack-switch and save the current flags, the user-level CS value and RIP value on this new kernel-level stack**. When the syscall is complete, the user-mode CS value, flags, and instruction pointer (EIP or RIP) value are restored from the kernel-stack, and a stack-switch is made back to the current executing processes' stack.
@@ -679,7 +694,7 @@ TLB 很熟悉了，就不再分析。主要介绍一下 table walk unit。
 
 ### .bss 段清 0
 
-根据 C 语法的规定，**局部变量**不设置初始值的时候，其初始值是不确定的，局部变量（不含静态局部变量）的存储位置位于栈上，具体位置不固定。**全局变量（和静态局部变量）**存储在 .bss 段，初始值是 0，所以所有的进程在加载到内核执行时都要将 .bss 段清 0。
+根据 C 语法的规定，**局部变量**不设置初始值的时候，其初始值是不确定的，**局部变量（不含静态局部变量）的存储位置位于栈上**，具体位置不固定。**未初始化的全局变量（和静态局部变量）**存储在 .bss 段，初始值是 0，所以所有的进程在加载到内核执行时都要将 .bss 段清 0，而初始化国的全局变量和静态全局/局部变量存储在 .data 段。
 
 早期的计算机存储设备是很贵的，而很多时候，数据段里的全局变量都是 0（或者没有初始值），那么存储这么多的 0 到目标文件里其实是没有必要的。所以为了节约空间，在生成目标文件的时候，就**把没有初始值（实际就是 0）的数据段里的变量都放到 BSS 段里**，这样目标文件就不需要那么大的体积里（节约磁盘空间）。只有当目标文件被载入的时候，加载器负责把 BSS 段清零（一个循环就可以搞定）。
 
@@ -979,3 +994,10 @@ Linux下硬中断是可以嵌套的，但是没有优先级的概念，也就是
 
 - volatile
   确保编译器不会帮你对 `volatile`进行优化，让一切判断如你预期的执行。
+
+### 程序的各个区域
+
+堆：堆允许程序在运行时动态地申请某个大小的内存。一般由程序员分配释放，如 `malloc` 和 `free`，需要仔细维护，不然会导致堆栈溢出；
+栈：**由编译器自动分配释放**，存放函数的参数值，局部变量等值；
+静态存储区 ：一定会存在且不会消失，这样的数据包括常量、常变量（const 变量）、静态变量、全局变量等；
+常量存储区：常量占用内存，只读状态，决不可修改，常量字符串就是放在这里的。
