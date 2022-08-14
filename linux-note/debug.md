@@ -200,3 +200,5 @@
     ```
     (gdb) python [gdb.execute('cb') for x in range(1000000)]
     ```
+
+22. set scrollbind 可以设置两个 vim 同时滚动，当然这两个窗口都要设置，set noscrollbind 取消同步滚动。
