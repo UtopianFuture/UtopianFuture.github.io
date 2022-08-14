@@ -8,7 +8,8 @@
 - [Memory Management](./kernel/Memory-Management.md)
 - [Process Schedule](./kernel/Process-Schedule.md)
 - 🚧[File System](./kernel/File-System.md)
-- [Interrupt](./kernel/Interrupt.md)
+- 🚧[Concurrency and Synchronization](./kernel/Concurrency-Synchronization)
+- 🚧[Interrupt Management](./kernel/Interrupt-Management.md)
 - [From keyboard to Display](./kernel/From-keyboard-to-Display.md)
 - [start_kernel](./kernel/start_kernel.md)
 - [kernel init](./kernel/kernel_init.md)
@@ -30,6 +31,7 @@
 - [QEMU qom](./virtualization/QEMU-qom.md)
 - [QEMU Timer](./virtualization/QEMU-timer.md)
 - [QEMU tlb](./virtualization/QEMU-tlb.md)
+- 🚧[QEMU lock](./virtualization/QEMU-lock)
 - 🚧[Live migration](./virtualization/Live-Migration.md)
 - [Port serial to BMBT](./virtualization/port-serial.md)
 
