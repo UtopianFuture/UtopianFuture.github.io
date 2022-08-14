@@ -56,7 +56,7 @@
     - [历史累计衰减时间](#历史累计衰减时间)
     - [负载贡献](#负载贡献)
     - [sched_avg](#sched_avg)
-
+- [创建并运行新进程](#创建并运行新进程)
 - [Reference](#Reference)
 
 ### 基本概念
@@ -1848,7 +1848,7 @@ DEFINE_SCHED_CLASS(fair) = {
 
 #### 进程创建中的相关初始化
 
-[关键函数copy_process](#关键函数copy_process) 中介绍了通过 `clone`, `vfork`, `fork` 等系统调用创建进程的过程，在创建的过程中也会初始化进程调度相关的数据结构。
+[关键函数 copy_process](#关键函数copy_process) 中介绍了通过 `clone`, `vfork`, `fork` 等系统调用创建进程的过程，在创建的过程中也会初始化进程调度相关的数据结构。
 
 ```c
 static __latent_entropy struct task_struct *copy_process(
@@ -3319,6 +3319,32 @@ struct sched_avg {
 这两部分对现在的我来说都过于深入，与其花时间学习这些现在不太可能用到的东西不如先把上面这些基础的知识搞懂。所以这两部分暂时不分析，之后有需要再看。下一步把内存管理和进程调度没有搞懂的地方用 gdb + qemu 深入分析，然后再看看文件系统。
 
 ### 绿色节能调度器
+
+### 创建并运行新进程
+
+最后我们分析一下系统是怎样创建一个新进程并进行进程切换然后运行的。
+
+![create_and_run.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/create_and_run.png?raw=true)
+
+其中具体流程如下：
+
+- shell 程序会调用系统调用 fork() 来创建一个新的进程
+- 使用 do_fork() 创建新进程
+  - 创建新进程的 `task_struct` 数据结构
+  - 复制父进程的 `task_struct` 数据结构到新进程
+  - 复制父进程的相关页表到新进程
+  - 设置新进程的内核栈
+- 父进程调用 `wake_up_new_task` 尝试唤醒新进程
+  - 调用调度类的 `select_task_rq`，为新进程寻找一个负载最轻的 CPU，这里是 CPU1
+  - 调度类的 `enqueue_task` 把新进程添加到该 CPU 的就绪队列中
+- CPU1 选择合适的进程运行
+  - 每次时间片耗尽或在**阻塞操作**中，如使用互斥量（mutex）、信号量（semaphore）、等待队列（waitqueue）等，以及在**中断返回前和系统调用返回用户空间时**会执行 `schedule` 函数来检查是否需要重新调度。`schedule` 会调用 `pick_next_task` 来选择下一个最合适的进程
+  - `switch_mm` 切换父进程和新进程的页表
+  - `switch_to` 切换新进程
+- 运行新进程
+  - 新进程第一次运行时会调用 `ret_from_fork`，其他情况是从上次中断位置的下一条指令开始运行。
+  - 返回用户空间运行 shell 程序
+  - shell 程序调用 exec() 系统调用来运行 test 程序，最后新进程变成了 test 进程
 
 ### 疑问
 
