@@ -1,5 +1,7 @@
 ## File System
 
+文件系统我觉得是三个部分中最难的，可能是因为《奔跑吧 linux》降低了学习成本。但我也觉得这部分非常有用，有意思，在开发过程中，常常不能理解各种挂载，格式化操作，所以系统的学习这部分。
+
 ### 虚拟文件系统
 
 虚拟文件系统（Virtual Filesystem Switch）所隐含的思想是把表示很多不同种类文件系统的共同信息放入内核，其中有一个字段或函数来支持内核所支持的所有实际文件系统所提供的任何操作。对所调用的每个读、写或者其他函数，内核都能将其替换成本地文件系统的实际函数。
@@ -14,25 +16,25 @@ VFS 支持的文件系统可以分成三种主要类型：
 
 VFS 为了支持尽可能多的文件系统，引入了一个通用的文件模型，要实现每个具体的文件系统，必须将其物理组织结构转换为虚拟文件系统的通用文件模型。
 
-应用程序对 `read()` 的调用引起内核调用相应的 `sys_read()` 系统调用，而文件再内核中是用 `struct file` 表示的，`file` 中包含成员变量 `f_op`，该成员变量包含指向实际文件系统的函数指针，包括读写文件的函数，`sys_read()` 找到该函数的指针，并调用它。
+应用程序对 `read()` 的调用引起内核调用相应的 `sys_read()` 系统调用，而文件在内核中是用 `struct file` 表示的，`file` 中包含成员变量 `f_op`，该成员变量包含指向实际文件系统的函数指针，包括读写文件的函数，`sys_read()` 找到该函数的指针，并调用它。
 
 通用文件模型由下列对象类型组成：
 
 - 超级块对象（superblock object）
 
-  存放以安装文件系统的有关信息。基于磁盘的文件系统，这类对象通常对应于存放在磁盘上的文件系统控制块（filesystem control block）。
+  存放以安装文件系统的有关信息。基于磁盘的文件系统，这类对象通常对应于存放在磁盘上的文件系统控制块（filesystem control block）。在内核中的数据结构为 [super_block](#super_block)。
 
 - 索引节点对象（inode object）
 
-  存放具体文件的信息，每个索引节点都有一个索引节点号，**这个节点号唯一地表示文件系统中的文件**。
+  存放具体文件的信息，每个索引节点都有一个索引节点号，**这个节点号唯一地表示文件系统中的文件**。在内核中的数据结构为 [inode](#inode)。
 
 - 文件对象（file object）
 
-  存放打开文件域进程之间进行交互的有关信息，这类信息仅当进程访问文件期间存在内核内存中。
+  存放打开文件域进程之间进行交互的有关信息，这类信息仅当进程访问文件期间存在内核内存中。在内核中的数据结构为 [files_struct](#files_struct)。
 
 - 目录项对象（dentry object）
 
-  存放目录项（文件的特定名称）域对应文件进行链接的有关信息。
+  存放目录项（文件的特定名称）域对应文件进行链接的有关信息。在内核中的数据结构为 [dentry](#dentry)。
 
 下面我们看看进程怎样与文件进行交互。三个不同的进程已经打开同一个文件，其中两个进程使用同一个硬链接，这样每个进程都有自己的文件对象，但只需要两个目录项对象，每个硬链接对应一个目录项，这两个目录项指向同一个索引节点，该索引节点表示超级块以及随后的普通磁盘文件。
 
@@ -305,9 +307,9 @@ struct file {
 		struct llist_node	fu_llist; // 文件链表指针
 		struct rcu_head 	fu_rcuhead;
 	} f_u;
-	struct path		f_path; // 目录么
+	struct path		f_path; // 目录么。并不是，其报刊文件名和 inode 之间的关系和文件所在文件系统的有关信息
 	struct inode		*f_inode;	/* cached value */
-	const struct file_operations	*f_op;
+	const struct file_operations	*f_op; // 该文件的所有操作
 
 	/*
 	 * Protects f_ep, f_flags.
@@ -345,7 +347,7 @@ struct file {
 
 #### dentry
 
-VFS 把每个目录看作由若干个子目录和文件组成的一个普通的文件，当从实际的磁盘文件系统中读取目录项到内存时，VFS 会将其转换成基于 dentry 结构的一个目录项对象。对于进程查找的路径名中的每个分量，内核都为其**创建一个目录项对象**，目录项对象将每个分量与其对应的索引节点相联系。
+VFS 把每个目录看作由若干个子目录和文件组成的一个普通的文件，当从实际的磁盘文件系统中读取目录项到内存时，VFS 会将其转换成基于 dentry 结构的一个目录项对象。对于进程查找的路径名中的每个分量，内核都为其**创建一个目录项对象**，目录项对象将每个分量与其对应的索引节点相联系。可以这样理解 `struct dentry` 提供了文件名和 `inode` 之间的关联。
 
 ```c
 struct dentry {
@@ -370,7 +372,7 @@ struct dentry {
 		wait_queue_head_t *d_wait;	/* in-lookup ones only */
 	};
 	struct list_head d_child;	/* child of parent list */
-	struct list_head d_subdirs;	/* our children */
+	struct list_head d_subdirs;	/* our children */ // 子目录/文件的目录项链表
 	/*
 	 * d_alias and d_rcu can share memory
 	 */
@@ -391,7 +393,7 @@ struct dentry {
 
 #### fs_struct
 
-该数据结构维护进程当前的工作目录和根目录，`struct task_struct` 中的 `fs_struct fs` 就指向该结构。
+该数据结构**维护进程当前的工作目录和根目录**，`struct task_struct` 中的 `fs_struct fs` 就指向该结构。
 
 ```c
 struct fs_struct {
@@ -406,7 +408,7 @@ struct fs_struct {
 
 #### files_struct
 
-该数据结构表示进程当前打开的文件。
+该数据结构表示进程当前打开的文件。这个和 `struct file` 有什么区别？这个数据结构可以理解为打开文件表，而 `struct file` 则是表中的表项，表示具体的文件信息。
 
 ```c
 /*
@@ -483,6 +485,44 @@ Linux 使用系统的根文件系统（？），其由内核在引导阶段直�
 在传统的 Unix 系统中，只有一个已安装文件系统树：从系统的根文件系统开始，每个进程通过指定合适的路径名可以访问已安装文件系统中的任何文件。而从 Linux 2.6 开始，每个进程可以拥有自己的已安装文件系统树——进程的命名空间（namespace）。
 
 通常大多数进程共享一个命名空间，即位于系统的根文件系统且被 init 进程使用的已安装文件系统树。不过如果 `clone` 系统调用以 `CLONE_NEWS` 标志创建一个新进程，那么新进程将获取这个新的命名空间。
+
+#### 文件系统安装
+
+大多数类 Unix 系统中，每个文件系统只能安装一次，例如通过如下指令安装：
+
+```
+mount -t ext2 /dev/fd0 /flp // 将存放在 /dev/fd0 软盘上的 ext2 文件系统安装在 /flp 上
+```
+
+在没有 umount 之前，无法重复 mount。然后 Linux 不同，同一个文件系统被安装多次是可能的，也就是说该文件系统有多个安装点来访问，但只有一个 `super_block`。
+
+安装的文件系统形成一个层次：一个文件系统的安装点可能称为第二个文件系统的目录，而第二个文件系统的安装点又安装在第三个文件系统上。
+
+![filesystem_structre.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/filesystem_structre.png?raw=true)
+
+#### vfsmount
+
+这个数据结构是记录每个安装点的信息（这个地方没有弄懂）。
+
+```c
+struct vfsmount
+{
+	struct list_head mnt_hash;
+	struct vfsmount *mnt_parent;	/* fs we are mounted on */ // 指向父文件系统
+	struct dentry *mnt_mountpoint;	/* dentry of mountpoint */ // 该文件系统安装点目录的 dentry
+	struct dentry *mnt_root;	/* root of the mounted tree */
+	struct super_block *mnt_sb;	/* pointer to superblock */
+	struct list_head mnt_mounts;	/* list of children, anchored here */
+	struct list_head mnt_child;	/* and going through their mnt_child */
+	atomic_t mnt_count;
+	int mnt_flags;
+	int mnt_expiry_mark;		/* true if marked for expiry */ // 该文件系统已过期（什么叫过期？）
+	char *mnt_devname;		/* Name of device e.g. /dev/dsk/hda1 */
+	struct list_head mnt_list;
+	struct list_head mnt_fslink;	/* link in fs-specific expiry list */
+	struct namespace *mnt_namespace; /* containing namespace */
+};
+```
 
 #### 安装普通文件系统
 
