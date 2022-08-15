@@ -7,6 +7,8 @@
 - [Seabios source code analysis](./kernel/Analysis-Seabios.md)
 - [Memory Management](./kernel/Memory-Management.md)
 - [Process Schedule](./kernel/Process-Schedule.md)
+- [Time Subsystem](./kernel/Time-Subsystem.md)
+
 - 🚧[File System](./kernel/File-System.md)
 - 🚧[Concurrency and Synchronization](./kernel/Concurrency-Synchronization)
 - 🚧[Interrupt Management](./kernel/Interrupt-Management.md)
