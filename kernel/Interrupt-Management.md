@@ -14,13 +14,13 @@
 
 ### workqueue
 
-### 问题
+#### 问题
 
 - 面临什么问题内核需要使用 workqueue？
 - 内核怎样使用 workqueue？
 - workqueue 涉及到哪些设计思想？
 
-### 数据结构
+#### 数据结构
 
 workqueue 是内核里面很重要的一个机制，特别是内核驱动，**一般的小型任务 (work) 都不会自己起一个线程来处理，而是扔到 workqueue 中处理**。workqueue 的主要工作就是**用进程上下文来处理内核中大量的小任务**。
 
@@ -41,16 +41,176 @@ workqueue 允许内核函数被激活，挂起，稍后**由 worker thread 的�
 
 从代码中推测 `workqueue_struct` 表示一个工作队列；`pool_workqueue` 负责建立起 `workqueue` 和 `worker_pool` 之间的关系，`workqueue` 和 pwq 是一对多的关系，pwq 和 `worker_pool` 是一对一的关系；`work_struct` 表示挂起的函数，`worker` 是执行挂起函数的内核线程，一个 `worker` 对应一个 `work_thread`；`worker_pool` 表示所有用来执行 work 的 worker。
 
-可以看一下它们之间的拓扑图。
+先看看它们之间的拓扑图。
 
 ![workqueue.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/workqueue.png?raw=true)
 
-### worker_pool
+再分析这些数据结构：
+
+##### work_struct
+
+```c
+struct work_struct {
+	atomic_long_t data;
+	struct list_head entry;
+	work_func_t func;
+#ifdef CONFIG_LOCKDEP
+	struct lockdep_map lockdep_map;
+#endif
+};
+```
+
+##### worker
+
+```c
+struct worker {
+	/* on idle list while idle, on busy hash table while busy */
+	union {
+		struct list_head	entry;	/* L: while idle */
+		struct hlist_node	hentry;	/* L: while busy */
+	};
+
+	struct work_struct	*current_work;	/* L: work being processed */
+	work_func_t		current_func;	/* L: current_work's fn */
+	struct pool_workqueue	*current_pwq;	/* L: current_work's pwq */
+	unsigned int		current_color;	/* L: current_work's color */
+	struct list_head	scheduled;	/* L: scheduled works */
+
+	/* 64 bytes boundary on 64bit, 32 on 32bit */
+
+	struct task_struct	*task;		/* I: worker task */
+	struct worker_pool	*pool;		/* A: the associated pool */
+						/* L: for rescuers */
+	struct list_head	node;		/* A: anchored at pool->workers */
+						/* A: runs through worker->node */
+
+	unsigned long		last_active;	/* L: last active timestamp */
+	unsigned int		flags;		/* X: flags */
+	int			id;		/* I: worker id */
+	int			sleeping;	/* None */
+
+	/*
+	 * Opaque string set with work_set_desc().  Printed out with task
+	 * dump for debugging - WARN, BUG, panic or sysrq.
+	 */
+	char			desc[WORKER_DESC_LEN];
+
+	/* used only by rescuers to point to the target workqueue */
+	struct workqueue_struct	*rescue_wq;	/* I: the workqueue to rescue */
+
+	/* used by the scheduler to determine a worker's last known identity */
+	work_func_t		last_func;
+};
+```
+
+##### worker_pool
+
+```c
+struct worker_pool {
+	raw_spinlock_t		lock;		/* the pool lock */
+	int			cpu;		/* I: the associated cpu */
+	int			node;		/* I: the associated node ID */
+	int			id;		/* I: pool ID */
+	unsigned int		flags;		/* X: flags */
+
+	unsigned long		watchdog_ts;	/* L: watchdog timestamp */
+
+	struct list_head	worklist;	/* L: list of pending works */
+
+	int			nr_workers;	/* L: total number of workers */
+	int			nr_idle;	/* L: currently idle workers */
+
+	struct list_head	idle_list;	/* X: list of idle workers */
+	struct timer_list	idle_timer;	/* L: worker idle timeout */
+	struct timer_list	mayday_timer;	/* L: SOS timer for workers */
+
+	/* a workers is either on busy_hash or idle_list, or the manager */
+	DECLARE_HASHTABLE(busy_hash, BUSY_WORKER_HASH_ORDER);
+						/* L: hash of busy workers */
+
+	struct worker		*manager;	/* L: purely informational */
+	struct list_head	workers;	/* A: attached workers */
+	struct completion	*detach_completion; /* all workers detached */
+
+	struct ida		worker_ida;	/* worker IDs for task name */
+
+	struct workqueue_attrs	*attrs;		/* I: worker attributes */
+	struct hlist_node	hash_node;	/* PL: unbound_pool_hash node */
+	int			refcnt;		/* PL: refcnt for unbound pools */
+
+	/*
+	 * The current concurrency level.  As it's likely to be accessed
+	 * from other CPUs during try_to_wake_up(), put it in a separate
+	 * cacheline.
+	 */
+	atomic_t		nr_running ____cacheline_aligned_in_smp;
+
+	/*
+	 * Destruction of pool is RCU protected to allow dereferences
+	 * from get_work_pool().
+	 */
+	struct rcu_head		rcu;
+} ____cacheline_aligned_in_smp;
+```
 
 CMWQ 对 worker_pool 分成两类：
 
 - normal worker_pool，给通用的 workqueue 使用；
 - unbound worker_pool，给 WQ_UNBOUND 类型的的 workqueue 使用；
+
+##### pool_workqueue
+
+```c
+struct pool_workqueue {
+	struct worker_pool	*pool;		/* I: the associated pool */
+	struct workqueue_struct *wq;		/* I: the owning workqueue */
+	int			work_color;	/* L: current color */
+	int			flush_color;	/* L: flushing color */
+	int			refcnt;		/* L: reference count */
+	int			nr_in_flight[WORK_NR_COLORS];
+						/* L: nr of in_flight works */
+
+	/*
+	 * nr_active management and WORK_STRUCT_INACTIVE:
+	 *
+	 * When pwq->nr_active >= max_active, new work item is queued to
+	 * pwq->inactive_works instead of pool->worklist and marked with
+	 * WORK_STRUCT_INACTIVE.
+	 *
+	 * All work items marked with WORK_STRUCT_INACTIVE do not participate
+	 * in pwq->nr_active and all work items in pwq->inactive_works are
+	 * marked with WORK_STRUCT_INACTIVE.  But not all WORK_STRUCT_INACTIVE
+	 * work items are in pwq->inactive_works.  Some of them are ready to
+	 * run in pool->worklist or worker->scheduled.  Those work itmes are
+	 * only struct wq_barrier which is used for flush_work() and should
+	 * not participate in pwq->nr_active.  For non-barrier work item, it
+	 * is marked with WORK_STRUCT_INACTIVE iff it is in pwq->inactive_works.
+	 */
+	int			nr_active;	/* L: nr of active works */
+	int			max_active;	/* L: max active works */
+	struct list_head	inactive_works;	/* L: inactive works */
+	struct list_head	pwqs_node;	/* WR: node on wq->pwqs */
+	struct list_head	mayday_node;	/* MD: node on wq->maydays */
+
+	/*
+	 * Release of unbound pwq is punted to system_wq.  See put_pwq()
+	 * and pwq_unbound_release_workfn() for details.  pool_workqueue
+	 * itself is also RCU protected so that the first pwq can be
+	 * determined without grabbing wq->mutex.
+	 */
+	struct work_struct	unbound_release_work;
+	struct rcu_head		rcu;
+} __aligned(1 << WORK_STRUCT_FLAG_BITS);
+
+/*
+ * Structure used to wait for workqueue flush.
+ */
+struct wq_flusher {
+	struct list_head	list;		/* WQ: list of flushers */
+	int			flush_color;	/* WQ: flush color waiting for */
+	struct completion	done;		/* flush completion */
+};
+```
 
 #### normal worker_pool
 
@@ -67,6 +227,7 @@ $22 = (unsigned char *) 0xffff88810431f429 "a"
 #2  0xffffffff810c4a49 in process_one_work (worker=worker@entry=0xffff88810401ea80, work=0xffff888100a80008) at kernel/workqueue.c:2297
 #3  0xffffffff810c4c3d in worker_thread (__worker=0xffff88810401ea80) at kernel/workqueue.c:2444
 #4  0xffffffff810cc32a in kthread (_create=0xffff88810400aec0) at kernel/kthread.c:319
+// 中断返回后，接下来的任务由 worker 执行
 #5  0xffffffff81004572 in ret_from_fork () at arch/x86/entry/entry_64.S:295
 #6  0x0000000000000000 in ?? ()
 ```
@@ -298,7 +459,7 @@ struct task_struct *__kthread_create_on_node(int (*threadfn)(void *data),
 }
 ```
 
-### 执行场景
+#### 执行场景
 
 我们用类似甘特图的方式来描述 worker 在不同配置下的执行过程。
 
@@ -350,7 +511,7 @@ TIME IN MSECS	EVENT
  35		w2 wakes up and finishes
 ```
 
-### 案例分析
+### 中断案例分析
 
 这是测试 LA 内核的中断的小程序。
 
