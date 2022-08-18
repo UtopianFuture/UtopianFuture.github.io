@@ -83,6 +83,8 @@ struct KVMState
 
 `kvm_dev_ioctl` 向用户层 QEMU 提供 `ioctl` ，根据不同类型的请求提供不同的服务，如果是 `KVM_CREATE_VM` 就调用 `kvm_dev_ioctl_create_vm` 创建一个虚拟机，然后返回一个文件描述符到用户态，QEMU 用该描述符操作虚拟机。
 
+KVM 侧的实现之前没有详细分析，现在进一步分析。
+
 ```c
 static long kvm_dev_ioctl(struct file *filp,
 			  unsigned int ioctl, unsigned long arg)
@@ -242,25 +244,105 @@ static int kvm_dev_ioctl_create_vm(unsigned long type)
 		goto put_kvm;
 	}
 
-	/*
-	 * Don't call kvm_put_kvm anymore at this point; file->f_op is
-	 * already set, with ->release() being kvm_vm_release().  In error
-	 * cases it will be called by the final fput(file) and will take
-	 * care of doing kvm_put_kvm(kvm).
-	 */
-	if (kvm_create_vm_debugfs(kvm, r) < 0) {
-		put_unused_fd(r);
-		fput(file);
-		return -ENOMEM;
-	}
-	kvm_uevent_notify_change(KVM_EVENT_CREATE_VM, kvm);
+	...
 
-	fd_install(r, file);
 	return r;
 
 put_kvm:
 	kvm_put_kvm(kvm); // 创建失败，直接销毁
 	return r;
+}
+```
+
+#### kvm_create_vm
+
+这个创建虚拟机的关键函数，包括相关成员变量的初始化以及开启 vmx 模式。当然不同架构部分变量不一样，所以还有 `kvm_arch_init_vm` 来初始化架构相关的部分。
+
+```c
+static struct kvm *kvm_create_vm(unsigned long type)
+{
+	struct kvm *kvm = kvm_arch_alloc_vm(); // 调用 vmalloc 分配 kvm 结构体内存
+
+    ... // 初始化各种锁
+
+	refcount_set(&kvm->users_count, 1);
+	for (i = 0; i < KVM_ADDRESS_SPACE_NUM; i++) {
+		struct kvm_memslots *slots = kvm_alloc_memslots(); // 为虚拟机分配内存槽
+
+		if (!slots)
+			goto out_err_no_arch_destroy_vm;
+		/* Generations must be different for each address space. */
+		slots->generation = i;
+		rcu_assign_pointer(kvm->memslots[i], slots);
+	}
+
+	for (i = 0; i < KVM_NR_BUSES; i++) {
+		rcu_assign_pointer(kvm->buses[i],
+			kzalloc(sizeof(struct kvm_io_bus), GFP_KERNEL_ACCOUNT));
+		if (!kvm->buses[i])
+			goto out_err_no_arch_destroy_vm;
+	}
+
+	kvm->max_halt_poll_ns = halt_poll_ns;
+
+	r = kvm_arch_init_vm(kvm, type); // 架构相关的初始化
+	if (r)
+		goto out_err_no_arch_destroy_vm;
+
+	r = hardware_enable_all(); // 最终开启 VMX 模式
+	if (r)
+		goto out_err_no_disable;
+
+#ifdef CONFIG_HAVE_KVM_IRQFD
+	INIT_HLIST_HEAD(&kvm->irq_ack_notifier_list);
+#endif
+
+	r = kvm_init_mmu_notifier(kvm);
+	if (r)
+		goto out_err_no_mmu_notifier;
+
+	r = kvm_arch_post_init_vm(kvm);
+	if (r)
+		goto out_err;
+
+	...
+
+	return kvm;
+
+    ...
+}
+```
+
+```c
+static int hardware_enable(void)
+{
+	int cpu = raw_smp_processor_id();
+	u64 phys_addr = __pa(per_cpu(vmxarea, cpu));
+	int r;
+
+	if (cr4_read_shadow() & X86_CR4_VMXE)
+		return -EBUSY;
+
+	/*
+	 * This can happen if we hot-added a CPU but failed to allocate
+	 * VP assist page for it.
+	 */
+	if (static_branch_unlikely(&enable_evmcs) &&
+	    !hv_get_vp_assist_page(cpu))
+		return -EFAULT;
+
+	intel_pt_handle_vmx(1);
+
+	r = kvm_cpu_vmxon(phys_addr); // 设置 CR4_VMXE 位，同时调用 vmxon 开启 vmx
+	if (r) {
+		intel_pt_handle_vmx(0);
+		return r;
+	}
+
+	if (enable_ept) // 应该是打开 ept
+		ept_sync_global();
+
+	return 0;
 }
 ```
 
@@ -412,7 +494,7 @@ void qemu_init_vcpu(CPUState *cpu)
          * give it the default one.
          */
         cpu->num_ases = 1;
-        cpu_address_space_init(cpu, 0, "cpu-memory", cpu->memory);
+        cpu_address_space_init(cpu, 0, "cpu-memory", cpu->memory); // 这里只是创建变量，还没有初始化
     }
 
     /* accelerators all implement the AccelOpsClass */
@@ -467,7 +549,7 @@ static void *kvm_vcpu_thread_fn(void *arg)
 
     do {
         if (cpu_can_run(cpu)) {
-            r = kvm_cpu_exec(cpu); // 运行该 cpu
+            r = kvm_cpu_exec(cpu); // 运行该 cpu，然后应用层就阻塞在这里
             if (r == EXCP_DEBUG) {
                 cpu_handle_guest_debug(cpu);
             }
@@ -475,7 +557,7 @@ static void *kvm_vcpu_thread_fn(void *arg)
         qemu_wait_io_event(cpu); // 因为 QEMU 分为主线程和 I/O 线程，I/O 线程是用来处理设备读写的
     } while (!cpu->unplug || cpu_can_run(cpu));
 
-    kvm_destroy_vcpu(cpu); // 退出循环就之间销毁
+    kvm_destroy_vcpu(cpu); // 退出循环就直接销毁
     cpu_thread_signal_destroyed(cpu);
     qemu_mutex_unlock_iothread();
     rcu_unregister_thread();
@@ -511,10 +593,10 @@ int kvm_init_vcpu(CPUState *cpu, Error **errp)
     }
 
     cpu->kvm_run = mmap(NULL, mmap_size, PROT_READ | PROT_WRITE, MAP_SHARED,
-                        cpu->kvm_fd, 0);
+                        cpu->kvm_fd, 0); // 将 KVM 中 kvm 结构映射到 QEMU 的地址空间中，数据共享
     ...
 
-    ret = kvm_arch_init_vcpu(cpu);
+    ret = kvm_arch_init_vcpu(cpu); // 构建 cpuid 然后传给 kvm?
 
     ...
 
@@ -616,6 +698,8 @@ out:
 }
 ```
 
+#### kvm_vm_ioctl_create_vcpu
+
 ```c
 static int kvm_vm_ioctl_create_vcpu(struct kvm *kvm, u32 id)
 {
@@ -644,11 +728,11 @@ static int kvm_vm_ioctl_create_vcpu(struct kvm *kvm, u32 id)
 		r = -ENOMEM;
 		goto vcpu_free;
 	}
-	vcpu->run = page_address(page);
+	vcpu->run = page_address(page); // 这个信息是运行时信息？和 QEMU 共享的么
 
 	kvm_vcpu_init(vcpu, kvm, id); // 初始化 vcpu 中的变量
 
-	r = kvm_arch_vcpu_create(vcpu);
+	r = kvm_arch_vcpu_create(vcpu); // 架构相关
 	if (r)
 		goto vcpu_free_run_page;
 
@@ -689,9 +773,9 @@ static int kvm_vm_ioctl_create_vcpu(struct kvm *kvm, u32 id)
 }
 ```
 
-这里代码很清楚，`kvm_vcpu_init` 和 `kvm_arch_vcpu_create` 初始化 VCPU ，
+这里代码很清楚，`kvm_vcpu_init` 和 `kvm_arch_vcpu_create` 初始化 VCPU ，`kvm_vcpu_init` 就是初始化一些架构无关变量，最重要的应该是 `vcpu->kvm = kvm;` 和 `vcpu->vcpu_id = id;`，`kvm_arch_vcpu_create` 进行进一步的初始化，这其中涉及到很多关于 CPU 的性质的初始化，不懂，有需要再进一步了解。
 
- `kvm_vcpu_init` 就是初始化一些变量，最重要的应该是 `vcpu->kvm = kvm;` 和 `vcpu->vcpu_id = id;`，`kvm_arch_vcpu_create` 进行进一步的初始化，这其中涉及到很多关于 CPU 的性质的初始化，不懂，有需要再进一步了解。
+#### kvm_arch_vcpu_create
 
 ```c
 int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu)
@@ -707,7 +791,7 @@ int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu)
 		vcpu->arch.mp_state = KVM_MP_STATE_UNINITIALIZED;
 
     // 初始化 mmu，如 pte_list 之类的
-	r = kvm_mmu_create(vcpu);
+	r = kvm_mmu_create(vcpu); // 这个需要深入分析
 	if (r < 0)
 		return r;
 
@@ -747,7 +831,7 @@ int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu)
 	vcpu_load(vcpu);
 	kvm_set_tsc_khz(vcpu, max_tsc_khz);
 	kvm_vcpu_reset(vcpu, false);
-	kvm_init_mmu(vcpu);
+	kvm_init_mmu(vcpu); // 内存虚拟化的初始化，需要进一步分析
 	vcpu_put(vcpu);
 	return 0;
 
@@ -757,6 +841,8 @@ int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu)
 ```
 
 除了做进一步初始化的工作，`kvm_arch_vcpu_create` 在 X86 下会调用 `vmx_create_vcpu`，架构相关的数据都是在这里进行初始化，包括 VMCS 的设置。
+
+#### vmx_create_vcpu
 
 ```c
 static int vmx_create_vcpu(struct kvm_vcpu *vcpu)
@@ -772,7 +858,9 @@ static int vmx_create_vcpu(struct kvm_vcpu *vcpu)
 
 	err = -ENOMEM;
 
-    // 每个 vcpu 与 vpid 相关
+    // 每个 vcpu 与 vpid 相关联
+    // vpid 用于开启 ept 的情况，当进行 VCPU 的切换时就可以不用将 tlb 中的信息全部 flash
+
 	vmx->vpid = allocate_vpid();
 
 	...
@@ -783,7 +871,7 @@ static int vmx_create_vcpu(struct kvm_vcpu *vcpu)
 	}
 	if (boot_cpu_has(X86_FEATURE_RTM)) {
 		/*
-		 * TSX_CTRL_CPUID_CLEAR is handled in the CPUID interception.
+		 * TSX_CTRL_CPUID_CLEAR is handledj in the CPUID interception.
 		 * Keep the host value unchanged to avoid changing CPUID bits
 		 * under the host kernel's feet.
 		 */
@@ -804,7 +892,7 @@ static int vmx_create_vcpu(struct kvm_vcpu *vcpu)
 
     ...
 
-    //  loaded_vmcs 指向当前 VCPU 对应的 VMCS 区域， vmcs01 表示普通虚拟化，
+    // loaded_vmcs 指向当前 VCPU 对应的 VMCS 区域， vmcs01 表示普通虚拟化，
     // 如果是嵌套虚拟化，对应的是其他值。
 	vmx->loaded_vmcs = &vmx->vmcs01;
     // 获取当前 cpu
@@ -812,7 +900,7 @@ static int vmx_create_vcpu(struct kvm_vcpu *vcpu)
     // 将 vcpu 与当前 cpu 绑定
 	vmx_vcpu_load(vcpu, cpu);
 	vcpu->cpu = cpu;
-	init_vmcs(vmx); // 这两个函数是从 guest 切换到 host 的关键函数，如果向进一步了解 VMCS 可以从这里入手
+	init_vmcs(vmx); // 这两个函数是从 guest 切换到 host 的关键函数，如果想进一步了解 VMCS 可以从这里入手
 	vmx_vcpu_put(vcpu);
 	put_cpu();
 	if (cpu_need_virtualize_apic_accesses(vcpu)) {
@@ -898,7 +986,7 @@ int kvm_init_vcpu(CPUState *cpu, Error **errp)
 
 ### VCPU CPUID 构造
 
-`kvm_init_vcpu` 最后调用`kvm_arch_init_vcpu` 完成 VCPU 架构相关的初始化，大部分工作是构造虚拟机 VCPU 的 CPUID。通过 CPUID 虚拟机可以获得 CPU 的型号，具体性能参数等信息。
+`kvm_init_vcpu` 最后调用 `kvm_arch_init_vcpu` 完成 VCPU 架构相关的初始化，大部分工作是构造虚拟机 VCPU 的 CPUID。通过 CPUID 虚拟机可以获得 CPU 的型号，具体性能参数等信息。
 
 QEMU 命令行中指定 CPU 类型及其增加的或去掉的 CPU 特性，**QEMU 通过这些特性构造出一个 `cpuid_data`**，然后调用 VCPU 的`ioctl(KVM_SET_CPUID2)` 将构造的 CPUID 数据传到 KVM 中的 VCPU 相关的数据结构中，之后虚拟机内部执行 CPUID 指令会导致 VM Exit，然后陷入 KVM，KVM 会把数据返回给虚拟机。因为 CPUID 是特权指令，必须有 root 态下的内核进行处理。
 
@@ -1063,7 +1151,7 @@ int kvm_cpu_exec(CPUState *cpu)
 }
 ```
 
-`kvm_arch_pre_run` 首先做一些运行前的准备工作，如 `nmi` 和 `smi` 的[中断注入](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Interrupt-Virtualization.md)，之后使用 `ioctl(KVM_RUN)` 系统调用通知 KVM 使该 KVM 运行起来。KVM 模块在处理该 ioctl 时会执行对应的 vmx 指令，将 VCPU 运行的物理 CPU 从 `VMX root` 转换成 `VMX non-root` ，开始运行虚拟机中的代码。虚拟机内部如果产生 `VM Exit` ，就会退出到 KVM ，如果 KVM 无法处理就会分发到 QEMU ，也就是在 `ioctl(KVM_RUN)`  返回的时候调用 `kvm_arch_post_run` 进行初步的处理。然后根据共享内存 `kvm_run` （这个是第 5 节的内容）中的数据来判断退出原因，并进行处理。之后的 `switch` 就是处理 KVM 不能处理的问题。
+`kvm_arch_pre_run` 首先做一些运行前的准备工作，如 `nmi` 和 `smi` 的[中断注入](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/Interrupt-Virtualization.md)，之后使用 `ioctl(KVM_RUN)` 系统调用通知 KVM 使该 KVM 运行起来。KVM 模块在处理该 ioctl 时会执行对应的 vmx 指令，将 VCPU 运行的物理 CPU 从 `VMX root` 转换成 `VMX non-root` ，开始运行虚拟机中的代码。虚拟机内部如果产生 `VM Exit`（哪些情况会导致 vm exit），就会退出到 KVM ，如果 KVM 无法处理就会分发到 QEMU ，也就是在 `ioctl(KVM_RUN)`  返回的时候调用 `kvm_arch_post_run` 进行初步的处理。然后根据共享内存 `kvm_run` （这个是第 5 节的内容）中的数据来判断退出原因，并进行处理。之后的 `switch` 就是处理 KVM 不能处理的问题。
 
 接下来分析 `ioctl(KVM_RUN)` 是怎样在 kernel 中运行的。这个 `ioctl` 是在 `kvm_vcpu_ioctl` 中处理的，这个函数是专门处理 `VCPU ioctl` 的，和之前的两个处理函数不同（一个是处理 dev ，一个是处理 vm ）。
 
@@ -1257,7 +1345,7 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 		if (likely(exit_fastpath != EXIT_FASTPATH_REENTER_GUEST))
 			break;
 
-        if (unlikely(kvm_vcpu_exit_request(vcpu))) {
+        if (unlikely(kvm_vcpu_exit_request(vcpu))) { // 检查是否有需要注入 guest 的事件
 			exit_fastpath = EXIT_FASTPATH_EXIT_HANDLED;
 			break;
 		}
@@ -1271,7 +1359,7 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 	vcpu->mode = OUTSIDE_GUEST_MODE;
 	smp_wmb();
 
-	static_call(kvm_x86_handle_exit_irqoff)(vcpu);
+	static_call(kvm_x86_handle_exit_irqoff)(vcpu); // 先处理外部中断
 
 	/*
 	 * Consume any pending interrupts, including the possible source of
@@ -1288,16 +1376,15 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 
 	...
 
+    // 总的中断处理函数，在这里进行分发，下面分析，同时也给出了所有的中断处理函数
 	r = static_call(kvm_x86_handle_exit)(vcpu, exit_fastpath);
-	return r;
+	return r; // r <= 0 就需要返回到用户态进行处理
 
 	...
-
-	return r;
 }
 ```
 
-将这些 `request` 处理完并 `inject_pending_event` 之后就调用 `kvm_mmu_reload` 处理内存虚拟化相关的东西。然后就是 `kvm_x86_prepare_guest_switch` ，保存宿主机状态到 `VMCS` ，使虚拟机下次退出后能正常运行。
+将这些 `request` 处理完并 `inject_pending_event` 之后就调用 `kvm_mmu_reload` 处理内存虚拟化相关的东西。然后就是 `kvm_x86_prepare_guest_switch`，保存宿主机状态到 `VMCS` ，使虚拟机下次退出后能正常运行。
 
 之后就是 vmx 的 run 回调 —— `vmx_vcpu_run` ，这是一个巨长的函数，我没有搞懂，只关注目前有用的部分。
 
@@ -1339,7 +1426,7 @@ static fastpath_t vmx_vcpu_run(struct kvm_vcpu *vcpu)
 		return EXIT_FASTPATH_NONE;
 	}
 
-	vmx->exit_reason.full = vmcs_read32(VM_EXIT_REASON);
+	vmx->exit_reason.full = vmcs_read32(VM_EXIT_REASON); // 读取退出原因
 	if (unlikely((u16)vmx->exit_reason.basic == EXIT_REASON_MCE_DURING_VMENTRY))
 		kvm_machine_check();
 
@@ -1363,7 +1450,7 @@ static fastpath_t vmx_vcpu_run(struct kvm_vcpu *vcpu)
 }
 ```
 
-`vmx_vcpu_enter_exit` 最终会 `call vmx_vmenter` ，在这个汇编里使用 `vmlaunch` 指令切换到 guest mode
+`vmx_vcpu_enter_exit` 最终会 `call vmx_vmenter` ，在这个汇编里使用 `vmlaunch` 指令切换到 guest mode,
 
 ```c
 /**
@@ -1424,6 +1511,239 @@ static struct kvm_x86_ops vmx_x86_ops __initdata = {
 ```
 
 最后处理完中断后根据 `vcpu_enter_guest` 的返回值判断是否需要返回到 QEMU ，如果 `vcpu_enter_guest` 返回值小于等于 0 ，会导致退出循环，进而该 `ioctl` 返回到用户态 QEMU ，如果返回 1 ，则 KVM 能处理，继续下一轮执行。
+
+我们进一步分析有哪些原因导致 guest 退出，同时是怎样处理的，VMX 的中断处理回调函数为 `vmx_handle_exit`，
+
+```c
+/*
+ * The guest has exited.  See if we can fix it or if we need userspace
+ * assistance.
+ */
+static int __vmx_handle_exit(struct kvm_vcpu *vcpu, fastpath_t exit_fastpath)
+{
+	struct vcpu_vmx *vmx = to_vmx(vcpu);
+	union vmx_exit_reason exit_reason = vmx->exit_reason;
+	u32 vectoring_info = vmx->idt_vectoring_info;
+	u16 exit_handler_index;
+
+	/*
+	 * Flush logged GPAs PML buffer, this will make dirty_bitmap more
+	 * updated. Another good is, in kvm_vm_ioctl_get_dirty_log, before
+	 * querying dirty_bitmap, we only need to kick all vcpus out of guest
+	 * mode as if vcpus is in root mode, the PML buffer must has been
+	 * flushed already.  Note, PML is never enabled in hardware while
+	 * running L2.
+	 */
+	if (enable_pml && !is_guest_mode(vcpu))
+		vmx_flush_pml_buffer(vcpu);
+
+	/*
+	 * We should never reach this point with a pending nested VM-Enter, and
+	 * more specifically emulation of L2 due to invalid guest state (see
+	 * below) should never happen as that means we incorrectly allowed a
+	 * nested VM-Enter with an invalid vmcs12.
+	 */
+	if (KVM_BUG_ON(vmx->nested.nested_run_pending, vcpu->kvm))
+		return -EIO;
+
+	/* If guest state is invalid, start emulating */
+	if (vmx->emulation_required)
+		return handle_invalid_guest_state(vcpu);
+
+	if (is_guest_mode(vcpu)) {
+		/*
+		 * PML is never enabled when running L2, bail immediately if a
+		 * PML full exit occurs as something is horribly wrong.
+		 */
+		if (exit_reason.basic == EXIT_REASON_PML_FULL)
+			goto unexpected_vmexit;
+
+		/*
+		 * The host physical addresses of some pages of guest memory
+		 * are loaded into the vmcs02 (e.g. vmcs12's Virtual APIC
+		 * Page). The CPU may write to these pages via their host
+		 * physical address while L2 is running, bypassing any
+		 * address-translation-based dirty tracking (e.g. EPT write
+		 * protection).
+		 *
+		 * Mark them dirty on every exit from L2 to prevent them from
+		 * getting out of sync with dirty tracking.
+		 */
+		nested_mark_vmcs12_pages_dirty(vcpu);
+
+		if (nested_vmx_reflect_vmexit(vcpu))
+			return 1;
+	}
+
+	if (exit_reason.failed_vmentry) {
+		dump_vmcs(vcpu);
+		vcpu->run->exit_reason = KVM_EXIT_FAIL_ENTRY;
+		vcpu->run->fail_entry.hardware_entry_failure_reason
+			= exit_reason.full;
+		vcpu->run->fail_entry.cpu = vcpu->arch.last_vmentry_cpu;
+		return 0;
+	}
+
+	if (unlikely(vmx->fail)) {
+		dump_vmcs(vcpu);
+		vcpu->run->exit_reason = KVM_EXIT_FAIL_ENTRY;
+		vcpu->run->fail_entry.hardware_entry_failure_reason
+			= vmcs_read32(VM_INSTRUCTION_ERROR);
+		vcpu->run->fail_entry.cpu = vcpu->arch.last_vmentry_cpu;
+		return 0;
+	}
+
+	/*
+	 * Note:
+	 * Do not try to fix EXIT_REASON_EPT_MISCONFIG if it caused by
+	 * delivery event since it indicates guest is accessing MMIO.
+	 * The vm-exit can be triggered again after return to guest that
+	 * will cause infinite loop.
+	 */
+	if ((vectoring_info & VECTORING_INFO_VALID_MASK) &&
+	    (exit_reason.basic != EXIT_REASON_EXCEPTION_NMI &&
+	     exit_reason.basic != EXIT_REASON_EPT_VIOLATION &&
+	     exit_reason.basic != EXIT_REASON_PML_FULL &&
+	     exit_reason.basic != EXIT_REASON_APIC_ACCESS &&
+	     exit_reason.basic != EXIT_REASON_TASK_SWITCH)) {
+		int ndata = 3;
+
+		vcpu->run->exit_reason = KVM_EXIT_INTERNAL_ERROR;
+		vcpu->run->internal.suberror = KVM_INTERNAL_ERROR_DELIVERY_EV;
+		vcpu->run->internal.data[0] = vectoring_info;
+		vcpu->run->internal.data[1] = exit_reason.full;
+		vcpu->run->internal.data[2] = vcpu->arch.exit_qualification;
+		if (exit_reason.basic == EXIT_REASON_EPT_MISCONFIG) {
+			vcpu->run->internal.data[ndata++] =
+				vmcs_read64(GUEST_PHYSICAL_ADDRESS);
+		}
+		vcpu->run->internal.data[ndata++] = vcpu->arch.last_vmentry_cpu;
+		vcpu->run->internal.ndata = ndata;
+		return 0;
+	}
+
+	if (unlikely(!enable_vnmi &&
+		     vmx->loaded_vmcs->soft_vnmi_blocked)) {
+		if (!vmx_interrupt_blocked(vcpu)) {
+			vmx->loaded_vmcs->soft_vnmi_blocked = 0;
+		} else if (vmx->loaded_vmcs->vnmi_blocked_time > 1000000000LL &&
+			   vcpu->arch.nmi_pending) {
+			/*
+			 * This CPU don't support us in finding the end of an
+			 * NMI-blocked window if the guest runs with IRQs
+			 * disabled. So we pull the trigger after 1 s of
+			 * futile waiting, but inform the user about this.
+			 */
+			printk(KERN_WARNING "%s: Breaking out of NMI-blocked "
+			       "state on VCPU %d after 1 s timeout\n",
+			       __func__, vcpu->vcpu_id);
+			vmx->loaded_vmcs->soft_vnmi_blocked = 0;
+		}
+	}
+
+	if (exit_fastpath != EXIT_FASTPATH_NONE)
+		return 1;
+
+	if (exit_reason.basic >= kvm_vmx_max_exit_handlers)
+		goto unexpected_vmexit;
+#ifdef CONFIG_RETPOLINE
+	if (exit_reason.basic == EXIT_REASON_MSR_WRITE)
+		return kvm_emulate_wrmsr(vcpu);
+	else if (exit_reason.basic == EXIT_REASON_PREEMPTION_TIMER)
+		return handle_preemption_timer(vcpu);
+	else if (exit_reason.basic == EXIT_REASON_INTERRUPT_WINDOW)
+		return handle_interrupt_window(vcpu);
+	else if (exit_reason.basic == EXIT_REASON_EXTERNAL_INTERRUPT)
+		return handle_external_interrupt(vcpu);
+	else if (exit_reason.basic == EXIT_REASON_HLT)
+		return kvm_emulate_halt(vcpu);
+	else if (exit_reason.basic == EXIT_REASON_EPT_MISCONFIG)
+		return handle_ept_misconfig(vcpu);
+#endif
+
+	exit_handler_index = array_index_nospec((u16)exit_reason.basic,
+						kvm_vmx_max_exit_handlers);
+	if (!kvm_vmx_exit_handlers[exit_handler_index])
+		goto unexpected_vmexit;
+
+	return kvm_vmx_exit_handlers[exit_handler_index](vcpu); // 为什么上面的要单独列出来？
+
+unexpected_vmexit:
+	vcpu_unimpl(vcpu, "vmx: unexpected exit reason 0x%x\n",
+		    exit_reason.full);
+	dump_vmcs(vcpu);
+	vcpu->run->exit_reason = KVM_EXIT_INTERNAL_ERROR;
+	vcpu->run->internal.suberror =
+			KVM_INTERNAL_ERROR_UNEXPECTED_EXIT_REASON;
+	vcpu->run->internal.ndata = 2;
+	vcpu->run->internal.data[0] = exit_reason.full;
+	vcpu->run->internal.data[1] = vcpu->arch.last_vmentry_cpu;
+	return 0;
+}
+```
+
+这里是所有的中断处理函数，
+
+```c
+/*
+ * The exit handlers return 1 if the exit was handled fully and guest execution
+ * may resume.  Otherwise they set the kvm_run parameter to indicate what needs
+ * to be done to userspace and return 0.
+ */
+static int (*kvm_vmx_exit_handlers[])(struct kvm_vcpu *vcpu) = {
+	[EXIT_REASON_EXCEPTION_NMI]           = handle_exception_nmi,
+	[EXIT_REASON_EXTERNAL_INTERRUPT]      = handle_external_interrupt,
+	[EXIT_REASON_TRIPLE_FAULT]            = handle_triple_fault,
+	[EXIT_REASON_NMI_WINDOW]	      = handle_nmi_window,
+	[EXIT_REASON_IO_INSTRUCTION]          = handle_io,
+	[EXIT_REASON_CR_ACCESS]               = handle_cr,
+	[EXIT_REASON_DR_ACCESS]               = handle_dr,
+	[EXIT_REASON_CPUID]                   = kvm_emulate_cpuid,
+	[EXIT_REASON_MSR_READ]                = kvm_emulate_rdmsr,
+	[EXIT_REASON_MSR_WRITE]               = kvm_emulate_wrmsr,
+	[EXIT_REASON_INTERRUPT_WINDOW]        = handle_interrupt_window,
+	[EXIT_REASON_HLT]                     = kvm_emulate_halt,
+	[EXIT_REASON_INVD]		      = kvm_emulate_invd,
+	[EXIT_REASON_INVLPG]		      = handle_invlpg,
+	[EXIT_REASON_RDPMC]                   = kvm_emulate_rdpmc,
+	[EXIT_REASON_VMCALL]                  = kvm_emulate_hypercall,
+	[EXIT_REASON_VMCLEAR]		      = handle_vmx_instruction,
+	[EXIT_REASON_VMLAUNCH]		      = handle_vmx_instruction,
+	[EXIT_REASON_VMPTRLD]		      = handle_vmx_instruction,
+	[EXIT_REASON_VMPTRST]		      = handle_vmx_instruction,
+	[EXIT_REASON_VMREAD]		      = handle_vmx_instruction,
+	[EXIT_REASON_VMRESUME]		      = handle_vmx_instruction,
+	[EXIT_REASON_VMWRITE]		      = handle_vmx_instruction,
+	[EXIT_REASON_VMOFF]		      = handle_vmx_instruction,
+	[EXIT_REASON_VMON]		      = handle_vmx_instruction,
+	[EXIT_REASON_TPR_BELOW_THRESHOLD]     = handle_tpr_below_threshold,
+	[EXIT_REASON_APIC_ACCESS]             = handle_apic_access,
+	[EXIT_REASON_APIC_WRITE]              = handle_apic_write,
+	[EXIT_REASON_EOI_INDUCED]             = handle_apic_eoi_induced,
+	[EXIT_REASON_WBINVD]                  = kvm_emulate_wbinvd,
+	[EXIT_REASON_XSETBV]                  = kvm_emulate_xsetbv,
+	[EXIT_REASON_TASK_SWITCH]             = handle_task_switch,
+	[EXIT_REASON_MCE_DURING_VMENTRY]      = handle_machine_check,
+	[EXIT_REASON_GDTR_IDTR]		      = handle_desc,
+	[EXIT_REASON_LDTR_TR]		      = handle_desc,
+	[EXIT_REASON_EPT_VIOLATION]	      = handle_ept_violation,
+	[EXIT_REASON_EPT_MISCONFIG]           = handle_ept_misconfig,
+	[EXIT_REASON_PAUSE_INSTRUCTION]       = handle_pause,
+	[EXIT_REASON_MWAIT_INSTRUCTION]	      = kvm_emulate_mwait,
+	[EXIT_REASON_MONITOR_TRAP_FLAG]       = handle_monitor_trap,
+	[EXIT_REASON_MONITOR_INSTRUCTION]     = kvm_emulate_monitor,
+	[EXIT_REASON_INVEPT]                  = handle_vmx_instruction,
+	[EXIT_REASON_INVVPID]                 = handle_vmx_instruction,
+	[EXIT_REASON_RDRAND]                  = kvm_handle_invalid_op,
+	[EXIT_REASON_RDSEED]                  = kvm_handle_invalid_op,
+	[EXIT_REASON_PML_FULL]		      = handle_pml_full,
+	[EXIT_REASON_INVPCID]                 = handle_invpcid,
+	[EXIT_REASON_VMFUNC]		      = handle_vmx_instruction,
+	[EXIT_REASON_PREEMPTION_TIMER]	      = handle_preemption_timer,
+	[EXIT_REASON_ENCLS]		      = handle_encls,
+	[EXIT_REASON_BUS_LOCK]                = handle_bus_lock_vmexit,
+};
+```
 
 如果 `kvm_vcpu_running` 判断出该 cpu 不能执行，那么就会调用 `vcpu_block` ，最终调用 `schedule` 请求调度，**让出物理 cpu** 。
 
@@ -1493,7 +1813,7 @@ static void *mttcg_cpu_thread_fn(void *arg)
 
 ### VCPU 的调度
 
-虚拟机的**每个 VCPU 都对应宿主机中的一个线程，通过宿主及内核调度器进行统一调度管理**。如果不将虚拟机的 VCPU 线程绑定到物理 CPU 上，那么 VCPU 线程可能每次运行时被调度到不同的物理 CPU 上。每个物理 CPU 都有一个指向当前 VMCS 的指针——`current_vmcs`。而 VCPU 调度的本质就是**将物理 CPU 的 per_current 指向需要调度的 VCPU 的 VMCS**。这里设计到两个重要的函数：
+虚拟机的**每个 VCPU 都对应宿主机中的一个线程，通过宿主及内核调度器进行统一调度管理**。如果不将虚拟机的 VCPU 线程绑定到物理 CPU 上，那么 VCPU 线程可能每次运行时被调度到不同的物理 CPU 上。每个物理 CPU 都有一个指向当前 VMCS 的指针——`current_vmcs`。而 VCPU 调度的本质就是**将物理 CPU 的 per_current 指向需要调度的 VCPU 的 VMCS**。这里涉及到两个重要的函数：
 
 `vcpu_load` 负责将 VCPU 状态加载到物理 CPU 上，`vcpu_put` 负责将当前物理 CPU 上运行的 VCPU 的 VMCS 调度出去并保存。
 
