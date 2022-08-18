@@ -40,7 +40,7 @@
 ## Architecture
 
 - [A Quantitative Approach](./Architecture/A-Quantitative-Approach.md)
-- [Note](./Note.md)
+- [Note](./Architecture/Note.md)
 
 ## note
 
@@ -50,8 +50,8 @@
 
 ## Binary Translation
 - [paper](https://github.com/UtopianFuture/UtopianFuture.github.io/tree/master/BinaryTranslation/papers)
-- [反汇编技术](./BinaryTranslation/%E5%8F%8D%E6%B1%87%E7%BC%96%E6%8A%80%E6%9C%AF.md)
-- [论文中涉及的问题](./BinaryTranslation/%E8%AE%BA%E6%96%87%E4%B8%AD%E6%B6%89%E5%8F%8A%E7%9A%84%E9%97%AE%E9%A2%98.md)
+- [反汇编技术](./BinaryTranslation/反汇编技术.md)
+- [论文中涉及的问题](./BinaryTranslation/论文中涉及的问题.md)
 
 ## X86
 - [PCIe](./X86/PCIe.md)
