@@ -2,6 +2,26 @@
 
 这篇文章还是基于 arm 架构的，之后有机会再看看 x86 的 apic 实现有什么区别。之前分析过键盘敲下一个字符到显示在显示器上的经过，[那篇](./kernel/From-keyboard-to-Display.md)文章也涉及到中断的处理，我本以为中断也就那样，但我还是太天真了，面试过程中很多关于中断的问题答的不好，所以再系统的学习一下。
 
+### 数据结构
+
+![interrupt_management.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/interrupt_management.png?raw=true)
+
+简单总结一下各个结构体之间的关系。
+
+- 内核的中断处理，围绕着中断描述符结构 `struct irq_desc` 展开，内核提供了两种中断描述符组织形式：
+
+  - 打开 `CONFIG_SPARSE_IRQ` 宏（中断编号不连续），中断描述符以 `radix-tree` 来组织，用户在初始化时进行动态分配，然后再插入 `radix-tree` 中；
+
+  - 关闭 `CONFIG_SPARSE_IRQ` 宏（中断编号连续），中断描述符以数组的形式组织，并且已经分配好；
+
+  不管哪种形式，最终都可以通过 irq 号来找到对应的中断描述符；
+
+- 图的左侧紫色部分，**主要在中断控制器驱动中进行初始化设置**，包括各个结构中函数指针的指向等，其中 `struct irq_chip` 用于对中断控制器的硬件操作，`struct irq_domain` 与中断控制器对应，完成的工作是硬件中断号到  irq 的映射；
+
+- 图的上侧绿色部分，中断描述符的创建（这里指 `CONFIG_SPARSE_IRQ`），主要在获取设备中断信息的过程中完成的，从而让设备树中的中断能与具体的中断描述符 `irq_desc` 匹配；
+
+- 图中剩余部分，在设备申请注册中断的过程中进行设置，比如 `struct irqaction` 中 `handler` 的设置，这个用于指向我们设备驱动程序中的中断处理函数；
+
 ### 中断控制器
 
 内核中的中断处理可以分为 4 层，
@@ -22,7 +42,7 @@
 
 ### hwirq 和 irq 的映射
 
-
+hwirq 是外设发起中断时用的中断号，是 CPU 设计的时候就制定好了，如 LoongArch 中有 11 个硬件中断。而内核中使用的软中断号，故两者之间要做一个映射。
 
 ### 注册中断
 
@@ -785,3 +805,5 @@ for (i = 0; i < EXCCODE_INT_END - EXCCODE_INT_START; i++) {
 [1] https://lwn.net/Articles/403891/
 
 [2] https://kernel.meizu.com/linux-workqueue.html
+
+[3] https://www.cnblogs.com/LoyenWang/p/13052677.html
