@@ -1,8 +1,10 @@
 ## Interrupt Management
 
-这篇文章还是基于 arm 架构的，之后有机会再看看 x86 的 apic 实现有什么区别。之前分析过键盘敲下一个字符到显示在显示器上的经过，[那篇](./kernel/From-keyboard-to-Display.md)文章也涉及到中断的处理，我本以为中断也就那样，但我还是太天真了，面试过程中很多关于中断的问题答的不好，所以再系统的学习一下。
+之前分析过键盘敲下一个字符到显示在显示器上的经过，[那篇](./kernel/From-keyboard-to-Display.md)文章也涉及到中断的处理，我本以为中断也就那样，但我还是太天真了，面试过程中很多关于中断的问题答的不好，所以再系统的学习一下。
 
 ### 数据结构
+
+还是老规矩，先看看关键的数据结构，
 
 ![interrupt_management.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/interrupt_management.png?raw=true)
 
@@ -43,6 +45,215 @@
 ### hwirq 和 irq 的映射
 
 hwirq 是外设发起中断时用的中断号，是 CPU 设计的时候就制定好了，如 LoongArch 中有 11 个硬件中断。而内核中使用的软中断号，故两者之间要做一个映射。
+
+因为现在的 SoC 内部包含多个总段控制器，并且每个中断控制器管理的中断源很多，为了更好的管理如此复杂的中断设备，内核引入了 `irq_domain` 管理框架。
+
+一个 `irq_domain` 就表示一个中断控制器，这个是中断管理的核心，中断处理都是根据 irq 找到对应的 `irq_desc` 之后的事情就好办了。
+
+#### irq_domain
+
+```c
+struct irq_domain {
+	struct list_head link; // 常规操作，所有的 irq_domain 连接到全局链表上
+	const char *name;
+	const struct irq_domain_ops *ops; // 这个应该是不同的控制器操作函数不同
+	void *host_data;
+	unsigned int flags;
+	unsigned int mapcount; // 管理的中断源数量
+
+	/* Optional data */
+	struct fwnode_handle *fwnode;
+	enum irq_domain_bus_token bus_token;
+	struct irq_domain_chip_generic *gc;
+#ifdef	CONFIG_IRQ_DOMAIN_HIERARCHY
+	struct irq_domain *parent; // 这个应该就是多个中断控制器级联成树状结构
+#endif
+
+	/* reverse map data. The linear map gets appended to the irq_domain */
+	irq_hw_number_t hwirq_max; // 最大支持的中断数量
+	unsigned int revmap_size; // 线性映射的大小
+	struct radix_tree_root revmap_tree; // 基数树映射的根节点
+	struct mutex revmap_mutex;
+	struct irq_data __rcu *revmap[]; // 线性映射用到的查找表
+};
+```
+
+内核中使用 `__irq_domain_add` 来初始化一个 `irq_domain`，
+
+```c
+struct irq_domain *__irq_domain_add(struct fwnode_handle *fwnode, unsigned int size,
+				    irq_hw_number_t hwirq_max, int direct_max,
+				    const struct irq_domain_ops *ops,
+				    void *host_data)
+{
+	struct irqchip_fwid *fwid;
+	struct irq_domain *domain;
+
+	static atomic_t unknown_domains;
+
+	...
+
+	domain = kzalloc_node(struct_size(domain, revmap, size),
+			      GFP_KERNEL, of_node_to_nid(to_of_node(fwnode)));
+
+	if (is_fwnode_irqchip(fwnode)) {
+		fwid = container_of(fwnode, struct irqchip_fwid, fwnode);
+
+		switch (fwid->type) {
+		case IRQCHIP_FWNODE_NAMED:
+		case IRQCHIP_FWNODE_NAMED_ID:
+			domain->fwnode = fwnode;
+			domain->name = kstrdup(fwid->name, GFP_KERNEL);
+			if (!domain->name) {
+				kfree(domain);
+				return NULL;
+			}
+			domain->flags |= IRQ_DOMAIN_NAME_ALLOCATED;
+			break;
+		default:
+			domain->fwnode = fwnode;
+			domain->name = fwid->name;
+			break;
+		}
+	} else if (is_of_node(fwnode) || is_acpi_device_node(fwnode) ||
+		   is_software_node(fwnode)) {
+		char *name;
+
+		/*
+		 * fwnode paths contain '/', which debugfs is legitimately
+		 * unhappy about. Replace them with ':', which does
+		 * the trick and is not as offensive as '\'...
+		 */
+		name = kasprintf(GFP_KERNEL, "%pfw", fwnode);
+		if (!name) {
+			kfree(domain);
+			return NULL;
+		}
+
+		strreplace(name, '/', ':');
+
+		domain->name = name;
+		domain->fwnode = fwnode;
+		domain->flags |= IRQ_DOMAIN_NAME_ALLOCATED;
+	}
+
+	if (!domain->name) {
+		if (fwnode)
+			pr_err("Invalid fwnode type for irqdomain\n");
+		domain->name = kasprintf(GFP_KERNEL, "unknown-%d",
+					 atomic_inc_return(&unknown_domains));
+		if (!domain->name) {
+			kfree(domain);
+			return NULL;
+		}
+		domain->flags |= IRQ_DOMAIN_NAME_ALLOCATED;
+	}
+
+	fwnode_handle_get(fwnode);
+	fwnode_dev_initialized(fwnode, true);
+
+	/* Fill structure */
+	INIT_RADIX_TREE(&domain->revmap_tree, GFP_KERNEL);
+	mutex_init(&domain->revmap_mutex);
+	domain->ops = ops;
+	domain->host_data = host_data;
+	domain->hwirq_max = hwirq_max;
+
+	if (direct_max) {
+		size = direct_max;
+		domain->flags |= IRQ_DOMAIN_FLAG_NO_MAP;
+	}
+
+	domain->revmap_size = size;
+
+	irq_domain_check_hierarchy(domain);
+
+	mutex_lock(&irq_domain_mutex);
+	debugfs_add_domain_dir(domain);
+	list_add(&domain->link, &irq_domain_list);
+	mutex_unlock(&irq_domain_mutex);
+
+	pr_debug("Added domain %s\n", domain->name);
+	return domain;
+}
+```
+
+`__irq_domain_alloc_irqs` 用来建立 hwirq 和 irq 之间的映射，其会调用 `irq_domain_alloc_descs`，
+
+```c
+int irq_domain_alloc_descs(int virq, unsigned int cnt, irq_hw_number_t hwirq,
+			   int node, const struct irq_affinity_desc *affinity)
+{
+	unsigned int hint;
+
+	if (virq >= 0) {
+		virq = __irq_alloc_descs(virq, virq, cnt, node, THIS_MODULE,
+					 affinity);
+	} else {
+		hint = hwirq % nr_irqs;
+		if (hint == 0)
+			hint++;
+		virq = __irq_alloc_descs(-1, hint, cnt, node, THIS_MODULE,
+					 affinity);
+		if (virq <= 0 && hint > 1) {
+			virq = __irq_alloc_descs(-1, 1, cnt, node, THIS_MODULE,
+						 affinity);
+		}
+	}
+
+	return virq;
+}
+```
+
+最后将 hwirq 和 irq 都写入 `irq_data` 中即完成了中断映射。
+
+#### irq_data
+
+```c
+struct irq_data {
+	u32			mask;
+	unsigned int		irq;
+	unsigned long		hwirq;
+	struct irq_common_data	*common;
+	struct irq_chip		*chip;
+	struct irq_domain	*domain;
+#ifdef	CONFIG_IRQ_DOMAIN_HIERARCHY
+	struct irq_data		*parent_data;
+#endif
+	void			*chip_data;
+};
+```
+
+#### irq_chip
+
+这个结构是指硬件中断控制器底层操作相关的方法集合。
+
+```c
+struct irq_chip {
+	struct device	*parent_device;
+	const char	*name;
+	unsigned int	(*irq_startup)(struct irq_data *data);
+	void		(*irq_shutdown)(struct irq_data *data);
+	void		(*irq_enable)(struct irq_data *data); // 打开该中断控制器中的一个中断
+	void		(*irq_disable)(struct irq_data *data);
+
+	void		(*irq_ack)(struct irq_data *data);
+	void		(*irq_mask)(struct irq_data *data);
+	void		(*irq_mask_ack)(struct irq_data *data);
+	void		(*irq_unmask)(struct irq_data *data);
+	void		(*irq_eoi)(struct irq_data *data);
+
+	...
+
+	void		(*ipi_send_single)(struct irq_data *data, unsigned int cpu);
+	void		(*ipi_send_mask)(struct irq_data *data, const struct cpumask *dest);
+
+	int		(*irq_nmi_setup)(struct irq_data *data);
+	void		(*irq_nmi_teardown)(struct irq_data *data);
+
+	unsigned long	flags;
+};
+```
 
 ### 注册中断
 
