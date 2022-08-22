@@ -46,7 +46,7 @@
 
 hwirq 是外设发起中断时用的中断号，是 CPU 设计的时候就制定好了，如 LoongArch 中有 11 个硬件中断。而内核中使用的软中断号，故两者之间要做一个映射。
 
-因为现在的 SoC 内部包含多个总段控制器，并且每个中断控制器管理的中断源很多，为了更好的管理如此复杂的中断设备，内核引入了 `irq_domain` 管理框架。
+因为现在的 SoC 内部包含多个中断控制器，并且每个中断控制器管理的中断源很多，为了更好的管理如此复杂的中断设备，内核引入了 `irq_domain` 管理框架。
 
 一个 `irq_domain` 就表示一个中断控制器，每个中断控制器管理多个中断源，其可以按照树或数组的方式管理 `irq_desc`，这个是中断管理的核心，中断处理都是根据 irq 找到对应的 `irq_desc` 之后的事情就好办了。
 
@@ -121,7 +121,7 @@ struct irq_domain {
 	unsigned int mapcount; // 管理的中断源数量
 
 	/* Optional data */
-	struct fwnode_handle *fwnode;
+	struct fwnode_handle *fwnode; // 从 DTS 或 ACPI 获取的
 	enum irq_domain_bus_token bus_token;
 	struct irq_domain_chip_generic *gc;
 #ifdef	CONFIG_IRQ_DOMAIN_HIERARCHY
@@ -136,6 +136,8 @@ struct irq_domain {
 	struct irq_data __rcu *revmap[]; // 线性映射用到的查找表
 };
 ```
+
+#### 关键函数 __irq_domain_add
 
 内核中使用 `__irq_domain_add` 来初始化一个 `irq_domain`，
 
@@ -152,9 +154,12 @@ struct irq_domain *__irq_domain_add(struct fwnode_handle *fwnode, unsigned int s
 
 	...
 
+  	// 看过前面的内存管理这个就很好理解了
 	domain = kzalloc_node(struct_size(domain, revmap, size),
 			      GFP_KERNEL, of_node_to_nid(to_of_node(fwnode)));
 
+    // 一直不理解这个 fwnode 到底是啥，其实它表示的是 DTS 或 ACPI 的一个 entry
+    // 这里应该是解析这个 entry
 	if (is_fwnode_irqchip(fwnode)) {
 		fwid = container_of(fwnode, struct irqchip_fwid, fwnode);
 
@@ -176,43 +181,18 @@ struct irq_domain *__irq_domain_add(struct fwnode_handle *fwnode, unsigned int s
 		}
 	} else if (is_of_node(fwnode) || is_acpi_device_node(fwnode) ||
 		   is_software_node(fwnode)) {
-		char *name;
 
-		/*
-		 * fwnode paths contain '/', which debugfs is legitimately
-		 * unhappy about. Replace them with ':', which does
-		 * the trick and is not as offensive as '\'...
-		 */
-		name = kasprintf(GFP_KERNEL, "%pfw", fwnode);
-		if (!name) {
-			kfree(domain);
-			return NULL;
-		}
+		... // 这两个差不多
 
-		strreplace(name, '/', ':');
-
-		domain->name = name;
-		domain->fwnode = fwnode;
-		domain->flags |= IRQ_DOMAIN_NAME_ALLOCATED;
 	}
 
-	if (!domain->name) {
-		if (fwnode)
-			pr_err("Invalid fwnode type for irqdomain\n");
-		domain->name = kasprintf(GFP_KERNEL, "unknown-%d",
-					 atomic_inc_return(&unknown_domains));
-		if (!domain->name) {
-			kfree(domain);
-			return NULL;
-		}
-		domain->flags |= IRQ_DOMAIN_NAME_ALLOCATED;
-	}
+	...
 
 	fwnode_handle_get(fwnode);
 	fwnode_dev_initialized(fwnode, true);
 
 	/* Fill structure */
-	INIT_RADIX_TREE(&domain->revmap_tree, GFP_KERNEL);
+	INIT_RADIX_TREE(&domain->revmap_tree, GFP_KERNEL); // irq_desc 的组织形式
 	mutex_init(&domain->revmap_mutex);
 	domain->ops = ops;
 	domain->host_data = host_data;
@@ -229,7 +209,7 @@ struct irq_domain *__irq_domain_add(struct fwnode_handle *fwnode, unsigned int s
 
 	mutex_lock(&irq_domain_mutex);
 	debugfs_add_domain_dir(domain);
-	list_add(&domain->link, &irq_domain_list);
+	list_add(&domain->link, &irq_domain_list); // 最后要将所有的 irq_domain 插入链表
 	mutex_unlock(&irq_domain_mutex);
 
 	pr_debug("Added domain %s\n", domain->name);
@@ -237,7 +217,14 @@ struct irq_domain *__irq_domain_add(struct fwnode_handle *fwnode, unsigned int s
 }
 ```
 
-`__irq_domain_alloc_irqs` 用来建立 hwirq 和 irq 之间的映射，其会调用 `irq_domain_alloc_descs`，
+通过调试内核可知，在 X86 的机器上，有如下中断控制器会调用 `__irq_domain_add` 进行初始化：
+
+- `x86_vector_domain` 不清楚这个是干什么的，其调用路径为 `start_kernel` -> `early_irq_init` -> `arch_early_irq_init` -> `irq_domain_create_tree` ->  `__irq_domain_add`。貌似它是所有 `irq_domain` 的 parent。
+- APIC，其调用路径为 `start_kernel` -> `x86_late_time_init` -> `apic_intr_mode_init` -> `apic_bsp_setup` -> `setup_IO_APIC` -> `mp_irqdomain_create` -> `irq_domain_create_linear` -> `__irq_domain_add`，这个应该就是 APIC 的初始化，但很奇怪，跟 `time_init` 有什么关系呢？
+- pci, `x86_create_pci_msi_domain`；
+- hpet, `hpet_create_irq_domain`；
+
+虽然创建了 `irq_domain`，但还没有建立 hwirq 和 irq 的映射，`__irq_domain_alloc_irqs` 用来建立 hwirq 和 irq 之间的映射，其会调用 `irq_domain_alloc_descs`，
 
 ```c
 int irq_domain_alloc_descs(int virq, unsigned int cnt, irq_hw_number_t hwirq,
@@ -265,6 +252,59 @@ int irq_domain_alloc_descs(int virq, unsigned int cnt, irq_hw_number_t hwirq,
 ```
 
 最后将 hwirq 和 irq 都写入 `irq_data` 中即完成了中断映射。
+
+我去，怎么 X86 的内核不是这样的！在用 GDB 实际调试内核时发现并不会调用 `__irq_domain_alloc_irqs` 来建立映射，而是通过下面这个方式，
+
+```c
+#0  bitmap_find_next_zero_area_off (map=map@entry=0xffff88810007dd30, size=size@entry=236,
+    start=start@entry=32, nr=nr@entry=1, align_mask=align_mask@entry=0,
+    align_offset=align_offset@entry=0) at lib/bitmap.c:412
+#1  0xffffffff8112a302 in bitmap_find_next_zero_area (align_mask=0, nr=1, start=32,
+    size=236, map=0xffff88810007dd30) at ./include/linux/bitmap.h:197
+#2  matrix_alloc_area (m=m@entry=0xffff88810007dd00, cm=cm@entry=0xffff888237caef00,
+    managed=managed@entry=false, num=1) at kernel/irq/matrix.c:118
+#3  0xffffffff8112ab78 in irq_matrix_alloc (m=0xffff88810007dd00,
+    msk=msk@entry=0xffff888100063958, reserved=reserved@entry=true,
+    mapped_cpu=mapped_cpu@entry=0xffffc90000013b64) at kernel/irq/matrix.c:395
+#4  0xffffffff8107026c in assign_vector_locked (irqd=irqd@entry=0xffff88810007b0c0,
+    dest=0xffff888100063958) at arch/x86/kernel/apic/vector.c:248
+#5  0xffffffff81070ce0 in assign_irq_vector_any_locked (irqd=irqd@entry=0xffff88810007b0c0)
+    at arch/x86/kernel/apic/vector.c:279
+#6  0xffffffff81070e03 in activate_reserved (irqd=0xffff88810007b0c0)
+    at arch/x86/kernel/apic/vector.c:393
+#7  x86_vector_activate (dom=<optimized out>, irqd=0xffff88810007b0c0,
+    reserve=<optimized out>) at arch/x86/kernel/apic/vector.c:462
+#8  0xffffffff81124fc8 in __irq_domain_activate_irq (irqd=0xffff88810007b0c0,
+    reserve=reserve@entry=false) at kernel/irq/irqdomain.c:1763
+#9  0xffffffff81124fa8 in __irq_domain_activate_irq (irqd=irqd@entry=0xffff8881001d5c28,
+    reserve=reserve@entry=false) at kernel/irq/irqdomain.c:1760
+#10 0xffffffff811264a9 in irq_domain_activate_irq (
+    irq_data=irq_data@entry=0xffff8881001d5c28, reserve=reserve@entry=false)
+    at kernel/irq/irqdomain.c:1786
+#11 0xffffffff81122415 in irq_activate (desc=desc@entry=0xffff8881001d5c00)
+    at kernel/irq/chip.c:294
+#12 0xffffffff8111f94e in __setup_irq (irq=irq@entry=9, desc=desc@entry=0xffff8881001d5c00,
+    new=new@entry=0xffff888100c65980) at kernel/irq/manage.c:1708
+#13 0xffffffff8111fec4 in request_threaded_irq (irq=9,
+    handler=handler@entry=0xffffffff816711a0 <acpi_irq>,
+    thread_fn=thread_fn@entry=0x0 <fixed_percpu_data>, irqflags=irqflags@entry=128,
+    devname=devname@entry=0xffffffff82610986 "acpi",
+    dev_id=dev_id@entry=0xffffffff816711a0 <acpi_irq>) at kernel/irq/manage.c:2172
+#14 0xffffffff816715ff in request_irq (dev=0xffffffff816711a0 <acpi_irq>,
+    name=0xffffffff82610986 "acpi", flags=128, handler=0xffffffff816711a0 <acpi_irq>,
+    irq=<optimized out>) at ./include/linux/interrupt.h:168
+
+	...
+
+#23 do_initcalls () at init/main.c:1392
+#24 do_basic_setup () at init/main.c:1411
+#25 kernel_init_freeable () at init/main.c:1614
+#26 0xffffffff81c0b31a in kernel_init (unused=<optimized out>) at init/main.c:1505
+#27 0xffffffff81004572 in ret_from_fork () at arch/x86/entry/entry_64.S:295
+#28 0x0000000000000000 in ?? ()
+```
+
+看来映射的建立和架构强相关。X86 架构比我想象的复杂，记得之前分析 LA 架构挺简单的，我还是把之前的东西捡起来吧。
 
 #### irq_data
 
@@ -692,6 +732,10 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
 在内核中，中断具有最高的优先级，内核会在每一条指令执行完后检查是否有中断发生，如果有，那么内核会进行上下文切换从而执行中断处理函数，等到所有的中断和软中断处理完毕后才会执行进程调度，因此这个过程会导致实时任务得不到及时响应。中断上下文总是抢占进程上下文，中断上下文不仅包括中断处理程序，还包括 softirq, tasklet 等。如果一个高优先级任务和一个中断同时触发，那么内核总是先执行中断处理程序，中断处理程序完成后可能触发软中断，也可能有一些 tasklet 要执行或有新的中断发生，这个高优先级任务的延迟变得不可预测。中断线程化的目的是把中断处理中一些繁重的任务作为内核线程阿莱运行，实时进程可以比中断线程拥有更高的优先级。这样高优先级的实时进程就可以优先得到处理。当然，不是所有的中断都可以线程化，如时钟中断。
 
 ### 底层中断处理
+
+之前学习的都是 X86 架构的中断，所以对 X86 的汇编比较熟悉，但面试了几场发现现在用的多的是 ARM，所以接着个机会也学学 ARM 架构的硬件中断处理流程和 ARM 指令。当然 X86 的流程也会补充近来。
+
+ARM64 支持多个异常等级（在 X86 中就是特权级），其中 EL0 是用户模式，EL1 是内核模式，EL2 是虚拟化监管模式，EL3 是安全世界模式（这个是用来干嘛的）。
 
 ### 高层中断处理
 
