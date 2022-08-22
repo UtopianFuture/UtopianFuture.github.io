@@ -1085,3 +1085,7 @@ const主要用来修饰变量、函数形参和类成员函数：
   ```
 
   要计算 union 的大小，首先要找到占用字节最多的成员，本例中是 long，占用 8 个字节，int k[5]中都是 int 类型，仍然是占用 4 个字节的，然后 union 的字节数必须是占用字节最多的成员的字节的倍数，而且需要能够容纳其他的成员，为了要容纳 k(20 个字节),就必须要保证是 8 的倍数的同时还要大于 20 个字节，所以是 24 个字节。
+
+### fwnode
+
+The fwnode refers to a *firmware node* usually representing an entry in either Device Tree or ACPI (generally the DSDT table). Device Tree and ACPI are two different ways to define devices and their properties and interconnections between them. They both use tree structures to encode this information.
