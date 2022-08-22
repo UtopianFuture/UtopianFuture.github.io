@@ -48,7 +48,66 @@ hwirq 是外设发起中断时用的中断号，是 CPU 设计的时候就制定
 
 因为现在的 SoC 内部包含多个总段控制器，并且每个中断控制器管理的中断源很多，为了更好的管理如此复杂的中断设备，内核引入了 `irq_domain` 管理框架。
 
-一个 `irq_domain` 就表示一个中断控制器，这个是中断管理的核心，中断处理都是根据 irq 找到对应的 `irq_desc` 之后的事情就好办了。
+一个 `irq_domain` 就表示一个中断控制器，每个中断控制器管理多个中断源，其可以按照树或数组的方式管理 `irq_desc`，这个是中断管理的核心，中断处理都是根据 irq 找到对应的 `irq_desc` 之后的事情就好办了。
+
+#### irq_desc
+
+```c
+/**
+ * struct irq_desc - interrupt descriptor
+ */
+struct irq_desc {
+	struct irq_common_data	irq_common_data;
+	struct irq_data		irq_data;
+	unsigned int __percpu	*kstat_irqs;
+	irq_flow_handler_t	handle_irq;
+	struct irqaction	*action;	/* IRQ action list */ // 多个设备共享一个描述符，需要遍历所有的 irqaction
+	unsigned int		status_use_accessors;
+	unsigned int		core_internal_state__do_not_mess_with_it;
+	unsigned int		depth;		/* nested irq disables */
+	unsigned int		wake_depth;	/* nested wake enables */
+	unsigned int		tot_count;
+	unsigned int		irq_count;	/* For detecting broken IRQs */
+	unsigned long		last_unhandled;	/* Aging timer for unhandled count */
+	unsigned int		irqs_unhandled;
+	atomic_t		threads_handled;
+	int			threads_handled_last;
+	raw_spinlock_t		lock;
+	struct cpumask		*percpu_enabled;
+	const struct cpumask	*percpu_affinity;
+#ifdef CONFIG_SMP
+	const struct cpumask	*affinity_hint;
+	struct irq_affinity_notify *affinity_notify;
+#ifdef CONFIG_GENERIC_PENDING_IRQ
+	cpumask_var_t		pending_mask;
+#endif
+#endif
+	unsigned long		threads_oneshot;
+	atomic_t		threads_active;
+	wait_queue_head_t       wait_for_threads;
+#ifdef CONFIG_PM_SLEEP
+	unsigned int		nr_actions;
+	unsigned int		no_suspend_depth;
+	unsigned int		cond_suspend_depth;
+	unsigned int		force_resume_depth;
+#endif
+#ifdef CONFIG_PROC_FS
+	struct proc_dir_entry	*dir;
+#endif
+#ifdef CONFIG_GENERIC_IRQ_DEBUGFS
+	struct dentry		*debugfs_file;
+	const char		*dev_name;
+#endif
+#ifdef CONFIG_SPARSE_IRQ
+	struct rcu_head		rcu;
+	struct kobject		kobj;
+#endif
+	struct mutex		request_mutex;
+	int			parent_irq;
+	struct module		*owner;
+	const char		*name;
+} ____cacheline_internodealigned_in_smp;
+```
 
 #### irq_domain
 
@@ -255,7 +314,382 @@ struct irq_chip {
 };
 ```
 
+#### irqdata
+
+中断注册时还需要初始化 `irqaction` 结构，
+
+```c
+/**
+ * struct irqaction - per interrupt action descriptor
+ */
+struct irqaction {
+	irq_handler_t		handler;
+	void			*dev_id;
+	void __percpu		*percpu_dev_id;
+	struct irqaction	*next;
+	irq_handler_t		thread_fn;
+	struct task_struct	*thread;
+	struct irqaction	*secondary;
+	unsigned int		irq;
+	unsigned int		flags;
+	unsigned long		thread_flags;
+	unsigned long		thread_mask;
+	const char		*name;
+	struct proc_dir_entry	*dir;
+} ____cacheline_internodealigned_in_smp; // 这个标志表示什么？
+```
+
 ### 注册中断
+
+中断处理程序最基本的工作是通知硬件设备中断已经被接收。有些中断处理程序需要完成的工作很多，为了满足实时性的要求，中断处理程序需要快速完成并且退出中断，因此将中断分成上下半部。
+
+内核中外设驱动需要注册中断，其接口如下：
+
+```c
+static inline int __must_check
+request_irq(unsigned int irq, irq_handler_t handler, unsigned long flags,
+	    const char *name, void *dev)
+{
+	return request_threaded_irq(irq, handler, NULL, flags, name, dev);
+}
+```
+
+`request_irq` 是较老的接口，2.6.30 内核中新增加了线程化的中断注册接口 `request_threaded_irq`。
+
+这里记录一下常用的中断标志位，因为之后的初始化需要根据不同的中断类型进行不同的初始化，
+
+| 中断标志位        | 描述                                                         |
+| ----------------- | ------------------------------------------------------------ |
+| IRQF_TRIGGER_*    | 中断触发的类型                                               |
+| IRQF_SHARED       | 多个设备共享一个中断号                                       |
+| IRQF_PROBE_SHARED | 中断处理程序允许出现共享中断部匹配的情况                     |
+| IRQF_TIMER        | 标记一个时间中断                                             |
+| IRQF_PERCPU       | 属于特定 CPU 的中断                                          |
+| IRQF_NOBALANCING  | 禁止多 CPU 间的中断均衡（中断也可以均衡？）                  |
+| IRQF_IRQPOLL      | 中断被用作轮询                                               |
+| IRQF_ONESHOT      | 表示一次性触发的中断，不能嵌套。在中断线程化中也保持中断关闭状态 |
+| IRQF_NO_SUSPEND   | 在系统睡眠过程中不要关闭该中断                               |
+| IRQF_FORCE_RESUME | 在系统唤醒时必须强制打开该中断                               |
+| IRQF_NO_THREAD    | 表示该中断不会被线程化                                       |
+
+#### 关键函数 request_threaded_irq
+
+```c
+int request_threaded_irq(unsigned int irq, irq_handler_t handler,
+			 irq_handler_t thread_fn, unsigned long irqflags, // thread_fn 是中断线程化的处理程序
+			 const char *devname, void *dev_id) // irqflags 用来表示该设备申请的中断的状态
+{
+	struct irqaction *action;
+	struct irq_desc *desc;
+	int retval;
+
+	...
+
+	desc = irq_to_desc(irq); // 根据 irq 找到对应的中断描述符
+	if (!desc)
+		return -EINVAL;
+
+	if (!irq_settings_can_request(desc) || // 有些中断描述符是系统预留的，外设不可使用
+	    WARN_ON(irq_settings_is_per_cpu_devid(desc)))
+		return -EINVAL;
+
+	if (!handler) {
+		if (!thread_fn) // 主处理函数和 thread_fn 不能同时为空
+			return -EINVAL;
+        // 默认的中断处理函数，该函数直接返回 IRQ_WAKE_THREAD，表示唤醒中断线程
+		handler = irq_default_primary_handler;
+	}
+
+	action = kzalloc(sizeof(struct irqaction), GFP_KERNEL);
+	if (!action)
+		return -ENOMEM;
+
+	action->handler = handler;
+	action->thread_fn = thread_fn;
+	action->flags = irqflags;
+	action->name = devname;
+	action->dev_id = dev_id;
+
+	retval = irq_chip_pm_get(&desc->irq_data);
+	if (retval < 0) {
+		kfree(action);
+		return retval;
+	}
+
+	retval = __setup_irq(irq, desc, action); // 继续注册
+
+	if (retval) {
+		irq_chip_pm_put(&desc->irq_data);
+		kfree(action->secondary);
+		kfree(action);
+	}
+
+	...
+
+	return retval;
+}
+```
+
+从这个调用栈我们可以观察到几个事情：
+
+- 这是在内核态执行的，看变量的地址空间就知道了；
+- 这个 APIC 申请 irq，且该设备没有 thread_fn；
+- 到目前为止 0 号进程的工作已经完成了，现在应该是 1 号进程 kthead 在进行初始化工作；
+-  `ret_from_fork` 说明 1 号进程是新 fork 出来的进程，没有经过 `schedule` 调度；
+- 外设的初始化都是在 `do_initcalls` 完成的。
+
+```
+#0  request_threaded_irq (irq=9, handler=handler@entry=0xffffffff816711a0 <acpi_irq>,
+    thread_fn=thread_fn@entry=0x0 <fixed_percpu_data>, irqflags=irqflags@entry=128,
+    devname=devname@entry=0xffffffff82610986 "acpi",
+    dev_id=dev_id@entry=0xffffffff816711a0 <acpi_irq>) at kernel/irq/manage.c:2115
+#1  0xffffffff816715ff in request_irq (dev=0xffffffff816711a0 <acpi_irq>,
+    name=0xffffffff82610986 "acpi", flags=128, handler=0xffffffff816711a0 <acpi_irq>,
+    irq=<optimized out>) at ./include/linux/interrupt.h:168
+#2  acpi_os_install_interrupt_handler (gsi=9,
+    handler=handler@entry=0xffffffff8169ac07 <acpi_ev_sci_xrupt_handler>,
+    context=0xffff8881008729a0) at drivers/acpi/osl.c:586
+#3  0xffffffff8169ad1e in acpi_ev_install_sci_handler () at drivers/acpi/acpica/evsci.c:156
+#4  0xffffffff81696598 in acpi_ev_install_xrupt_handlers ()
+    at drivers/acpi/acpica/evevent.c:94
+#5  0xffffffff8320fc95 in acpi_enable_subsystem (flags=flags@entry=2)
+    at drivers/acpi/acpica/utxfinit.c:184
+#6  0xffffffff8320d0dc in acpi_bus_init () at drivers/acpi/bus.c:1230
+#7  acpi_init () at drivers/acpi/bus.c:1323
+#8  0xffffffff81003928 in do_one_initcall (fn=0xffffffff8320d02d <acpi_init>)
+    at init/main.c:1303
+#9  0xffffffff831babeb in do_initcall_level (command_line=0xffff888100059de0 "console",
+    level=4) at init/main.c:1376
+#10 do_initcalls () at init/main.c:1392
+#11 do_basic_setup () at init/main.c:1411
+#12 kernel_init_freeable () at init/main.c:1614
+#13 0xffffffff81c0b31a in kernel_init (unused=<optimized out>) at init/main.c:1505
+#14 0xffffffff81004572 in ret_from_fork () at arch/x86/entry/entry_64.S:295
+#15 0x0000000000000000 in ?? ()
+```
+
+#### 关键函数 __setup_irq
+
+情况很复杂，没有全部搞懂。
+
+```c
+static int
+__setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
+{
+	struct irqaction *old, **old_ptr;
+	unsigned long flags, thread_mask = 0;
+	int ret, nested, shared = 0;
+
+	if (desc->irq_data.chip == &no_irq_chip) // 没有正确初始化中断控制器
+		return -ENOSYS;
+
+    ...
+
+	new->irq = irq;
+
+	/*
+	 * Check whether the interrupt nests into another interrupt thread.
+	 */
+	nested = irq_settings_is_nested_thread(desc);
+	if (nested) {
+		if (!new->thread_fn) {
+			ret = -EINVAL;
+			goto out_mput;
+		}
+		/*
+		 * Replace the primary handler which was provided from
+		 * the driver for non nested interrupt handling by the
+		 * dummy function which warns when called.
+		 */
+		new->handler = irq_nested_primary_handler;
+	} else {
+		if (irq_settings_can_thread(desc)) { // 判断该中断是否可以线程化，即判断 _IRQ_NOTHREAD 标志位
+			ret = irq_setup_forced_threading(new); // 进行线程化
+			if (ret)
+				goto out_mput;
+		}
+	}
+
+	/*
+	 * Create a handler thread when a thread function is supplied
+	 * and the interrupt does not nest into another interrupt
+	 * thread.
+	 */
+	if (new->thread_fn && !nested) {
+		ret = setup_irq_thread(new, irq, false); // 创建一个内核线程
+		if (ret)
+			goto out_mput;
+		if (new->secondary) {
+			ret = setup_irq_thread(new->secondary, irq, true);
+			if (ret)
+				goto out_thread;
+		}
+	}
+
+    ...
+
+	/* First installed action requests resources. */
+	if (!desc->action) {
+		ret = irq_request_resources(desc);
+		if (ret) {
+			pr_err("Failed to request resources for %s (irq %d) on irqchip %s\n",
+			       new->name, irq, desc->irq_data.chip->name);
+			goto out_bus_unlock;
+		}
+	}
+
+	/*
+	 * The following block of code has to be executed atomically
+	 * protected against a concurrent interrupt and any of the other
+	 * management calls which are not serialized via
+	 * desc->request_mutex or the optional bus lock.
+	 */
+	raw_spin_lock_irqsave(&desc->lock, flags);
+	old_ptr = &desc->action;
+	old = *old_ptr;
+	if (old) { // 已经有中断添加到 irq_desc 中，是共享中断
+
+        ...
+
+	}
+
+	/*
+	 * Setup the thread mask for this irqaction for ONESHOT. For
+	 * !ONESHOT irqs the thread mask is 0 so we can avoid a
+	 * conditional in irq_wake_thread().
+	 */
+	if (new->flags & IRQF_ONESHOT) { // 不允许嵌套的中断
+
+        ...
+
+	} else if (new->handler == irq_default_primary_handler &&
+		   !(desc->irq_data.chip->flags & IRQCHIP_ONESHOT_SAFE)) {
+
+        ...
+
+	}
+
+	if (!shared) {
+		init_waitqueue_head(&desc->wait_for_threads);
+
+		/* Setup the type (level, edge polarity) if configured: */
+		if (new->flags & IRQF_TRIGGER_MASK) {
+			ret = __irq_set_trigger(desc,
+						new->flags & IRQF_TRIGGER_MASK);
+
+			if (ret)
+				goto out_unlock;
+		}
+
+		/*
+		 * Activate the interrupt. That activation must happen
+		 * independently of IRQ_NOAUTOEN. request_irq() can fail
+		 * and the callers are supposed to handle
+		 * that. enable_irq() of an interrupt requested with
+		 * IRQ_NOAUTOEN is not supposed to fail. The activation
+		 * keeps it in shutdown mode, it merily associates
+		 * resources if necessary and if that's not possible it
+		 * fails. Interrupts which are in managed shutdown mode
+		 * will simply ignore that activation request.
+		 */
+		ret = irq_activate(desc);
+		if (ret)
+			goto out_unlock;
+
+		desc->istate &= ~(IRQS_AUTODETECT | IRQS_SPURIOUS_DISABLED | \
+				  IRQS_ONESHOT | IRQS_WAITING);
+		irqd_clear(&desc->irq_data, IRQD_IRQ_INPROGRESS);
+
+		if (new->flags & IRQF_PERCPU) {
+			irqd_set(&desc->irq_data, IRQD_PER_CPU);
+			irq_settings_set_per_cpu(desc);
+			if (new->flags & IRQF_NO_DEBUG)
+				irq_settings_set_no_debug(desc);
+		}
+
+		if (noirqdebug)
+			irq_settings_set_no_debug(desc);
+
+		if (new->flags & IRQF_ONESHOT)
+			desc->istate |= IRQS_ONESHOT;
+
+		/* Exclude IRQ from balancing if requested */
+		if (new->flags & IRQF_NOBALANCING) {
+			irq_settings_set_no_balancing(desc);
+			irqd_set(&desc->irq_data, IRQD_NO_BALANCING);
+		}
+
+		if (!(new->flags & IRQF_NO_AUTOEN) &&
+		    irq_settings_can_autoenable(desc)) {
+			irq_startup(desc, IRQ_RESEND, IRQ_START_COND);
+		} else {
+			/*
+			 * Shared interrupts do not go well with disabling
+			 * auto enable. The sharing interrupt might request
+			 * it while it's still disabled and then wait for
+			 * interrupts forever.
+			 */
+			WARN_ON_ONCE(new->flags & IRQF_SHARED);
+			/* Undo nested disables: */
+			desc->depth = 1;
+		}
+
+	} else if (new->flags & IRQF_TRIGGER_MASK) {
+		unsigned int nmsk = new->flags & IRQF_TRIGGER_MASK;
+		unsigned int omsk = irqd_get_trigger_type(&desc->irq_data);
+
+		if (nmsk != omsk)
+			/* hope the handler works with current  trigger mode */
+			pr_warn("irq %d uses trigger mode %u; requested %u\n",
+				irq, omsk, nmsk);
+	}
+
+	*old_ptr = new;
+
+	irq_pm_install_action(desc, new);
+
+	/* Reset broken irq detection when installing new handler */
+	desc->irq_count = 0;
+	desc->irqs_unhandled = 0;
+
+	/*
+	 * Check whether we disabled the irq via the spurious handler
+	 * before. Reenable it and give it another chance.
+	 */
+	if (shared && (desc->istate & IRQS_SPURIOUS_DISABLED)) {
+		desc->istate &= ~IRQS_SPURIOUS_DISABLED;
+		__enable_irq(desc);
+	}
+
+	raw_spin_unlock_irqrestore(&desc->lock, flags);
+	chip_bus_sync_unlock(desc);
+	mutex_unlock(&desc->request_mutex);
+
+	irq_setup_timings(desc, new);
+
+	/*
+	 * Strictly no need to wake it up, but hung_task complains
+	 * when no hard interrupt wakes the thread up.
+	 */
+	if (new->thread)
+		wake_up_process(new->thread); // 唤醒中断线程
+	if (new->secondary)
+		wake_up_process(new->secondary->thread);
+
+	register_irq_proc(irq, desc);
+	new->dir = NULL;
+	register_handler_proc(irq, new);
+	return 0;
+
+	...
+
+	return ret;
+}
+```
+
+中断线程化是内核新增加的特性，这个特性的具体实现应该就是 workqueue。那我们考虑一下为什么需要中断线程化。
+
+在内核中，中断具有最高的优先级，内核会在每一条指令执行完后检查是否有中断发生，如果有，那么内核会进行上下文切换从而执行中断处理函数，等到所有的中断和软中断处理完毕后才会执行进程调度，因此这个过程会导致实时任务得不到及时响应。中断上下文总是抢占进程上下文，中断上下文不仅包括中断处理程序，还包括 softirq, tasklet 等。如果一个高优先级任务和一个中断同时触发，那么内核总是先执行中断处理程序，中断处理程序完成后可能触发软中断，也可能有一些 tasklet 要执行或有新的中断发生，这个高优先级任务的延迟变得不可预测。中断线程化的目的是把中断处理中一些繁重的任务作为内核线程阿莱运行，实时进程可以比中断线程拥有更高的优先级。这样高优先级的实时进程就可以优先得到处理。当然，不是所有的中断都可以线程化，如时钟中断。
 
 ### 底层中断处理
 
