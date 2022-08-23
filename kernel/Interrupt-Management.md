@@ -822,6 +822,26 @@ enum
 
 	NR_SOFTIRQS
 };
+
+// 软件中断描述符，只包含一个handler函数指针
+struct softirq_action {
+	void	(*action)(struct softirq_action *);
+};
+
+// 软中断描述符表，实际上就是一个全局的数组
+static struct softirq_action softirq_vec[NR_SOFTIRQS] __cacheline_aligned_in_smp;
+
+// CPU软中断状态描述，当某个软中断触发时，__softirq_pending会置位对应的bit
+typedef struct {
+	unsigned int __softirq_pending;
+	unsigned int ipi_irqs[NR_IPI];
+} ____cacheline_aligned irq_cpustat_t;
+
+// 每个CPU都会维护一个状态信息结构
+irq_cpustat_t irq_stat[NR_CPUS] ____cacheline_aligned;
+
+// 内核为每个CPU都创建了一个软中断处理内核线程
+DEFINE_PER_CPU(struct task_struct *, ksoftirqd);
 ```
 
 这个是系统静态定义的软中断类型。
@@ -831,9 +851,37 @@ enum
 - 在中断返回时，CPU 会检查 `__softirq_pending` 成员的位，如果不为 0，说明有软中断需要处理，处理完后才会返回到中断进程；
 - 在进程上下文，需要调用 `wakeup_softirqd` 来唤醒 `ksoftirqd` 线程来处理。
 
+这里总结一下软中断需要注意的地方：
+
+- 软中断的回调函数在开中断的环境下执行，能够被其他中断抢占，但不能被进程抢占；
+- 同一类型的软中断可能在多个 CPU 上并行执行。
+- 软中断是在中断返回前，即退出硬中断上下文时，执行的，所以其还是执行在中断上下文，不能睡眠。
+
 #### tasklet
 
+tasklet 在内核中使用 `tasklet_struct` 表示，
 
+```c
+struct tasklet_struct
+{
+	struct tasklet_struct *next;
+	unsigned long state;
+	atomic_t count;
+	bool use_callback;
+	union {
+		void (*func)(unsigned long data);
+		void (*callback)(struct tasklet_struct *t);
+	};
+	unsigned long data;
+};
+```
+
+从上文中分析可以看出，`tasklet` 是软中断的一种类型，那么两者有何区别：
+
+- 软中断类型内核中都是静态分配，不支持动态分配，而 `tasklet` 支持动态和静态分配，也就是驱动程序中能比较方便的进行扩展；
+- 软中断可以在多个 CPU 上并行运行，因此需要考虑可重入问题，而 `tasklet ` 是串行执行，其会绑定在某个 CPU 上运行，运行完后再解绑，不要求重入问题，当然它的性能也就会下降一些。
+
+软中断上下文的优先级高于进程上下文，如果执行软中断和 tasklet 时间很长，那么高优先级的进程就长时间得不到运行，会影响系统的实时性，所以引入了 workqueue。
 
 ### workqueue
 
