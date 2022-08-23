@@ -737,7 +737,58 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
 
 ARM64 支持多个异常等级（在 X86 中就是特权级），其中 EL0 是用户模式，EL1 是内核模式，EL2 是虚拟化监管模式，EL3 是安全世界模式（这个是用来干嘛的）。
 
+时间比较紧张，之后再分析。
+
 ### 高层中断处理
+
+由于手头没有 ARM 的机器，这里就先看看 X86 的中断执行流程吧。
+
+这是串口中断的过程。
+
+```
+#0  serial8250_start_tx (port=0xffffffff836d1c60 <serial8250_ports>) at drivers/tty/serial/8250/8250_port.c:1654
+#1  0xffffffff817440ab in __uart_start (tty=<optimized out>) at drivers/tty/serial/serial_core.c:127
+#2  0xffffffff817453d2 in uart_start (tty=0xffff88810666e800) at drivers/tty/serial/serial_core.c:137
+#3  0xffffffff8174543e in uart_flush_chars (tty=<optimized out>) at drivers/tty/serial/serial_core.c:549
+#4  0xffffffff81728ec9 in __receive_buf (count=<optimized out>, fp=<optimized out>, cp=<optimized out>, tty=0xffff88810666e800) at drivers/tty/n_tty.c:1581
+#5  n_tty_receive_buf_common (tty=<optimized out>, cp=<optimized out>, fp=<optimized out>, count=<optimized out>, flow=flow@entry=1) at drivers/tty/n_tty.c:1674
+#6  0xffffffff81729d54 in n_tty_receive_buf2 (tty=<optimized out>, cp=<optimized out>, fp=<optimized out>, count=<optimized out>) at drivers/tty/n_tty.c:1709
+#7  0xffffffff8172bc22 in tty_ldisc_receive_buf (ld=ld@entry=0xffff8881027f49c0, p=p@entry=0xffff88810671e428 "d", f=f@entry=0x0 <fixed_percpu_data>, count=count@entry=1)
+    at drivers/tty/tty_buffer.c:471
+#8  0xffffffff8172c592 in tty_port_default_receive_buf (port=<optimized out>, p=0xffff88810671e428 "d", f=0x0 <fixed_percpu_data>, count=1) at drivers/tty/tty_port.c:39
+#9  0xffffffff8172bfd1 in receive_buf (count=<optimized out>, head=0xffff88810671e400, port=0xffff888100a80000) at drivers/tty/tty_buffer.c:491
+#10 flush_to_ldisc (work=0xffff888100a80008) at drivers/tty/tty_buffer.c:543
+#11 0xffffffff810c4a49 in process_one_work (worker=worker@entry=0xffff888100a2b0c0, work=0xffff888100a80008) at kernel/workqueue.c:2297
+#12 0xffffffff810c4c3d in worker_thread (__worker=0xffff888100a2b0c0) at kernel/workqueue.c:2444
+#13 0xffffffff810cc32a in kthread (_create=0xffff888100a5a280) at kernel/kthread.c:319
+#14 0xffffffff81004572 in ret_from_fork () at arch/x86/entry/entry_64.S:295
+#15 0x0000000000000000 in ?? ()
+```
+
+这只是键盘键入字符到字符显示在显示器上的一部分，下半部分是串口发起中断，
+
+```
+serial8250_tx_chars (up=up@entry=0xffffffff836d1c60 <serial8250_ports>) at drivers/tty/serial/8250/8250_port.c:1819
+#1  0xffffffff8174ccf4 in serial8250_handle_irq (port=port@entry=0xffffffff836d1c60 <serial8250_ports>, iir=<optimized out>) at drivers/tty/serial/8250/8250_port.c:1932
+#2  0xffffffff8174ce11 in serial8250_handle_irq (iir=<optimized out>, port=0xffffffff836d1c60 <serial8250_ports>) at drivers/tty/serial/8250/8250_port.c:1905
+#3  serial8250_default_handle_irq (port=0xffffffff836d1c60 <serial8250_ports>) at drivers/tty/serial/8250/8250_port.c:1949
+#4  0xffffffff817490e8 in serial8250_interrupt (irq=4, dev_id=0xffff8881058fd1a0) at drivers/tty/serial/8250/8250_core.c:126
+#5  0xffffffff8111d892 in __handle_irq_event_percpu (desc=desc@entry=0xffff8881001cda00, flags=flags@entry=0xffffc90000003f54) at kernel/irq/handle.c:156
+#6  0xffffffff8111d9e3 in handle_irq_event_percpu (desc=desc@entry=0xffff8881001cda00) at kernel/irq/handle.c:196
+#7  0xffffffff8111da6b in handle_irq_event (desc=desc@entry=0xffff8881001cda00) at kernel/irq/handle.c:213
+#8  0xffffffff81121ef3 in handle_edge_irq (desc=0xffff8881001cda00) at kernel/irq/chip.c:822
+#9  0xffffffff810395a3 in generic_handle_irq_desc (desc=0xffff8881001cda00) at ./include/linux/irqdesc.h:158
+#10 handle_irq (regs=<optimized out>, desc=0xffff8881001cda00) at arch/x86/kernel/irq.c:231
+#11 __common_interrupt (regs=<optimized out>, vector=39) at arch/x86/kernel/irq.c:250
+#12 0xffffffff81c085d8 in common_interrupt (regs=0xffffc9000064fc08, error_code=<optimized out>) at arch/x86/kernel/irq.c:240
+#13 0xffffffff81e00cde in asm_common_interrupt () at ./arch/x86/include/asm/idtentry.h:629
+```
+
+当然中断并不是这么简单，现在的内核还加入了中断线程化，还需要在唤醒中断注册时的 `thread_fn` 线程，然后进行调度，这就是为什么串口中断的处理会从 `ret_from_fork` 开始，然后使用 `worker_thread` 执行。
+
+内核在跳转到中断向量表对应的处理函数处理中断之前都是要保护现场的，在 X86 中使用 `SAVE_ALL` 宏，在 ARM 中使用 `irq_stack_entry` 宏。注意，在中断发生时，中断上下文会以栈帧的形式保存在中断进程的内核栈中，然后需要切换到中断栈。当中断处理完成后，`irq_stack_exit` 宏把中断栈切换回中断进程的内核栈，然后恢复上下文，并退出中断。每个 CPU 都有对应的中断栈 `irq_stack`。
+
+接下来考虑一个事情，为什么在中断上下文中不能睡眠？睡眠就是调用 `schedule` 让当前进程让出 CPU，调度器选择另一个进程继续执行。前面我们提到现在的内核使用的是一个单独的中断栈，而不是使用被中断进程的内核栈。因此在中断上下文中即无法获得当前进程的栈，也无法获取 `thread_info` 数据结构。因此这时调用 `schedule` 之后无法回到该中断上下文，未完成的中断也不能继续完成。此外中断控制器也等不到中断处理完的信息，导致无法响应同类型的中断。
 
 ### 软中断和 tasklets
 
