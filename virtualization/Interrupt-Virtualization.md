@@ -462,7 +462,7 @@ static int kvm_init(MachineState *ms)
 }
 ```
 
-这里也有个问题，用 KVM 的话会在 KVM 中创建虚拟的 PIC 或 APIC 设备进行模拟，硬件中断将发送到这些虚拟的中断设备，然后在注入到虚拟机中，那么不用 KVM 用 tcg 的话是怎样的过程？
+这里也有个问题，用 KVM 的话会在 KVM 中创建虚拟的 PIC 或 APIC 设备进行模拟，硬件中断将发送到这些虚拟的中断设备，然后再注入到虚拟机中，那么不用 KVM 用 tcg 的话是怎样的过程？
 
 ```c
 static void kvm_irqchip_create(KVMState *s)

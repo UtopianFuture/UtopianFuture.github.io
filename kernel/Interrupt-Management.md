@@ -902,7 +902,7 @@ workqueue 是内核里面很重要的一个机制，特别是内核驱动，**�
 - 并行，多个 work 不要相互阻塞；
 - 节省资源，多个 work 尽量共享资源 ( 进程、调度、内存 )，不要造成系统过多的资源浪费。
 
-为了实现的设计思想，workqueue 的设计实现也更新了很多版本。最新的 workqueue 实现叫做 CMWQ(Concurrency Managed Workqueue)，也就是用更加智能的算法来实现“并行和节省”。
+为了实现该设计思想，workqueue 的设计实现也更新了很多版本。最新的 workqueue 实现叫做 CMWQ(Concurrency Managed Workqueue)，也就是用更加智能的算法来实现“并行和节省”。
 
 workqueue 允许内核函数被激活，挂起，稍后**由 worker thread 的特殊内核线程来执行**。workqueue 中的函数运行在进程上下文中，
 
@@ -1205,13 +1205,13 @@ void __init workqueue_init_early(void)
 
 从代码中我们看到 `alloc_workqueue` 需要 3 个参数，第一个参数是 workqueue 的名字，但和原来的接口不同，这个创建对应的执行线程时不会再使用这个名字，第二个参数是 flag，表示在该 workqueue 的 work 会如何执行。
 
-- WQ_UNBOUND：workqueue 设计的是默认运行在 task 提交的 cpu 上，这样能够或和更好的内存局部性（cache 命中率更高）。而这个选项就是允许 task 运行在任何一个 cpu 上，unbround workqueue 让 work 尽早开始执行，而这会牺牲部分局部性。
-- WQ_FREEZABLE：设置这个选项的 workqueue 在系统 suspended 时将会 frozen。
+- WQ_UNBOUND：workqueue 设计的是默认运行在 task 提交的 cpu 上，这样能够或和更好的内存局部性（cache 命中率更高）。而这个选项就是允许 task 运行在任何一个 cpu 上，**unbround workqueue 让 work 尽早开始执行，而这会牺牲部分局部性**；
+- WQ_FREEZABLE：设置这个选项的 workqueue 在系统 suspended 时将会 frozen；
 - WQ_MEM_RECLAIM：All wq which might be used in the memory reclaim paths **MUST**  have this flag set.  The wq is guaranteed to have at least one execution context regardless of memory pressure.（不懂）
-- WQ_HIGHPRI：高优先级的 task 不会等待 cpu 空闲，它们会抢占 cpu ，立刻执行，所以这种 workqueue 的 tasks 会竞争 cpu。
-- WQ_CPU_INTENSIVE：这个很好理解，cpu 密集型 task。如果 cpu 已经被其他的 task 占用，那么这种 workqueue 的 task 就会被延迟。
-- WQ_SYSFS
-- WQ_POWER_EFFICIENT：降低能耗。当 `wq_power_efficient` 选项打开时，flag 变成 `WQ_UNBOUND`。目前只有 `events_power_efficient` 和 `events_freezable_power_efficient` 两个 workqueue 使用了这个选项。
+- WQ_HIGHPRI：高优先级的 task 不会等待 cpu 空闲，它们会抢占 cpu ，立刻执行，所以这种 workqueue 的 tasks 会竞争 cpu；
+- WQ_CPU_INTENSIVE：这个很好理解，cpu 密集型 task。如果 cpu 已经被其他的 task 占用，那么这种 workqueue 的 task 就会被延迟；
+- WQ_SYSFS：文件系统专用的？
+- WQ_POWER_EFFICIENT：降低能耗。当 `wq_power_efficient` 选项打开时，flag 变成 `WQ_UNBOUND`。目前只有 `events_power_efficient` 和 `events_freezable_power_efficient` 两个 workqueue 使用了这个选项；
 - __WQ_DRAINING
 - __WQ_ORDERED
 - __WQ_LEGACY：`create_workqueu` 使用这个选项。
@@ -1243,7 +1243,7 @@ void __init workqueue_init(void)
 
 	for_each_possible_cpu(cpu) {
 		for_each_cpu_worker_pool(pool, cpu) {
-			pool->node = cpu_to_node(cpu);
+			pool->node = cpu_to_node(cpu); // 将 worker_pool 绑定在 CPU 上
 		}
 	}
 
