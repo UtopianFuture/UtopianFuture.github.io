@@ -1102,7 +1102,621 @@ static MemoryRegionSection *address_space_lookup_region(AddressSpaceDispatch *d,
 
 ### KVM 内存虚拟化
 
-这部分涉及的内容也很多，主要是 EPT 页面的使用，之后有需要再分析。
+首先明确虚拟机中 mmu 的功能，当虚拟机内部进行内存访问的是后，mmu 会根据 guest 的页表将 GVA 转化为 GPA，然后根据 EPT 页表将 GPA 转换成 HPA，这就是所谓的两级地址转换，即代码中出现的 tdp(two dimission page)。在将 GVA 转化为 GPA 的过程中如果发生却也异常，这个异常会由 guest 处理，不需要 vm exit，而在 GPA 转换成 HPA 过程中发生缺页异常，则会以 `EXIT_REASON_EPT_VIOLATION` 退出到 host，然后使用 `[EXIT_REASON_EPT_VIOLATION] = handle_ept_violation,` 进行处理。
+
+这个大概的流程，我们需要搞懂 mmu 是怎样初始化、使用、处理缺页的，ept 是怎样初始化、使用、处理缺页的。下面就按照这个步骤进行分析。
+
+#### 虚拟机 MMU 初始化
+
+在 KVM 初始化的时候会调用架构相关的 `hardware_setup`，其会调用 `setup_vmcs_config`，在启动读取 `MSR_IA32_VMX_PROCBASED_CTLS` 寄存器，其控制大部分虚拟机执行特性，这个寄存器的功能可以看手册的 Volume 3 A.3.2 部分，其中有全面的介绍。这里我们只关注和内存虚拟化相关的部分。
+
+其实按照之前的习惯，应该先分析数据结构的，但是 `kvm_mmu` 太大了，而且大部分都不理解，就不水字数了，之后有机会再补充。
+
+```c
+static __init int hardware_setup(void)
+{
+	unsigned long host_bndcfgs;
+	struct desc_ptr dt;
+	int r, ept_lpage_level;
+
+	store_idt(&dt);
+	host_idt_base = dt.address;
+
+	vmx_setup_user_return_msrs();
+
+	if (setup_vmcs_config(&vmcs_config, &vmx_capability) < 0)
+		return -EIO;
+
+	...
+
+	if (!cpu_has_vmx_vpid() || !cpu_has_vmx_invvpid() ||
+	    !(cpu_has_vmx_invvpid_single() || cpu_has_vmx_invvpid_global()))
+		enable_vpid = 0;
+
+    // 这些函数其实都是读取全局变量 vmcs_config，其在 setup_vmcs_config 中以及设置好了
+	if (!cpu_has_vmx_ept() ||
+	    !cpu_has_vmx_ept_4levels() ||
+	    !cpu_has_vmx_ept_mt_wb() ||
+	    !cpu_has_vmx_invept_global())
+		enable_ept = 0; // 和 mmu, ept 相关的
+
+	/* NX support is required for shadow paging. */
+	if (!enable_ept && !boot_cpu_has(X86_FEATURE_NX)) {
+		pr_err_ratelimited("kvm: NX (Execute Disable) not supported\n");
+		return -EOPNOTSUPP;
+	}
+
+	if (!cpu_has_vmx_ept_ad_bits() || !enable_ept)
+		enable_ept_ad_bits = 0;
+
+	...
+
+	if (enable_ept)
+		kvm_mmu_set_ept_masks(enable_ept_ad_bits,
+				      cpu_has_vmx_ept_execute_only());
+
+	if (!enable_ept)
+		ept_lpage_level = 0;
+	else if (cpu_has_vmx_ept_1g_page())
+		ept_lpage_level = PG_LEVEL_1G;
+	else if (cpu_has_vmx_ept_2m_page())
+		ept_lpage_level = PG_LEVEL_2M;
+	else
+		ept_lpage_level = PG_LEVEL_4K;
+	kvm_configure_mmu(enable_ept, 0, vmx_get_max_tdp_level(),
+			  ept_lpage_level);
+
+	/*
+	 * Only enable PML when hardware supports PML feature, and both EPT
+	 * and EPT A/D bit features are enabled -- PML depends on them to work.
+	 */
+	if (!enable_ept || !enable_ept_ad_bits || !cpu_has_vmx_pml())
+		enable_pml = 0;
+
+	...
+
+	vmx_set_cpu_caps();
+
+	r = alloc_kvm_area();
+	if (r)
+		nested_vmx_hardware_unsetup();
+	return r;
+}
+```
+
+主要就是通过 `rdmsr` 读取物理寄存器，然后进行初始化。
+
+```c
+static __init int adjust_vmx_controls(u32 ctl_min, u32 ctl_opt,
+				      u32 msr, u32 *result)
+{
+	u32 vmx_msr_low, vmx_msr_high;
+	u32 ctl = ctl_min | ctl_opt;
+
+	rdmsr(msr, vmx_msr_low, vmx_msr_high);
+
+	ctl &= vmx_msr_high; /* bit == 0 in high word ==> must be zero */
+	ctl |= vmx_msr_low;  /* bit == 1 in low word  ==> must be one  */
+
+	/* Ensure minimum (required) set of control bits are supported. */
+	if (ctl_min & ~ctl)
+		return -EIO;
+
+	*result = ctl;
+	return 0;
+}
+```
+
+##### 关键函数 kvm_mmu_create
+
+KVM 在创建 VCPU 时会调用 `kvm_mmu_create` 创建虚拟机 MMU，从数据结构来看每个 VCPU 都有一个 MMU。
+
+KVM 部分不同内核版本差别还挺大的，索性将所有的初始化相关函数都给出来，一个个分析，
+
+`kvm_vm_ioctl` -> `kvm_vm_ioctl_create_vcpu` -> `kvm_arch_vcpu_create` -> `kvm_mmu_create` / `kvm_init_mmu`
+
+```c
+int kvm_mmu_create(struct kvm_vcpu *vcpu)
+{
+	int ret;
+
+    // 这些变量都是干什么用的？
+	vcpu->arch.mmu_pte_list_desc_cache.kmem_cache = pte_list_desc_cache;
+	vcpu->arch.mmu_pte_list_desc_cache.gfp_zero = __GFP_ZERO;
+
+	vcpu->arch.mmu_page_header_cache.kmem_cache = mmu_page_header_cache;
+	vcpu->arch.mmu_page_header_cache.gfp_zero = __GFP_ZERO;
+
+	vcpu->arch.mmu_shadow_page_cache.gfp_zero = __GFP_ZERO;
+
+	vcpu->arch.mmu = &vcpu->arch.root_mmu; // 这几个都是一个意思
+	vcpu->arch.walk_mmu = &vcpu->arch.root_mmu;
+
+	vcpu->arch.nested_mmu.translate_gpa = translate_nested_gpa;
+
+    // 这里创建了两个 mmu，怎么运行的？
+    // 看 struct kvm_vcpu_arch 的注释，这个好像是嵌套虚拟化用的
+	ret = __kvm_mmu_create(vcpu, &vcpu->arch.guest_mmu);
+
+	ret = __kvm_mmu_create(vcpu, &vcpu->arch.root_mmu);
+
+    ...
+
+	return ret;
+}
+```
+
+```c
+static int __kvm_mmu_create(struct kvm_vcpu *vcpu, struct kvm_mmu *mmu)
+{
+	struct page *page;
+	int i;
+
+	mmu->root_hpa = INVALID_PAGE; // ept 页表中第一级页表的物理地址
+	mmu->root_pgd = 0;
+	mmu->translate_gpa = translate_gpa;
+	for (i = 0; i < KVM_MMU_NUM_PREV_ROOTS; i++)
+		mmu->prev_roots[i] = KVM_MMU_ROOT_INFO_INVALID;
+
+    // PAE 是地址扩展的意思，将 32 位线性地址转换成 52 位物理地址，但不清楚为何需要下面这些操作
+	/*
+	 * When using PAE paging, the four PDPTEs are treated as 'root' pages,
+	 * while the PDP table is a per-vCPU construct that's allocated at MMU
+	 * creation.  When emulating 32-bit mode, cr3 is only 32 bits even on
+	 * x86_64.  Therefore we need to allocate the PDP table in the first
+	 * 4GB of memory, which happens to fit the DMA32 zone.  TDP paging
+	 * generally doesn't use PAE paging and can skip allocating the PDP
+	 * table.  The main exception, handled here, is SVM's 32-bit NPT.  The
+	 * other exception is for shadowing L1's 32-bit or PAE NPT on 64-bit
+	 * KVM; that horror is handled on-demand by mmu_alloc_shadow_roots().
+	 */
+	if (tdp_enabled && kvm_mmu_get_tdp_level(vcpu) > PT32E_ROOT_LEVEL)
+		return 0;
+
+	page = alloc_page(GFP_KERNEL_ACCOUNT | __GFP_DMA32);
+	if (!page)
+		return -ENOMEM;
+
+	mmu->pae_root = page_address(page);
+
+	/*
+	 * CR3 is only 32 bits when PAE paging is used, thus it's impossible to
+	 * get the CPU to treat the PDPTEs as encrypted.  Decrypt the page so
+	 * that KVM's writes and the CPU's reads get along.  Note, this is
+	 * only necessary when using shadow paging, as 64-bit NPT can get at
+	 * the C-bit even when shadowing 32-bit NPT, and SME isn't supported
+	 * by 32-bit kernels (when KVM itself uses 32-bit NPT).
+	 */
+	if (!tdp_enabled)
+		set_memory_decrypted((unsigned long)mmu->pae_root, 1);
+	else
+		WARN_ON_ONCE(shadow_me_mask);
+
+	for (i = 0; i < 4; ++i)
+		mmu->pae_root[i] = INVALID_PAE_ROOT;
+
+	return 0;
+}
+```
+
+##### 关键函数 kvm_init_mmu
+
+这个函数根据不同的使用场景调用不同的初始化函数，这里主要分析 `init_kvm_tdp_mmu`，
+
+```c
+void kvm_init_mmu(struct kvm_vcpu *vcpu)
+{
+	if (mmu_is_nested(vcpu))
+		init_kvm_nested_mmu(vcpu);
+	else if (tdp_enabled)
+		init_kvm_tdp_mmu(vcpu); // tdp - two dimission page，这个是需要用到的
+	else
+        // 我一直以为 softmmu 是 qemu 中才有的优化，没想到在 kvm 中也有
+        // 并不是，这是影子页表的初始化
+		init_kvm_softmmu(vcpu);
+}
+```
+
+这里是设置 mmu 的几个回调函数，之后根据 VCPU 所处的模式设置 `gva_to_gpa`，
+
+```c
+static void init_kvm_tdp_mmu(struct kvm_vcpu *vcpu)
+{
+	struct kvm_mmu *context = &vcpu->arch.root_mmu;
+	struct kvm_mmu_role_regs regs = vcpu_to_role_regs(vcpu);
+	union kvm_mmu_role new_role =
+		kvm_calc_tdp_mmu_root_page_role(vcpu, &regs, false);
+
+	if (new_role.as_u64 == context->mmu_role.as_u64)
+		return;
+
+	context->mmu_role.as_u64 = new_role.as_u64;
+	context->page_fault = kvm_tdp_page_fault; // 缺页处理
+	context->sync_page = nonpaging_sync_page; // 没啥用，返回 0
+	context->invlpg = NULL; // 不需要处理么，我看
+	context->shadow_root_level = kvm_mmu_get_tdp_level(vcpu);
+	context->direct_map = true; // 直接映射？
+	context->get_guest_pgd = get_cr3;
+	context->get_pdptr = kvm_pdptr_read;
+	context->inject_page_fault = kvm_inject_page_fault;
+	context->root_level = role_regs_to_root_level(&regs);
+
+	if (!is_cr0_pg(context))
+		context->gva_to_gpa = nonpaging_gva_to_gpa;
+	else if (is_cr4_pae(context))
+		context->gva_to_gpa = paging64_gva_to_gpa;
+	else
+		context->gva_to_gpa = paging32_gva_to_gpa;
+
+	reset_guest_paging_metadata(vcpu, context);
+	reset_tdp_shadow_zero_bits_mask(vcpu, context);
+}
+```
+
+#### 虚拟机物理地址的设置
+
+虚拟机的物理内存是通过 `ioctl(KVM_SET_USER_MEMORY_REGION)` 实现的。
+
+```c
+static long kvm_vm_ioctl(struct file *filp,
+			   unsigned int ioctl, unsigned long arg)
+{
+	struct kvm *kvm = filp->private_data;
+	void __user *argp = (void __user *)arg;
+	int r;
+
+	if (kvm->mm != current->mm || kvm->vm_bugged)
+		return -EIO;
+	switch (ioctl) {
+	case KVM_CREATE_VCPU:
+		r = kvm_vm_ioctl_create_vcpu(kvm, arg);
+		break;
+
+   	...
+
+	case KVM_SET_USER_MEMORY_REGION: {
+		struct kvm_userspace_memory_region kvm_userspace_mem;
+
+		r = -EFAULT;
+		if (copy_from_user(&kvm_userspace_mem, argp, // 获取从用户态传来的数据
+						sizeof(kvm_userspace_mem)))
+			goto out;
+
+        // 现在 userspace_addr 和 memory_size 应该已经分配好了
+		r = kvm_vm_ioctl_set_memory_region(kvm, &kvm_userspace_mem);
+		break;
+	}
+
+    ...
+
+	default:
+		r = kvm_arch_vm_ioctl(filp, ioctl, arg);
+	}
+out:
+	return r;
+}
+```
+
+这其中 `kvm_userspace_memory_region` 是用户态传过来的参数类型，用来表示虚拟机的一段物理地址，
+
+```c
+/* for KVM_SET_USER_MEMORY_REGION */
+struct kvm_userspace_memory_region {
+	__u32 slot; // ID，包括 AddressSpace 的 ID 和本身的 ID
+	__u32 flags; // 该段内存的属性
+	__u64 guest_phys_addr; // 虚拟机的物理内存
+	__u64 memory_size; /* bytes */ // 大小
+	__u64 userspace_addr; /* start of the userspace allocated memory */ // 用户态分配的地址
+};
+```
+
+KVM 中有几个相似的数据结构，我们来分析一下它们的区别：
+
+首先是表示虚拟机的 `struct kvm`，
+
+```c
+struct kvm {
+
+    ...
+
+	struct mm_struct *mm; /* userspace tied to this vm */
+    // 为 0 表示普通虚拟机用的 RAM，为 1 表示 SMM 的模拟
+	struct kvm_memslots __rcu *memslots[KVM_ADDRESS_SPACE_NUM];
+	struct kvm_vcpu *vcpus[KVM_MAX_VCPUS];
+
+	...
+};
+```
+
+从代码上来看，整个虚拟机就两个 `kvm_memslots`，然后 `kvm_memory_slot` 应该才是具体的内存区域，
+
+```c
+/*
+ * Note:
+ * memslots are not sorted by id anymore, please use id_to_memslot()
+ * to get the memslot by its id.
+ */
+struct kvm_memslots {
+	u64 generation;
+	/* The mapping table from slot id to the index in memslots[]. */
+	short id_to_index[KVM_MEM_SLOTS_NUM]; // slot id 和 index 有什么区别么
+	atomic_t last_used_slot;
+	int used_slots;
+	struct kvm_memory_slot memslots[];
+};
+```
+
+这个就很合理了，一个内存条该有的信息，
+
+```c
+struct kvm_memory_slot {
+	gfn_t base_gfn; // 该 slot 对应虚拟机页框的起点
+	unsigned long npages; // 该 slot 中有几个 page
+	unsigned long *dirty_bitmap; // 脏页的 bitmap
+	struct kvm_arch_memory_slot arch;
+	unsigned long userspace_addr; // 对应 HVA 的地址
+	u32 flags;
+	short id;
+	u16 as_id;
+};
+```
+
+`kvm_arch_memory_slot` 表示内存条中架构相关的信息，
+
+```c
+struct kvm_arch_memory_slot {
+    // rmap 保存 gfn 与对应页表项的 map
+    // KVM_NR_PAGE_SIZES 表示页表项的种类，目前为 3
+    // 分别表示 4KB,2MB,1GB 的页面，后两者称为大页
+	struct kvm_rmap_head *rmap[KVM_NR_PAGE_SIZES];
+    // 保存大页信息，所以个数比 rmap 少 1
+	struct kvm_lpage_info *lpage_info[KVM_NR_PAGE_SIZES - 1];
+	unsigned short *gfn_track[KVM_PAGE_TRACK_MAX]; // 这个又是啥呢
+};
+```
+
+##### 关键函数 __kvm_set_memory_region
+
+该函数主要负责建立映射（哪个到哪个的映射？）
+
+```c
+/*
+ * Allocate some memory and give it an address in the guest physical address space.
+ *
+ * Discontiguous memory is allowed, mostly for framebuffers.
+ *
+ * Must be called holding kvm->slots_lock for write.
+ */
+int __kvm_set_memory_region(struct kvm *kvm,
+			    const struct kvm_userspace_memory_region *mem)
+{
+	struct kvm_memory_slot old, new;
+	struct kvm_memory_slot *tmp;
+	enum kvm_mr_change change;
+	int as_id, id;
+	int r;
+
+	r = check_memory_region_flags(mem);
+	if (r)
+		return r;
+
+	as_id = mem->slot >> 16; // 前面说了 slot 表示 AddressSpace 的 ID 和该内存条本身的 ID
+	id = (u16)mem->slot;
+
+	/* General sanity checks */
+
+    ...
+
+	/*
+	 * Make a full copy of the old memslot, the pointer will become stale
+	 * when the memslots are re-sorted by update_memslots(), and the old
+	 * memslot needs to be referenced after calling update_memslots(), e.g.
+	 * to free its resources and for arch specific behavior.
+	 */
+	tmp = id_to_memslot(__kvm_memslots(kvm, as_id), id); // 这个应该是理解上面几个数据结构之间关系的关键
+	if (tmp) { // 该内存条之前已经存在
+		old = *tmp;
+		tmp = NULL;
+	} else {
+		memset(&old, 0, sizeof(old));
+		old.id = id;
+	}
+
+	if (!mem->memory_size)
+		return kvm_delete_memslot(kvm, mem, &old, as_id);
+
+	new.as_id = as_id;
+	new.id = id;
+	new.base_gfn = mem->guest_phys_addr >> PAGE_SHIFT;
+	new.npages = mem->memory_size >> PAGE_SHIFT;
+	new.flags = mem->flags;
+	new.userspace_addr = mem->userspace_addr;
+
+	if (new.npages > KVM_MEM_MAX_NR_PAGES)
+		return -EINVAL;
+
+	if (!old.npages) { // 该内存条之前不存在
+		change = KVM_MR_CREATE; // 所以状态为 create
+		new.dirty_bitmap = NULL;
+		memset(&new.arch, 0, sizeof(new.arch));
+	} else { /* Modify an existing slot. */
+		if ((new.userspace_addr != old.userspace_addr) ||
+		    (new.npages != old.npages) || // 不是要修改么，为啥不能相同？
+		    ((new.flags ^ old.flags) & KVM_MEM_READONLY))
+			return -EINVAL;
+
+        // 哦，原来只能该映射到 gpa 的地址，整个内存条的大小和位置都不能变
+		if (new.base_gfn != old.base_gfn)
+			change = KVM_MR_MOVE;
+		else if (new.flags != old.flags)
+			change = KVM_MR_FLAGS_ONLY;
+		else /* Nothing to change. */
+			return 0;
+
+		/* Copy dirty_bitmap and arch from the current memslot. */
+		new.dirty_bitmap = old.dirty_bitmap; // 都映射到新的 gfa 了，为啥 dirty bitmap 还要继承？
+		memcpy(&new.arch, &old.arch, sizeof(new.arch));
+	}
+
+	if ((change == KVM_MR_CREATE) || (change == KVM_MR_MOVE)) {
+		/* Check for overlaps */
+		kvm_for_each_memslot(tmp, __kvm_memslots(kvm, as_id)) {
+			if (tmp->id == id)
+				continue;
+            // 检查和现有的 memslots 是否重叠
+            // 因为这些都是 gpa，即 guest 看到的物理地址，不能重叠
+			if (!((new.base_gfn + new.npages <= tmp->base_gfn) ||
+			      (new.base_gfn >= tmp->base_gfn + tmp->npages)))
+				return -EEXIST;
+		}
+	}
+
+	/* Allocate/free page dirty bitmap as needed */
+	if (!(new.flags & KVM_MEM_LOG_DIRTY_PAGES)) // 好吧，对于 dirty page 我没有完全搞懂
+		new.dirty_bitmap = NULL;
+	else if (!new.dirty_bitmap && !kvm->dirty_ring_size) {
+		r = kvm_alloc_dirty_bitmap(&new);
+		if (r)
+			return r;
+
+		if (kvm_dirty_log_manual_protect_and_init_set(kvm))
+			bitmap_set(new.dirty_bitmap, 0, new.npages);
+	}
+
+	r = kvm_set_memslot(kvm, mem, &old, &new, as_id, change); // 修改还是创建都是在这里完成的
+	if (r)
+		goto out_bitmap;
+
+	if (old.dirty_bitmap && !new.dirty_bitmap)
+		kvm_destroy_dirty_bitmap(&old);
+	return 0;
+
+out_bitmap:
+	if (new.dirty_bitmap && !old.dirty_bitmap)
+		kvm_destroy_dirty_bitmap(&new);
+	return r;
+}
+```
+
+为什么要经过这样的转换？
+
+```c
+static inline
+struct kvm_memory_slot *id_to_memslot(struct kvm_memslots *slots, int id)
+{
+	int index = slots->id_to_index[id];
+	struct kvm_memory_slot *slot;
+
+	if (index < 0)
+		return NULL;
+
+	slot = &slots->memslots[index];
+
+	WARN_ON(slot->id != id);
+	return slot;
+}
+```
+
+##### 关键函数 kvm_set_memslot
+
+```c
+static int kvm_set_memslot(struct kvm *kvm,
+			   const struct kvm_userspace_memory_region *mem,
+			   struct kvm_memory_slot *old,
+			   struct kvm_memory_slot *new, int as_id,
+			   enum kvm_mr_change change)
+{
+	struct kvm_memory_slot *slot;
+	struct kvm_memslots *slots;
+	int r;
+
+	/*
+	 * Released in install_new_memslots.
+	 *
+	 * Must be held from before the current memslots are copied until
+	 * after the new memslots are installed with rcu_assign_pointer,
+	 * then released before the synchronize srcu in install_new_memslots.
+	 *
+	 * When modifying memslots outside of the slots_lock, must be held
+	 * before reading the pointer to the current memslots until after all
+	 * changes to those memslots are complete.
+	 *
+	 * These rules ensure that installing new memslots does not lose
+	 * changes made to the previous memslots.
+	 */
+	mutex_lock(&kvm->slots_arch_lock);
+
+    // 为何要 dupicate？
+	slots = kvm_dup_memslots(__kvm_memslots(kvm, as_id), change);
+	if (!slots) {
+		mutex_unlock(&kvm->slots_arch_lock);
+		return -ENOMEM;
+	}
+
+	if (change == KVM_MR_DELETE || change == KVM_MR_MOVE) {
+		/*
+		 * Note, the INVALID flag needs to be in the appropriate entry
+		 * in the freshly allocated memslots, not in @old or @new.
+		 */
+		slot = id_to_memslot(slots, old->id);
+		slot->flags |= KVM_MEMSLOT_INVALID;
+
+		/*
+		 * We can re-use the memory from the old memslots.
+		 * It will be overwritten with a copy of the new memslots
+		 * after reacquiring the slots_arch_lock below.
+		 */
+		slots = install_new_memslots(kvm, as_id, slots);
+
+		/* From this point no new shadow pages pointing to a deleted,
+		 * or moved, memslot will be created.
+		 *
+		 * validation of sp->gfn happens in:
+		 *	- gfn_to_hva (kvm_read_guest, gfn_to_pfn)
+		 *	- kvm_is_visible_gfn (mmu_check_root)
+		 */
+		kvm_arch_flush_shadow_memslot(kvm, slot);
+
+		/* Released in install_new_memslots. */
+		mutex_lock(&kvm->slots_arch_lock);
+
+		/*
+		 * The arch-specific fields of the memslots could have changed
+		 * between releasing the slots_arch_lock in
+		 * install_new_memslots and here, so get a fresh copy of the
+		 * slots.
+		 */
+		kvm_copy_memslots(slots, __kvm_memslots(kvm, as_id));
+	}
+
+	r = kvm_arch_prepare_memory_region(kvm, new, mem, change);
+	if (r)
+		goto out_slots;
+
+	update_memslots(slots, new, change);
+	slots = install_new_memslots(kvm, as_id, slots);
+
+	kvm_arch_commit_memory_region(kvm, mem, old, new, change);
+
+	kvfree(slots);
+	return 0;
+
+out_slots:
+	if (change == KVM_MR_DELETE || change == KVM_MR_MOVE) {
+		slot = id_to_memslot(slots, old->id);
+		slot->flags &= ~KVM_MEMSLOT_INVALID;
+		slots = install_new_memslots(kvm, as_id, slots);
+	} else {
+		mutex_unlock(&kvm->slots_arch_lock);
+	}
+	kvfree(slots);
+	return r;
+}
+```
+
+
+
+#### EPT 页表的构建
 
 ### MMIO 机制
 
@@ -1131,3 +1745,5 @@ static MemoryRegionSection *address_space_lookup_region(AddressSpaceDispatch *d,
 ### Reference
 
 [1] http://blog.vmsplice.net/2016/01/qemu-internals-how-guest-physical-ram.html
+
+[2] https://blog.csdn.net/xelatex_kvm/article/details/17685123
