@@ -1089,3 +1089,9 @@ const主要用来修饰变量、函数形参和类成员函数：
 ### fwnode
 
 The fwnode refers to a *firmware node* usually representing an entry in either Device Tree or ACPI (generally the DSDT table). Device Tree and ACPI are two different ways to define devices and their properties and interconnections between them. They both use tree structures to encode this information.
+
+### Simulators and Emulators
+
+A simulator is designed to create an environment that contains all of the software variables and configurations that will exist in an app’s actual production environment. In contrast, an emulator attempts to mimic all of the hardware features of a production environment and software features.
+
+简单来说，simulator 只需要模拟功能，至于这个功能的实现是不是和硬件实现一样，不重要；而 emulator 则需要实现和硬件运行流程一样的模拟。
