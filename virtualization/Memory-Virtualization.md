@@ -1630,23 +1630,9 @@ static int kvm_set_memslot(struct kvm *kvm,
 	struct kvm_memslots *slots;
 	int r;
 
-	/*
-	 * Released in install_new_memslots.
-	 *
-	 * Must be held from before the current memslots are copied until
-	 * after the new memslots are installed with rcu_assign_pointer,
-	 * then released before the synchronize srcu in install_new_memslots.
-	 *
-	 * When modifying memslots outside of the slots_lock, must be held
-	 * before reading the pointer to the current memslots until after all
-	 * changes to those memslots are complete.
-	 *
-	 * These rules ensure that installing new memslots does not lose
-	 * changes made to the previous memslots.
-	 */
-	mutex_lock(&kvm->slots_arch_lock);
+	...
 
-    // 为何要 dupicate？
+    // 为何要 duplicate？
 	slots = kvm_dup_memslots(__kvm_memslots(kvm, as_id), change);
 	if (!slots) {
 		mutex_unlock(&kvm->slots_arch_lock);
@@ -1666,7 +1652,7 @@ static int kvm_set_memslot(struct kvm *kvm,
 		 * It will be overwritten with a copy of the new memslots
 		 * after reacquiring the slots_arch_lock below.
 		 */
-		slots = install_new_memslots(kvm, as_id, slots);
+		slots = install_new_memslots(kvm, as_id, slots); // 主要是更新 generation 的，不清楚这个变量是干嘛的
 
 		/* From this point no new shadow pages pointing to a deleted,
 		 * or moved, memslot will be created.
@@ -1689,34 +1675,552 @@ static int kvm_set_memslot(struct kvm *kvm,
 		kvm_copy_memslots(slots, __kvm_memslots(kvm, as_id));
 	}
 
-	r = kvm_arch_prepare_memory_region(kvm, new, mem, change);
+	r = kvm_arch_prepare_memory_region(kvm, new, mem, change); // 这里主要是设置 rmap 和 lpage_info 的
 	if (r)
 		goto out_slots;
 
-	update_memslots(slots, new, change);
+	update_memslots(slots, new, change); // 将新建的 memslot 插入 memslots 中，它的作用注释已经很清楚了
 	slots = install_new_memslots(kvm, as_id, slots);
 
-	kvm_arch_commit_memory_region(kvm, mem, old, new, change);
+	kvm_arch_commit_memory_region(kvm, mem, old, new, change); // 提交内存布局（向谁提交？）
 
 	kvfree(slots);
 	return 0;
 
-out_slots:
-	if (change == KVM_MR_DELETE || change == KVM_MR_MOVE) {
-		slot = id_to_memslot(slots, old->id);
-		slot->flags &= ~KVM_MEMSLOT_INVALID;
-		slots = install_new_memslots(kvm, as_id, slots);
+    ...
+}
+```
+
+修改内存布局，并重新排列。重新排列是按照 `slots->memslots` 中每个 gfn 从大到小排列的，这样能够根据 gfn 快速的通过二分查找找到对应的 slot，
+
+```c
+/*
+ *
+ *  - When deleting a memslot, the deleted memslot simply needs to be moved to
+ *    the end of the array.
+ *
+ *  - When creating a memslot, the algorithm "inserts" the new memslot at the
+ *    end of the array and then it forward to its correct location.
+ *
+ *  - When moving a memslot, the algorithm first moves the updated memslot
+ *    backward to handle the scenario where the memslot's GFN was changed to a
+ *    lower value.  update_memslots() then falls through and runs the same flow
+ *    as creating a memslot to move the memslot forward to handle the scenario
+ *    where its GFN was changed to a higher value.
+ */
+static void update_memslots(struct kvm_memslots *slots,
+			    struct kvm_memory_slot *memslot,
+			    enum kvm_mr_change change)
+{
+	int i;
+
+	if (change == KVM_MR_DELETE) {
+		kvm_memslot_delete(slots, memslot);
 	} else {
-		mutex_unlock(&kvm->slots_arch_lock);
+		if (change == KVM_MR_CREATE)
+			i = kvm_memslot_insert_back(slots);
+		else
+			i = kvm_memslot_move_backward(slots, memslot);
+		i = kvm_memslot_move_forward(slots, memslot, i);
+
+		/*
+		 * Copy the memslot to its new position in memslots and update
+		 * its index accordingly.
+		 */
+		slots->memslots[i] = *memslot;
+		slots->id_to_index[memslot->id] = i;
 	}
-	kvfree(slots);
+}
+```
+
+```c
+void kvm_arch_commit_memory_region(struct kvm *kvm,
+				const struct kvm_userspace_memory_region *mem,
+				struct kvm_memory_slot *old,
+				const struct kvm_memory_slot *new,
+				enum kvm_mr_change change)
+{
+	if (!kvm->arch.n_requested_mmu_pages)
+        // 使计算出来的 nr_mmu_pages 生效，即将其写入 kvm->arch.n_max_mmu_pages 中
+		kvm_mmu_change_mmu_pages(kvm,
+                // 计算当前虚拟机所需要的页数 nr_mmu_pages，即将每个 kvm_memslots 的每个 kvm_memory_slot
+                // 所需的 npages 加起来
+                // 所需页数最小值是 64
+				kvm_mmu_calculate_default_mmu_pages(kvm));
+
+    // 主要是设置 dirty bitmap
+	kvm_mmu_slot_apply_flags(kvm, old, new, change);
+
+	/* Free the arrays associated with the old memslot. */
+	if (change == KVM_MR_MOVE)
+		kvm_arch_free_memslot(kvm, old);
+}
+```
+
+这部分源码看完了，但还是有个问题，不知道怎么调试 KVM，所以虚拟机的物理地址的设置只能通过在 QEMU 的 `ioctl(KVM_SET_USER_MEMORY_REGION)` 来间接的看会设置哪些 mr。
+
+#### EPT 页表的构建
+
+没有虚拟机的情况下，页表是通过处理 page fault 来构建的，ept 页表也是这样构建的，下面就来分析一下这个过程。
+
+在 [CPU 虚拟化](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/virtualization/CPU-Virtualization.md)部分分析过虚拟机的运行过程，我们知道在 `vcpu_enter_guest` 会完成 vm entry 和 vm exit，退回到 root 态会调用架构相关的 `handle_exit`，
+
+```c
+static int vcpu_run(struct kvm_vcpu *vcpu)
+{
+	int r;
+	struct kvm *kvm = vcpu->kvm;
+
+	vcpu->srcu_idx = srcu_read_lock(&kvm->srcu);
+	vcpu->arch.l1tf_flush_l1d = true;
+
+	for (;;) {
+		if (kvm_vcpu_running(vcpu)) {
+			r = vcpu_enter_guest(vcpu);
+		} else {
+			r = vcpu_block(kvm, vcpu);
+		}
+
+		if (r <= 0)
+			break;
+
+		...
+	}
+
 	return r;
 }
 ```
 
+```c
+/*
+ * Returns 1 to let vcpu_run() continue the guest execution loop without
+ * exiting to the userspace.  Otherwise, the value will be returned to the
+ * userspace.
+ */
+static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
+{
+	int r;
+	bool req_int_win =
+		dm_request_for_irq_injection(vcpu) &&
+		kvm_cpu_accept_dm_intr(vcpu);
+	fastpath_t exit_fastpath;
 
+	bool req_immediate_exit = false;
 
-#### EPT 页表的构建
+	... // vm entry 前的各种中断、异常注入
+
+	for (;;) {
+		exit_fastpath = static_call(kvm_x86_run)(vcpu);
+		if (likely(exit_fastpath != EXIT_FASTPATH_REENTER_GUEST))
+			break;
+
+                if (unlikely(kvm_vcpu_exit_request(vcpu))) {
+			exit_fastpath = EXIT_FASTPATH_EXIT_HANDLED;
+			break;
+		}
+
+		if (vcpu->arch.apicv_active)
+			static_call(kvm_x86_sync_pir_to_irr)(vcpu);
+        }
+
+	...
+
+	static_call(kvm_x86_handle_exit_irqoff)(vcpu);
+
+	...
+
+	r = static_call(kvm_x86_handle_exit)(vcpu, exit_fastpath); // intel 对应 vmx_handle_exit
+
+    ...
+
+	return r;
+}
+```
+
+##### 关键函数 handle_ept_violation
+
+EPT 异常会调用 `handle_ept_violation`，我们看看是怎么处理的，
+
+```c
+static int handle_ept_violation(struct kvm_vcpu *vcpu)
+{
+	unsigned long exit_qualification;
+	gpa_t gpa;
+	u64 error_code;
+
+	exit_qualification = vmx_get_exit_qual(vcpu); // vmcs_readl(EXIT_QUALIFICATION) 读取退出原因
+
+	/*
+	 * EPT violation happened while executing iret from NMI,
+	 * "blocked by NMI" bit has to be set before next VM entry.
+	 * There are errata that may cause this bit to not be set:
+	 * AAK134, BY25.
+	 */
+	if (!(to_vmx(vcpu)->idt_vectoring_info & VECTORING_INFO_VALID_MASK) &&
+			enable_vnmi &&
+			(exit_qualification & INTR_INFO_UNBLOCK_NMI))
+		vmcs_set_bits(GUEST_INTERRUPTIBILITY_INFO, GUEST_INTR_STATE_NMI);
+
+	gpa = vmcs_read64(GUEST_PHYSICAL_ADDRESS); // 发生 EPT 异常的地址
+	trace_kvm_page_fault(gpa, exit_qualification);
+
+	/* Is it a read fault? */
+	error_code = (exit_qualification & EPT_VIOLATION_ACC_READ)
+		     ? PFERR_USER_MASK : 0;
+	/* Is it a write fault? */
+	error_code |= (exit_qualification & EPT_VIOLATION_ACC_WRITE)
+		      ? PFERR_WRITE_MASK : 0;
+	/* Is it a fetch fault? */
+	error_code |= (exit_qualification & EPT_VIOLATION_ACC_INSTR)
+		      ? PFERR_FETCH_MASK : 0;
+	/* ept page table entry is present? */
+	error_code |= (exit_qualification &
+		       (EPT_VIOLATION_READABLE | EPT_VIOLATION_WRITABLE |
+			EPT_VIOLATION_EXECUTABLE))
+		      ? PFERR_PRESENT_MASK : 0;
+
+	error_code |= (exit_qualification & EPT_VIOLATION_GVA_TRANSLATED) != 0 ?
+	       PFERR_GUEST_FINAL_MASK : PFERR_GUEST_PAGE_MASK;
+
+	vcpu->arch.exit_qualification = exit_qualification;
+
+	/*
+	 * Check that the GPA doesn't exceed physical memory limits, as that is
+	 * a guest page fault.  We have to emulate the instruction here, because
+	 * if the illegal address is that of a paging structure, then
+	 * EPT_VIOLATION_ACC_WRITE bit is set.  Alternatively, if supported we
+	 * would also use advanced VM-exit information for EPT violations to
+	 * reconstruct the page fault error code.
+	 */
+	if (unlikely(allow_smaller_maxphyaddr && kvm_vcpu_is_illegal_gpa(vcpu, gpa)))
+		return kvm_emulate_instruction(vcpu, 0);
+
+	return kvm_mmu_page_fault(vcpu, gpa, error_code, NULL, 0);
+}
+```
+
+##### 关键函数 direct_page_fault
+
+`kvm_mmu_page_fault` -> `kvm_mmu_do_page_fault` -> `kvm_tdp_page_fault` -> `direct_page_fault`
+
+这个函数需要处理很多种情况，但很多都没有搞懂。
+
+```c
+static int direct_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
+			     bool prefault, int max_level, bool is_tdp)
+{
+	bool is_tdp_mmu_fault = is_tdp_mmu(vcpu->arch.mmu);
+	bool write = error_code & PFERR_WRITE_MASK;
+	bool map_writable;
+
+	gfn_t gfn = gpa >> PAGE_SHIFT;
+	unsigned long mmu_seq;
+	kvm_pfn_t pfn;
+	hva_t hva;
+	int r;
+
+	if (page_fault_handle_page_track(vcpu, error_code, gfn))
+		return RET_PF_EMULATE;
+
+    // 何为 fast?
+    // 只有当 EPT 页表存在且是由写保护产生的 EPT 异常才会进行快速处理
+    // 这个也不懂，需要进一步分析
+	r = fast_page_fault(vcpu, gpa, error_code);
+	if (r != RET_PF_INVALID)
+		return r;
+
+    // 保证 3 个 cache （前面有提到每个 VCPU 都有 3 个 cache）有足够多的空间
+    // 空间不足的话需要分配，这块还不懂
+	r = mmu_topup_memory_caches(vcpu, false);
+	if (r)
+		return r;
+
+	mmu_seq = vcpu->kvm->mmu_notifier_seq;
+	smp_rmb();
+
+	if (kvm_faultin_pfn(vcpu, prefault, gfn, gpa, &pfn, &hva, // 会调用 __gfn_to_pfn_memslot
+			 write, &map_writable, &r))
+		return r;
+
+	if (handle_abnormal_pfn(vcpu, is_tdp ? 0 : gpa, gfn, pfn, ACC_ALL, &r))
+		return r;
+
+	...
+
+	if (!is_noslot_pfn(pfn) && mmu_notifier_retry_hva(vcpu->kvm, mmu_seq, hva))
+		goto out_unlock;
+	r = make_mmu_pages_available(vcpu);
+	if (r)
+		goto out_unlock;
+
+	if (is_tdp_mmu_fault)
+		r = kvm_tdp_mmu_map(vcpu, gpa, error_code, map_writable, max_level,
+				    pfn, prefault);
+	else
+		r = __direct_map(vcpu, gpa, error_code, map_writable, max_level, pfn, // 建立 gpa 到 hpa 的映射
+				 prefault, is_tdp);
+
+    ...
+
+	return r;
+}
+```
+
+这里还有一个地方值得注意一下，在 `kvm_faultin_pfn` 中会调用 `__gfn_to_pfn_memslot`，我不清楚 `kvm_faultin_pfn` 是干什么用的，但是 gfn 到 pfn 的转换需要分析一下，
+
+```c
+kvm_pfn_t __gfn_to_pfn_memslot(struct kvm_memory_slot *slot, gfn_t gfn,
+			       bool atomic, bool *async, bool write_fault,
+			       bool *writable, hva_t *hva)
+{
+	unsigned long addr = __gfn_to_hva_many(slot, gfn, NULL, write_fault); // 转化为 hva？
+
+	...
+
+	return hva_to_pfn(addr, atomic, async, write_fault,
+			  writable);
+}
+```
+
+其实转换很简单，`__gfn_to_hva_many` -> `__gfn_to_hva_memslot`
+
+```c
+static inline unsigned long
+__gfn_to_hva_memslot(const struct kvm_memory_slot *slot, gfn_t gfn)
+{
+	unsigned long offset = gfn - slot->base_gfn;
+	offset = array_index_nospec(offset, slot->npages);
+	return slot->userspace_addr + offset * PAGE_SIZE; // 前面说过，userspace_addr 表示 qemu 中的地址，即 hva
+}
+```
+
+然后将 hva 转换成 hpa，
+
+```c
+static kvm_pfn_t hva_to_pfn(unsigned long addr, bool atomic, bool *async,
+			bool write_fault, bool *writable)
+{
+	struct vm_area_struct *vma;
+	kvm_pfn_t pfn = 0;
+	int npages, r;
+
+    // 看着很熟悉，但实现起来比我想象的复杂
+	if (hva_to_pfn_fast(addr, write_fault, writable, &pfn))
+		return pfn;
+
+    // 快慢路径，之后有需要再分析
+	npages = hva_to_pfn_slow(addr, async, write_fault, writable, &pfn);
+	if (npages == 1)
+		return pfn;
+
+	...
+
+retry:
+	vma = vma_lookup(current->mm, addr); // 哈哈，这个！传统技能了
+
+	if (vma == NULL) // 地址错误
+		pfn = KVM_PFN_ERR_FAULT;
+	else if (vma->vm_flags & (VM_IO | VM_PFNMAP)) {
+		r = hva_to_pfn_remapped(vma, addr, async, write_fault, writable, &pfn);
+		if (r == -EAGAIN)
+			goto retry;
+		if (r < 0)
+			pfn = KVM_PFN_ERR_FAULT;
+	} else {
+		if (async && vma_is_valid(vma, write_fault))
+			*async = true;
+		pfn = KVM_PFN_ERR_FAULT;
+	}
+exit:
+	mmap_read_unlock(current->mm);
+	return pfn;
+}
+```
+
+到这里就找到 gfn 对应的 pfn 了，可以填入到 EPT 的表项中了。
+
+##### 关键汉斯 __direct_map
+
+这个函数主要是构建 EPT 页表的，
+
+```c
+static int __direct_map(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
+			int map_writable, int max_level, kvm_pfn_t pfn,
+			bool prefault, bool is_tdp)
+{
+	bool nx_huge_page_workaround_enabled = is_nx_huge_page_enabled();
+	bool write = error_code & PFERR_WRITE_MASK;
+	bool exec = error_code & PFERR_FETCH_MASK;
+	bool huge_page_disallowed = exec && nx_huge_page_workaround_enabled;
+	struct kvm_shadow_walk_iterator it;
+	struct kvm_mmu_page *sp;
+	int level, req_level, ret;
+	gfn_t gfn = gpa >> PAGE_SHIFT;
+	gfn_t base_gfn = gfn;
+
+    // 应该是检查是否是 4k 页，并不是， PG_LEVEL_4K == 1
+    // 这个表示页表的级数
+	level = kvm_mmu_hugepage_adjust(vcpu, gfn, max_level, &pfn,
+					huge_page_disallowed, &req_level);
+
+	trace_kvm_mmu_spte_requested(gpa, level, pfn);
+	for_each_shadow_entry(vcpu, gpa, it) { // 这里是 4 级页表的构建，比较复杂
+		/*
+		 * We cannot overwrite existing page tables with an NX
+		 * large page, as the leaf could be executable.
+		 */
+		if (nx_huge_page_workaround_enabled)
+			disallowed_hugepage_adjust(*it.sptep, gfn, it.level,
+						   &pfn, &level);
+
+		base_gfn = gfn & ~(KVM_PAGES_PER_HPAGE(it.level) - 1);
+		if (it.level == level)
+			break;
+
+		drop_large_spte(vcpu, it.sptep); // it.sptep 表示该级页表的基地址
+		if (is_shadow_present_pte(*it.sptep)) // 判断当前的页表是否存在
+			continue; // 存在就不需要创建页表了，后面就是创建页表的过程
+
+		sp = kvm_mmu_get_page(vcpu, base_gfn, it.addr, // 分配一个 mmu 内存页
+				      it.level - 1, true, ACC_ALL); // 并插入到 vcpu->kvm->arch.mmu_page_hash 中
+
+        // 将分配的内存页跟当前目录项连接起来
+        // 即让当前的 iterator->sptep 指向 sp
+        // 这样一级一级的创建，就能构建一个完整的 4 级 EPT 页表
+		link_shadow_page(vcpu, it.sptep, sp);
+		if (is_tdp && huge_page_disallowed &&
+		    req_level >= it.level)
+			account_huge_nx_page(vcpu->kvm, sp);
+	}
+
+    // 现在是最后一级页表，其页表项要指向 pfn
+    // 而 pfn 在前面通过 __gfn_to_hva_memslot 和 hva_to_pfn 已经确定了
+	ret = mmu_set_spte(vcpu, it.sptep, ACC_ALL,
+			   write, level, base_gfn, pfn, prefault,
+			   map_writable);
+	if (ret == RET_PF_SPURIOUS)
+		return ret;
+
+	direct_pte_prefetch(vcpu, it.sptep);
+	++vcpu->stat.pf_fixed;
+	return ret;
+}
+```
+
+接下来我们看看是怎样构建 EPT 的 4 级页表，之前只是知道大概的流程。`for_each_shadow_entry` 是一个宏，负责遍历，
+
+```c
+#define for_each_shadow_entry(_vcpu, _addr, _walker)            \
+	for (shadow_walk_init(&(_walker), _vcpu, _addr);	\
+	     shadow_walk_okay(&(_walker));			\
+	     shadow_walk_next(&(_walker)))
+```
+
+`shadow_walk_init` -> `shadow_walk_init_using_root`，从代码中可以看出，其主要是初始化 `kvm_shadow_walk_iterator *iterator`，
+
+```c
+static void shadow_walk_init_using_root(struct kvm_shadow_walk_iterator *iterator,
+					struct kvm_vcpu *vcpu, hpa_t root,
+					u64 addr)
+{
+	iterator->addr = addr; // gpa
+	iterator->shadow_addr = root; // 页表的基地址，遍历每一级页表都需要更新，由 shadow_walk_next 更新
+	iterator->level = vcpu->arch.mmu->shadow_root_level; // EPT 的级数，为 4
+
+	if (iterator->level == PT64_ROOT_4LEVEL &&
+	    vcpu->arch.mmu->root_level < PT64_ROOT_4LEVEL &&
+	    !vcpu->arch.mmu->direct_map)
+		--iterator->level;
+
+	if (iterator->level == PT32E_ROOT_LEVEL) {
+		/*
+		 * prev_root is currently only used for 64-bit hosts. So only
+		 * the active root_hpa is valid here.
+		 */
+		BUG_ON(root != vcpu->arch.mmu->root_hpa);
+
+		iterator->shadow_addr
+			= vcpu->arch.mmu->pae_root[(addr >> 30) & 3];
+		iterator->shadow_addr &= PT64_BASE_ADDR_MASK;
+		--iterator->level;
+		if (!iterator->shadow_addr)
+			iterator->level = 0;
+	}
+}
+```
+
+for 循环嘛，`shadow_walk_okay` 表示结束条件，
+
+```c
+static bool shadow_walk_okay(struct kvm_shadow_walk_iterator *iterator)
+{
+	if (iterator->level < PG_LEVEL_4K) // 小于 1，遍历结束
+		return false;
+
+    // index 表示该地址在相应页表中的 index
+    // iterator->addr 表示 gpa，不要搞混了
+    // 这个过程其实我们都知道，48 位的 gpa，每级页表对应 9 位，4*9 = 36，最后 12 位是页内偏移
+	iterator->index = SHADOW_PT_INDEX(iterator->addr, iterator->level);
+	iterator->sptep	= ((u64 *)__va(iterator->shadow_addr)) + iterator->index; // 当前页表项的指针
+	return true;
+}
+```
+
+最后是 `__shadow_walk_next`，
+
+```c
+static void __shadow_walk_next(struct kvm_shadow_walk_iterator *iterator,
+			       u64 spte)
+{
+	if (is_last_spte(spte, iterator->level)) {
+		iterator->level = 0;
+		return;
+	}
+
+	iterator->shadow_addr = spte & PT64_BASE_ADDR_MASK; // 我去，搞的这么绕干啥，spte 就是 okey 里的 sptep
+	--iterator->level; // 层数减 1
+}
+```
+
+##### 关键函数 mmu_set_spte
+
+这个函数是真正填 EPT 表项的，所有的 4 级页表的填充都是这个函数完成，
+
+```c
+static int mmu_set_spte(struct kvm_vcpu *vcpu, u64 *sptep,
+			unsigned int pte_access, bool write_fault, int level,
+			gfn_t gfn, kvm_pfn_t pfn, bool speculative,
+			bool host_writable)
+{
+	int was_rmapped = 0;
+	int rmap_count;
+	int set_spte_ret;
+	int ret = RET_PF_FIXED;
+	bool flush = false;
+
+	pgprintk("%s: spte %llx write_fault %d gfn %llx\n", __func__,
+		 *sptep, write_fault, gfn);
+
+	if (unlikely(is_noslot_pfn(pfn))) {
+		mark_mmio_spte(vcpu, sptep, gfn, pte_access);
+		return RET_PF_EMULATE;
+	}
+
+    // 为何这里还要判断一次页表是否存在？
+	if (is_shadow_present_pte(*sptep)) {
+
+        ...
+
+	}
+
+	set_spte_ret = set_spte(vcpu, sptep, pte_access, level, gfn, pfn,
+				speculative, true, host_writable); // 在这里填入
+
+    ...
+
+	return ret;
+}
+```
 
 ### MMIO 机制
 
@@ -1741,6 +2245,10 @@ out_slots:
 ### 虚拟机脏页跟踪
 
 脏页跟踪是热迁移的基础。热迁移即在虚拟机运行时将其从一台宿主机迁移到另一台宿主机，但是在迁移过程中，虚拟机还是会不断的写内存，如果虚拟机在 QEMU 迁移了该也之后又对该页写入了新数据，那么 QEMU 就需要重新迁移该页。那么脏页跟踪就是通过一个脏页位图跟踪虚拟机的物理内存有哪些内存被修改了。具体的实现在热迁移部分再分析。
+
+### 说明
+
+KVM 内存虚拟化那节因为没有用 gdb 调试，所以就只是将源码放上去，粗略的分析一下，对整个过程的细节把控还是不够的，之后有需要还需进一步分析。
 
 ### Reference
 
