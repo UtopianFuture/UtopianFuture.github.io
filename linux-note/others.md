@@ -1095,3 +1095,19 @@ The fwnode refers to a *firmware node* usually representing an entry in either D
 A simulator is designed to create an environment that contains all of the software variables and configurations that will exist in an app’s actual production environment. In contrast, an emulator attempts to mimic all of the hardware features of a production environment and software features.
 
 简单来说，simulator 只需要模拟功能，至于这个功能的实现是不是和硬件实现一样，不重要；而 emulator 则需要实现和硬件运行流程一样的模拟。
+
+### Cache 一致性协议
+
+在一个处理器系统上不同 CPU 内核中的高速缓存和内存可能具有同一数据的多个副本。维护高速缓存一致性的关键是跟踪每个 cache line 的状态，并根据处理器的读写操作和总线上相应的传输内容来更新高速缓存行在不同 CPU 内核上 cache 的状态。
+
+cache 一致性协议主要有两大类：
+
+- 总线监听协议：每个 cache 都要被监听或者监听其它 cache 的总线活动，主要是 MESI 协议；
+- 目录协议：用于全局统一管理高速缓冲状态；
+
+| 状态                     | 描述                                                         | 监听任务                                                     |
+| :----------------------- | :----------------------------------------------------------- | :----------------------------------------------------------- |
+| M 修改 (Modified)        | 该 Cache line 有效，数据被修改了，和内存中的数据不一致，数据只存在于本 Cache 中。 | 缓存行必须时刻监听所有试图读该缓存行相对就主存的操作，这种操作必须在缓存将该缓存行写回主存并将状态变成 S（共享）状态之前被延迟执行。 |
+| E 独享、互斥 (Exclusive) | 该 Cache line 有效，数据和内存中的数据一致，数据只存在于本 Cache 中。 | 缓存行也必须监听其它缓存读主存中该缓存行的操作，一旦有这种操作，该缓存行需要变成 S（共享）状态。 |
+| S 共享 (Shared)          | 该 Cache line 有效，数据和内存中的数据一致，数据存在于很多 Cache 中。 | 缓存行也必须监听其它缓存使该缓存行无效或者独享该缓存行的请求，并将该缓存行变成无效（Invalid）。 |
+| I 无效 (Invalid)         | 该 Cache line 无效。                                         | 无                                                           |
