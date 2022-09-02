@@ -1123,3 +1123,41 @@ cache 一致性协议主要有两大类：
 ### 线程通讯（锁）
 
 （1）信号量（2）读写锁（3）条件变量（4）互斥锁（5）自旋锁
+
+### 野指针与悬空指针
+
+野指针（wild pointer）就是没有被初始化过的指针。
+
+```c
+1 int main(int argc, char *argv[])
+2 {
+3     int *p;
+4     return (*p & 0x7f); /* XXX: p is a wild pointer */
+5 }
+```
+
+如果用 "gcc -Wall" 编译，会出现如下警告：
+
+```
+1 $ gcc -Wall -g -m32 -o foo foo.c
+2 foo.c: In function ‘main’:
+3 foo.c:4:10: warning: ‘p’ is used uninitialized in this function [-Wuninitialized]
+4   return (*p & 0x7f); /* XXX: p is a wild pointer */
+5           ^
+```
+
+悬空指针是指针最初指向的内存已经被释放了的一种指针。
+
+```c
+1 #include <stdlib.h>
+2 int main(int argc, char *argv[])
+3 {
+4         int *p1 = (int *)malloc(sizeof (int));
+5         int *p2 = p1;        /* p2 and p1 are pointing to the same memory */
+6         free(p1);            /* p1 is       a dangling pointer, so is p2  */
+7         p1 = NULL;           /* p1 is not   a dangling pointer any more   */
+8         return (*p2 & 0x7f); /* p2 is still a dangling pointer            */
+9 }
+```
+
+**智能指针的本质是使用引用计数（reference counting）来延迟对指针的释放。**
