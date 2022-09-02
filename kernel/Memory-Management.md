@@ -38,6 +38,9 @@
   - [VMA相关操作](#VMA相关操作)
 - [malloc](#malloc)
 - [mmap](#mmap)
+  - [关键函数do_mmap](#关键函数do_mmap)
+  - [关键函数mmap_region](#关键函数mmap_region)
+
 - [缺页异常处理](#缺页异常处理)
   - [关键函数do_user_addr_fault](#关键函数do_user_addr_fault)
   - [关键函数__handle_mm_fault](#关键函数__handle_mm_fault)
@@ -58,6 +61,7 @@
   - [kswapd内核线程](#kswapd内核线程)
     - [关键函数balance_pgdat](#关键函数balance_pgdat)
     - [关键函数shrink_node](#关键函数shrink_node)
+  - [回收页面类型](#回收页面类型)
 - [页面迁移](#页面迁移)
   - [关键函数__unmap_and_move](#关键函数__unmap_and_move)
   - [关键函数move_to_new_page](#关键函数move_to_new_page)
@@ -68,7 +72,6 @@
 - [慢路径分配](#慢路径分配)
   - [关键函数__alloc_pages_slowpath](#关键函数__alloc_pages_slowpath)
   - [水位管理和分配优先级](#水位管理和分配优先级)
-
 - [疑问](#疑问)
 
 
@@ -114,9 +117,9 @@
 
 ### 页框管理
 
-内核中以页框（大多数情况为 4K）为最小单位分配内存。page  作为页描述符记录每个页框当前的状态。
-
 ##### page
+
+内核中以页框（大多数情况为 4K）为最小单位分配内存（但是在实际开发过程中也遇到过很多大页，如 4M，1G 等，那这些页要怎样管理？）。page  作为页描述符记录每个页框当前的状态。
 
 ```c
 struct page {
@@ -322,11 +325,11 @@ extern struct pglist_data *pgdat_list;
 
 **由于实际的计算机体系结构的限制**（ISA 总线只能寻址 16 MB 和 32 位计算机只能寻址 4G），每个节点的物理内存又分为 3 个管理区。
 
-- ZONE_DMA：低于 16MB 的内存页框。
+- ZONE_DMA：低于 16MB 的内存页框；
 
-- ZONE_NORMAL：高于 16MB 低于 896MB 的内存页框。
+- ZONE_NORMAL：高于 16MB 低于 896MB 的内存页框，
 
-  如果 Linux 物理内存小于 1G 的空间，通常将线性地址空间和物理空间一一映射，这样可以提供访问速度。
+  如果 Linux 物理内存小于 1G 的空间，通常将线性地址空间和物理空间一一映射，这样可以提供访问速度；
 
 - ZONE_HIGHMEM：高于 896MB 的内存页框。
 
@@ -335,7 +338,7 @@ extern struct pglist_data *pgdat_list;
 我们进一步分析为什么要分 zone 区域，内核必须处理 80x86 体系结构的两种硬件约束，
 
 - ISA 总线的直接内存存储 DMA 处理器有一个严格的限制 : 他们只能对 RAM 的前 16MB 进行寻址；
-- 在具有大容量 RAM 的现代32位计算机中，CPU 不能直接访问所有的物理地址，因为线性地址空间太小，内核不可能直接映射所有物理内存到线性地址空间，所以需要 ZONE_HIGH 映射物理地址到内核地址空间；
+- 在具有大容量 RAM 的现代 32 位计算机中，**CPU 不能直接访问所有的物理地址**，因为线性地址空间太小，内核不可能直接映射所有物理内存到线性地址空间，所以需要 ZONE_HIGH 映射物理地址到内核地址空间；
 
 因此内核对不同区域的内存需要采用不同的管理方式和映射方式，即分成不同的 zone。
 
@@ -587,7 +590,7 @@ EXPORT_SYMBOL(alloc_pages);
 
   - `GFP_KERNEL`，其是最常见的内存分配掩码之一，主要用于分配内核使用的的内存，需要注意的是**分配过程中会引起睡眠**，这在中断上下文以及不能睡眠的内核路径里调用该分配掩码需要特别警惕，因为会引起死锁或者其他系统异常；
   - `GFP_ATOMIC`，这个标志位正好和 `GFP_KERNEL` 相反，它**可以使用在不能睡眠的内存分配路径上**，比如中断处理程序、软中断以及 tasklet 等。`GFP_KERNEL` 可以**让调用者睡眠等待系统页面回收来释放一些内存**，但是 `GFP_ATOMIC` 不可以，所以**有可能会分配失败**；
-  - `GFP_USER`、`GFP_HIGHUSER` 和 `GFP_HIGHUSER_MOVEABLE`，**这三个标志位都是为用户空间进程分配内存的**。不同之处在于，`GFP_HIGHUSER  `首先使用高端内存，`GFP_HIGHUSER_MOVEABLE` 首先使用高端内存并且分配的内存具有可迁移性；
+  - `GFP_USER`、`GFP_HIGHUSER` 和 `GFP_HIGHUSER_MOVEABLE`，**这三个标志位都是为用户空间进程分配内存的**。不同之处在于，`GFP_HIGHUSER ` 首先使用高端内存，`GFP_HIGHUSER_MOVEABLE` 首先使用高端内存并且分配的内存具有可迁移性；
   - `GFP_NOIN`、`GFP_NOFS`，这两个标志位都会产生阻塞，它们用来避免某些其他的操作。
     `GFP_NOIO` 表示分配过程中绝不会启动任何磁盘 I/O 的操作。
     `GFP_NOFS` 表示分配过程中绝不会启动文件系统的相关操作。
@@ -2997,16 +3000,346 @@ mmap 就是将文件映射到进程的物理地址空间，使得进程访问文
 
 根据文件关联性和映射区域是否共享等属性，mmap 映射可以分为 4 类：
 
-- 私有匿名映射。匿名映射即没有映射对应的相关文件，内存区域的内容会被初始化为 0。
-- 共享匿名映射。
-- 私有文件映射。
+- 私有匿名映射。匿名映射即没有映射对应的相关文件，内存区域的内容会被初始化为 0；
+- 共享匿名映射。共享匿名映射让相关进程共享一块内存区域，通常用于父、子进程之间的通信；
+- 私有文件映射。该映射的场景是加载动态共享库；
 - 共享文件映射。这种映射有两种使用场景：
   - 读写文件；
   - 进程间通讯。进程之间的地址空间是相互隔离的，如果多个进程同时映射到一个文件，就实现了多进程间的共享内存通信。
 
-mmap 机制在内核中的实现和 brk 类似，但其和缺页中断机制结合后会复杂很多。如内存漏洞 [Dirty COW](https://blog.csdn.net/hbhgyu/article/details/106245182) 就利用了 mmap 和缺页中断的相关漏洞。这里只记录 mmap 的执行流程，之后有需要再详细分析。
+mmap 机制在内核中的实现和 brk 类似，但其和缺页中断机制结合后会复杂很多。如内存漏洞 [Dirty COW](https://blog.csdn.net/hbhgyu/article/details/106245182) 就利用了 mmap 和缺页中断的相关漏洞。
 
 ![mmap-implement.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/mmap-implement.png?raw=true)
+
+在面试的时候被问到这样一个问题：“mmap 映射文件是怎样和磁盘联系”，所有进一步分析一下 mmap 是怎样完成的。
+
+应该是版本问题，执行流程和上面的图略有些不一样，`sys_mmap_pgoff` 是系统调用的处理函数，其会调用 `ksys_mmap_pgoff`，
+
+```c
+unsigned long ksys_mmap_pgoff(unsigned long addr, unsigned long len,
+			      unsigned long prot, unsigned long flags,
+			      unsigned long fd, unsigned long pgoff)
+{
+	struct file *file = NULL;
+	unsigned long retval;
+
+	if (!(flags & MAP_ANONYMOUS)) { // 判断是否是文件映射
+		audit_mmap_fd(fd, flags);
+		file = fget(fd); // 这里主要是根据文件描述符获取对应的文件
+		if (!file)
+			return -EBADF;
+		if (is_file_hugepages(file)) {
+			len = ALIGN(len, huge_page_size(hstate_file(file)));
+		} else if (unlikely(flags & MAP_HUGETLB)) {
+			retval = -EINVAL;
+			goto out_fput;
+		}
+	} else if (flags & MAP_HUGETLB) { // 按理来说不是文件映射就是匿名映射，为什么是判断 HUGETLB
+
+        ...
+
+	}
+
+	retval = vm_mmap_pgoff(file, addr, len, prot, flags, pgoff);
+out_fput:
+	if (file)
+		fput(file);
+	return retval;
+}
+```
+
+`vm_mmap_pgoff` 不单单是 mmap 系统调用会使用，内核其他部分也会使用，
+
+```c
+unsigned long vm_mmap_pgoff(struct file *file, unsigned long addr,
+	unsigned long len, unsigned long prot,
+	unsigned long flag, unsigned long pgoff)
+{
+	unsigned long ret;
+	struct mm_struct *mm = current->mm;
+	unsigned long populate;
+	LIST_HEAD(uf);
+
+	ret = security_mmap_file(file, prot, flag); // 这个不知道是干啥的
+	if (!ret) {
+		if (mmap_write_lock_killable(mm))
+			return -EINTR;
+		ret = do_mmap(file, addr, len, prot, flag, pgoff, &populate, // 这个才是关键函数
+			      &uf);
+		mmap_write_unlock(mm);
+		userfaultfd_unmap_complete(mm, &uf);
+		if (populate)
+			mm_populate(ret, populate); // 这个函数也经常遇到，都忘记是干啥的
+	}
+	return ret;
+}
+```
+
+#### 关键函数do_mmap
+
+这个函数的核心功能就是找到空闲的虚拟内存地址，并根据不同的文件打开方式设置不同的 vm 标志位 flag！
+
+```c
+nsigned long do_mmap(struct file *file, unsigned long addr,
+			unsigned long len, unsigned long prot,
+			unsigned long flags, unsigned long pgoff,
+			unsigned long *populate, struct list_head *uf)
+{
+	struct mm_struct *mm = current->mm;
+	vm_flags_t vm_flags;
+	int pkey = 0;
+
+	*populate = 0;
+
+	... // 各种标志位的检查
+
+	/* Obtain the address to map to. we verify (or select) it and ensure
+	 * that it represents a valid section of the address space.
+	 */
+    // 从当前进程的用户空间获取一个未被映射区间的起始地址
+	addr = get_unmapped_area(file, addr, len, pgoff, flags);
+	if (IS_ERR_VALUE(addr)) // 错误地址不应该处理一下么
+		return addr;
+
+    // 又是各种权限的检查
+	if (flags & MAP_FIXED_NOREPLACE) {
+		if (find_vma_intersection(mm, addr, addr + len))
+			return -EEXIST;
+	}
+
+	if (prot == PROT_EXEC) {
+		pkey = execute_only_pkey(mm);
+		if (pkey < 0)
+			pkey = 0;
+	}
+
+	/* Do simple checking here so the lower-level routines won't have
+	 * to. we assume access permissions have been handled by the open
+	 * of the memory object, so we don't do any here.
+	 */
+	vm_flags = calc_vm_prot_bits(prot, pkey) | calc_vm_flag_bits(flags) |
+			mm->def_flags | VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC;
+
+	if (flags & MAP_LOCKED)
+		if (!can_do_mlock())
+			return -EPERM;
+
+	if (mlock_future_check(mm, vm_flags, len))
+		return -EAGAIN;
+
+	if (file) {
+		struct inode *inode = file_inode(file);
+		unsigned long flags_mask;
+
+		if (!file_mmap_ok(file, inode, pgoff, len))
+			return -EOVERFLOW;
+
+		flags_mask = LEGACY_MAP_MASK | file->f_op->mmap_supported_flags;
+
+		switch (flags & MAP_TYPE) { // 不同的映射类型
+		case MAP_SHARED:
+			/*
+			 * Force use of MAP_SHARED_VALIDATE with non-legacy
+			 * flags. E.g. MAP_SYNC is dangerous to use with
+			 * MAP_SHARED as you don't know which consistency model
+			 * you will get. We silently ignore unsupported flags
+			 * with MAP_SHARED to preserve backward compatibility.
+			 */
+			flags &= LEGACY_MAP_MASK;
+			fallthrough; // 这是编译器支持的一个 attribute，没啥具体操作，进入到下一个 case 执行
+		case MAP_SHARED_VALIDATE:
+			if (flags & ~flags_mask)
+				return -EOPNOTSUPP;
+			if (prot & PROT_WRITE) {
+				if (!(file->f_mode & FMODE_WRITE))
+					return -EACCES;
+				if (IS_SWAPFILE(file->f_mapping->host))
+					return -ETXTBSY;
+			}
+
+			/*
+			 * Make sure we don't allow writing to an append-only
+			 * file..
+			 */
+			if (IS_APPEND(inode) && (file->f_mode & FMODE_WRITE))
+				return -EACCES;
+
+			vm_flags |= VM_SHARED | VM_MAYSHARE;
+			if (!(file->f_mode & FMODE_WRITE))
+				vm_flags &= ~(VM_MAYWRITE | VM_SHARED);
+			fallthrough;
+		case MAP_PRIVATE:
+			if (!(file->f_mode & FMODE_READ))
+				return -EACCES;
+			if (path_noexec(&file->f_path)) {
+				if (vm_flags & VM_EXEC)
+					return -EPERM;
+				vm_flags &= ~VM_MAYEXEC;
+			}
+
+			if (!file->f_op->mmap)
+				return -ENODEV;
+			if (vm_flags & (VM_GROWSDOWN|VM_GROWSUP))
+				return -EINVAL;
+			break;
+
+		default:
+			return -EINVAL;
+		}
+	} else {
+		switch (flags & MAP_TYPE) { // 哦，原来是在这里处理匿名映射
+		case MAP_SHARED:
+			if (vm_flags & (VM_GROWSDOWN|VM_GROWSUP))
+				return -EINVAL;
+			/*
+			 * Ignore pgoff.
+			 */
+			pgoff = 0;
+			vm_flags |= VM_SHARED | VM_MAYSHARE;
+			break;
+		case MAP_PRIVATE:
+			/*
+			 * Set pgoff according to addr for anon_vma.
+			 */
+			pgoff = addr >> PAGE_SHIFT; // 为什么私有匿名映射要设置 pgoff
+			break;
+		default:
+			return -EINVAL;
+		}
+	}
+
+	/*
+	 * Set 'VM_NORESERVE' if we should not account for the
+	 * memory use of this mapping.
+	 */
+	if (flags & MAP_NORESERVE) {
+		/* We honor MAP_NORESERVE if allowed to overcommit */
+		if (sysctl_overcommit_memory != OVERCOMMIT_NEVER)
+			vm_flags |= VM_NORESERVE;
+
+		/* hugetlb applies strict overcommit unless MAP_NORESERVE */
+		if (file && is_file_hugepages(file))
+			vm_flags |= VM_NORESERVE;
+	}
+
+    // 好吧，原来上面种种操作都是设置标志位，这里才是关键
+	addr = mmap_region(file, addr, len, vm_flags, pgoff, uf);
+	if (!IS_ERR_VALUE(addr) &&
+	    ((vm_flags & VM_LOCKED) ||
+	     (flags & (MAP_POPULATE | MAP_NONBLOCK)) == MAP_POPULATE))
+		*populate = len;
+	return addr;
+}
+```
+
+#### 关键函数mmap_region
+
+其核心功能是创建和初始化虚拟内存区域，并加入红黑树节点进行管理，这个看上面的图更容易了解。
+
+```c
+unsigned long mmap_region(struct file *file, unsigned long addr,
+		unsigned long len, vm_flags_t vm_flags, unsigned long pgoff,
+		struct list_head *uf)
+{
+	struct mm_struct *mm = current->mm;
+	struct vm_area_struct *vma, *prev, *merge;
+	int error;
+	struct rb_node **rb_link, *rb_parent;
+	unsigned long charged = 0;
+
+	/* Check against address space limit. */
+	if (!may_expand_vm(mm, vm_flags, len >> PAGE_SHIFT)) { // 检查申请的内存空间是否超过限制
+
+        ...
+
+	}
+
+	/* Clear old maps, set up prev, rb_link, rb_parent, and uf */
+    // 检查 [addr, addr + len] 范围内是否已经有映射了
+    // 如果有，那么需要将旧的映射关系清除
+	if (munmap_vma_range(mm, addr, len, &prev, &rb_link, &rb_parent, uf))
+		return -ENOMEM;
+	/*
+	 * Private writable mapping: check memory availability
+	 */
+	if (accountable_mapping(file, vm_flags)) {
+		charged = len >> PAGE_SHIFT;
+		if (security_vm_enough_memory_mm(mm, charged))
+			return -ENOMEM;
+		vm_flags |= VM_ACCOUNT;
+	}
+
+	/*
+	 * Can we just expand an old mapping?
+	 */
+    // 这个之前也遇到过，合并 vma
+	vma = vma_merge(mm, prev, addr, addr + len, vm_flags,
+			NULL, file, pgoff, NULL, NULL_VM_UFFD_CTX);
+	if (vma)
+		goto out;
+
+    // 申请新的 VMA
+	vma = vm_area_alloc(mm);
+	if (!vma) {
+		error = -ENOMEM;
+		goto unacct_error;
+	}
+
+    // 初始化
+	vma->vm_start = addr;
+	vma->vm_end = addr + len;
+	vma->vm_flags = vm_flags;
+	vma->vm_page_prot = vm_get_page_prot(vm_flags);
+	vma->vm_pgoff = pgoff;
+
+	if (file) { // 文件映射
+		if (vm_flags & VM_SHARED) { // 共享，可写
+			error = mapping_map_writable(file->f_mapping);
+			if (error)
+				goto free_vma;
+		}
+
+		vma->vm_file = get_file(file); // 这里会增加该 file 的引用次数
+		error = call_mmap(file, vma); // 调用该文件系统指定的 mmap 函数，这里还可以进一步分析
+		if (error)
+			goto unmap_and_free_vma;
+
+		/* Can addr have changed??
+		 *
+		 * Answer: Yes, several device drivers can do it in their
+		 *         f_op->mmap method. -DaveM
+		 * Bug: If addr is changed, prev, rb_link, rb_parent should
+		 *      be updated for vma_link()
+		 */
+		WARN_ON_ONCE(addr != vma->vm_start);
+
+		addr = vma->vm_start;
+
+		...
+
+		vm_flags = vma->vm_flags;
+	} else if (vm_flags & VM_SHARED) {
+		error = shmem_zero_setup(vma); // 共享匿名映射
+		if (error)
+			goto free_vma;
+	} else { // 私有匿名映射
+		vma_set_anonymous(vma);
+	}
+
+	/* Allow architectures to sanity-check the vm_flags */
+	if (!arch_validate_flags(vma->vm_flags)) {
+		error = -EINVAL;
+		if (file)
+			goto unmap_and_free_vma;
+		else
+			goto free_vma;
+	}
+
+	vma_link(mm, vma, prev, rb_link, rb_parent); // 常规操作
+
+    ...
+}
+```
 
 ### 缺页异常处理
 
@@ -4375,11 +4708,11 @@ out:
 - 进行匿名 mmap 共享内存时使用的页： 存放到 swap 分区中；
 - 进行 shmem 共享内存时使用的页：存放到 swap 分区中；
 
-可以看出， 内存回收的时候，会筛选出一些不经常使用的文件页或匿名页，针对上述不同的内存页，有两种处理方式：
+可以看出，内存回收的时候，会筛选出一些不经常使用的文件页或匿名页，针对上述不同的内存页，有两种处理方式：
 
-- 直接释放。 如进程代码段的页，这些页是只读的；干净的文件页（文件页中保存的内容与磁盘中文件对应内容一致）
+- 直接释放。 如进程代码段的页，这些页是只读的，干净的文件页（文件页中保存的内容与磁盘中文件对应内容一致）；
 
-- 将页回写后再释放。匿名页直接将它们写入到swap分区中；脏页（文件页保存的数据与磁盘中文件对应的数据不一致）需要先将此文件页回写到磁盘中对应数据所在位置上。
+- 将页回写后再释放。匿名页直接将它们写入到 swap 分区中；脏页（文件页保存的数据与磁盘中文件对应的数据不一致）需要先将此文件页回写到磁盘中对应数据所在位置上。
 
   由此可见，如果系统没有配置 swap 分区，那么只有文件页能被回收。
 
