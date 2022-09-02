@@ -202,3 +202,5 @@
     ```
 
 22. set scrollbind 可以设置两个 vim 同时滚动，当然这两个窗口都要设置，set noscrollbind 取消同步滚动。
+
+22. md 文件每行最后有 ^M 字符，用 `:e ++ff=dos ` 可以去掉。
