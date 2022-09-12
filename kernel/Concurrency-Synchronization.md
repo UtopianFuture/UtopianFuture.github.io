@@ -90,6 +90,153 @@ typedef struct {
 
 ### 经典自旋锁
 
+如果临界区只有一个变量，那么适合用原子变量，但是大多数情况临界区中是一个数据操作的集合，例如一个链表及相关操作。那么在整个执行过程中都需要保证原子性，即在数据更新完毕前，不能从其他内核代码路径访问和更改这些数据，这就需要用锁来完成。自旋锁是内核中最常见的一种锁机制。自旋锁的特性如下：
+
+- 忙等。OS 中的锁可分为两类，一类是忙等，一类是睡眠等待。当内核路径无法获取自旋锁时会不断尝试，直到获取到锁为止；
+- 同一时刻只能有一个内核代码路径可以获得锁；
+- 持有者要尽快完成临界区的执行任务。自旋锁临界区不能睡眠；
+- 可以在中断上下文使用；
+
+#### 自旋锁的实现
+
+老规矩，先看看相关的数据结构，
+
+```c
+typedef struct spinlock {
+	union {
+		struct raw_spinlock rlock;
+
+		...
+	};
+} spinlock_t;
+```
+
+```c
+typedef struct raw_spinlock {
+	arch_spinlock_t raw_lock;
+
+    #ifdef CONFIG_DEBUG_SPINLOCK
+	unsigned int magic, owner_cpu;
+	void *owner;
+#endif
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+	struct lockdep_map dep_map;
+#endif
+} raw_spinlock_t;
+
+```
+
+```c
+typedef struct qspinlock {
+	union {
+		atomic_t val;
+
+		/*
+		 * By using the whole 2nd least significant byte for the
+		 * pending bit, we can allow better optimization of the lock
+		 * acquisition for the pending bit holder.
+		 */
+#ifdef __LITTLE_ENDIAN
+		struct {
+			u8	locked;
+			u8	pending;
+		};
+		struct {
+			u16	locked_pending;
+			u16	tail;
+		};
+#else
+
+        ...
+
+#endif
+	};
+} arch_spinlock_t;
+```
+
+再看看其是怎么实现的，
+
+```c
+static __always_inline void spin_lock(spinlock_t *lock)
+{
+	raw_spin_lock(&lock->rlock);
+}
+
+#define raw_spin_lock(lock)	_raw_spin_lock(lock)
+
+void __lockfunc _raw_spin_lock(raw_spinlock_t *lock)
+{
+	__raw_spin_lock(lock);
+}
+
+static inline void __raw_spin_lock(raw_spinlock_t *lock)
+{
+	preempt_disable(); // 关闭内核抢占，为什么是调用 barrier
+	spin_acquire(&lock->dep_map, 0, 0, _RET_IP_);
+	LOCK_CONTENDED(lock, do_raw_spin_trylock, do_raw_spin_lock);
+}
+
+#define LOCK_CONTENDED(_lock, try, lock) \
+	lock(_lock) // 直接调用 do_raw_spin_lock
+
+static inline void do_raw_spin_lock(raw_spinlock_t *lock) __acquires(lock)
+{
+	__acquire(lock);
+	arch_spin_lock(&lock->raw_lock);
+	mmiowb_spin_lock();
+}
+
+#define arch_spin_lock(l)		queued_spin_lock(l)
+
+// 在原有基础上实现的排队自旋锁机制，后面分析
+#ifndef queued_spin_lock
+/**
+ * queued_spin_lock - acquire a queued spinlock
+ * @lock: Pointer to queued spinlock structure
+ */
+static __always_inline void queued_spin_lock(struct qspinlock *lock)
+{
+	int val = 0;
+
+	if (likely(atomic_try_cmpxchg_acquire(&lock->val, &val, _Q_LOCKED_VAL)))
+		return;
+
+	queued_spin_lock_slowpath(lock, val);
+}
+#endif
+```
+
+前面讲到自旋锁可以在中断上下文使用，但是使用时却不能发生中断。
+
+如果自旋锁临界区发生中断，中断返回时会检查抢占调度（调用 schedule()），那么这样会导致两个问题：
+
+- 发生抢占，持有锁的进程睡眠了，那么其他申请锁的进程只能一直等待，浪费 CPU 时间；
+- 抢占进程也可能申请该自旋锁，导致死锁；
+
+同时，为了确保在持有自旋锁期间不会响应中断，内核还提供了其他的接口，
+
+```c
+static __always_inline void spin_lock_irq(spinlock_t *lock)
+{
+	raw_spin_lock_irq(&lock->rlock);
+}
+
+void __lockfunc _raw_spin_lock_irq(raw_spinlock_t *lock)
+{
+	__raw_spin_lock_irq(lock);
+}
+
+static inline void __raw_spin_lock_irq(raw_spinlock_t *lock)
+{
+	local_irq_disable(); // 关中断
+	preempt_disable();
+	spin_acquire(&lock->dep_map, 0, 0, _RET_IP_);
+	LOCK_CONTENDED(lock, do_raw_spin_trylock, do_raw_spin_lock);
+}
+```
+
+这里有一点需要注意，`spin_lock_irq` 只会关闭本地中断，其他 CPU 还是可以响应中断，如果 CPU0 持有该自旋锁，而 CPU1 响应中断且中断处理程序也申请该自旋锁，那么等 CPU0 释放后即可获取。
+
 ### MCS 锁
 
 ### 排队自旋锁
