@@ -36,7 +36,57 @@
 
 ### 原子操作
 
+原子操作是指保证指令以原子的方式执行，执行过程不会被打断。例如我们假设 `i` 是一个全局变量，那么一条很简单的 `i++` 指令其实包括读取，修改，写回 3 个操作，如果不加以保护，在上面的几个并发源中这条简单的指令都可能出错。因此内核提供了 `atomic_t` 类型的原子变量。
+
+```c
+typedef struct {
+	int counter;
+} atomic_t;
+```
+
+内核中也有一系列的原子操作来操作这些原子变量，如 `atomic_inc(v)`，`atomic_dec(v)` 等，然后 CPU 必须提供原子操作的汇编指令来保证原子变量的完整性，如 `xadd`，`cmpxchg` 等。
+
 ### 内存屏障
+
+在 ARM 架构中有 3 条内存屏障指令：
+
+- 数据存储屏障（Data Memory Barrier, DMB）指令：确保在执行新的存储器访问前所有的存储器访问都已经完成；
+- 数据同步屏障（Data Synchronization Barrier, DSB）指令：确保在下一个指令执行前所有存储器访问都已经完成；
+- 指令同步屏障（Instruction Synchronization Barrier, ISB）指令：清空流水线，确保在执行新的指令前，之前所有的指令都已完成；
+
+内核中有如下内存屏障接口，都是经常遇见的：
+
+| 接口函数                                       | 描述                                                         |
+| ---------------------------------------------- | ------------------------------------------------------------ |
+| barrier()                                      | 编译优化屏障，阻止编译器为了性能优化而进行指令重排           |
+| mb()                                           | 内存屏障（包括读和写），用于 SMP 和 UP                       |
+| rmb()                                          | 读内存屏障                                                   |
+| wmb()                                          | 写内存屏障                                                   |
+| smp_mb()                                       | 顾名思义，smp 的内存屏障，从下面的实现可以看出，和 mb 有些不一样 |
+| smp_rmb()                                      |                                                              |
+| smp_wmb()                                      |                                                              |
+| __smp_mb__before_atomic/__smp_mb__after_atomic | 在原子操作中插入一个通用内存屏障（还可以这样？）             |
+
+```c
+/* Optimization barrier */
+/* The "volatile" is due to gcc bugs */
+#define barrier() __asm__ __volatile__("": : :"memory")
+
+#define mb() 	asm volatile("mfence":::"memory")
+#define rmb()	asm volatile("lfence":::"memory")
+#define wmb()	asm volatile("sfence" ::: "memory")
+
+#define dma_rmb()	barrier()
+#define dma_wmb()	barrier()
+
+#define __smp_mb()	asm volatile("lock; addl $0,-4(%%" _ASM_SP ")" ::: "memory", "cc")
+
+#define __smp_rmb()	dma_rmb()
+#define __smp_wmb()	barrier()
+
+#define __smp_mb__before_atomic()	do { } while (0) // 什么都不做？
+#define __smp_mb__after_atomic()	do { } while (0)
+```
 
 ### 经典自旋锁
 
