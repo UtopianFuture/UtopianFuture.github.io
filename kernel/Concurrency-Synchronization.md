@@ -1,4 +1,4 @@
-## Concurrency and Synchronization
+Concurrency and Synchronization
 
 临界区是指访问和操作共享数据的代码段，其中的资源无法同时被多个执行线程访问，访问临界区的执行线程或代码路径称为并发源，在内核中产生并发访问的并发源主要有如下 4 中：
 
@@ -574,7 +574,7 @@ static __always_inline void queued_spin_lock(struct qspinlock *lock)
 
 在开始时，没有 CPU 持有锁，那么 CPU0 通过 `queued_spin_lock` 去申请该锁，这时在 `lock->val` 中，locked = 1，pending = 0，tail = 0，即三元组为 {0, 0, 1}。
 
-![qspinlock](/home/guanshun/gitlab/UFuture.github.io/image/qspinlock.png)
+![qspinlock.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/qspinlock.png?raw=true)
 
 #### 中速申请通道
 
@@ -684,7 +684,7 @@ void queued_spin_lock_slowpath(struct qspinlock *lock, u32 val)
 
 看图更加直观，
 
-![qspinlock-2](/home/guanshun/gitlab/UFuture.github.io/image/qspinlock-2.png)
+![qspinlock-2.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/qspinlock-2.png?raw=true)
 
 #### 慢速申请通道
 
@@ -870,9 +870,21 @@ release:
 }
 ```
 
-
+好吧，这个对我而言有点复杂，之后再分析。
 
 #### 释放锁
+
+释放锁很简单，只要原子的将 locked 域清零。
+
+```c
+static __always_inline void queued_spin_unlock(struct qspinlock *lock)
+{
+	/*
+	 * unlock() needs release semantics:
+	 */
+	smp_store_release(&lock->locked, 0);
+}
+```
 
 ### 信号量
 
