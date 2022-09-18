@@ -888,6 +888,106 @@ static __always_inline void queued_spin_unlock(struct qspinlock *lock)
 
 ### 信号量
 
+信号量最早接触是在本科的时候学操作系统的进程同步，PV 操作。它和自旋锁的区别是自旋锁是忙等，而其允许进程睡眠。它的实现比自旋锁简单很多，
+
+```c
+struct semaphore {
+	raw_spinlock_t		lock; // 用自旋锁来保护 count 和 wait_list
+	unsigned int		count; // 表示允许进入临界区的内核执行路径个数
+	struct list_head	wait_list; // 在该信号量上睡眠等待的进程
+};
+```
+
+PV 操作对应内核中的 `down()` 和 `up()` 函数。其中 `down()`  还有 `down_interruptible()` 变体，其在争用信号量失败时会让进程进入可中断睡眠状态，而 `down()` 则是进入不可中断睡眠状态。
+
+```c
+int down_interruptible(struct semaphore *sem)
+{
+	unsigned long flags;
+	int result = 0;
+
+	might_sleep();
+	raw_spin_lock_irqsave(&sem->lock, flags); // 在自旋锁临界区操作
+	if (likely(sem->count > 0)) // 很清晰，可以申请该信号量
+		sem->count--;
+	else // 不可申请，去睡眠
+		result = __down_interruptible(sem);
+	raw_spin_unlock_irqrestore(&sem->lock, flags);
+
+	return result;
+}
+```
+
+`__down_interruptible` 是 `__down_common` 的封装。
+
+```c
+static noinline void __sched __down(struct semaphore *sem) // 这两者设置的状态不同
+{
+	__down_common(sem, TASK_UNINTERRUPTIBLE, MAX_SCHEDULE_TIMEOUT);
+}
+
+static noinline int __sched __down_interruptible(struct semaphore *sem)
+{
+	return __down_common(sem, TASK_INTERRUPTIBLE, MAX_SCHEDULE_TIMEOUT);
+}
+
+static inline int __sched __down_common(struct semaphore *sem, long state,
+								long timeout)
+{
+	struct semaphore_waiter waiter;
+
+	list_add_tail(&waiter.list, &sem->wait_list);
+	waiter.task = current; // 描述该进程
+	waiter.up = false;
+
+	for (;;) {
+		if (signal_pending_state(state, current))
+			goto interrupted;
+		if (unlikely(timeout <= 0))
+			goto timed_out;
+		__set_current_state(state);
+		raw_spin_unlock_irq(&sem->lock); // 因为自旋锁是不能睡眠的，所以要释放
+		timeout = schedule_timeout(timeout); // 主动申请调度，让出 CPU
+		raw_spin_lock_irq(&sem->lock); // 这里再申请
+		if (waiter.up) // 被 UP 操作唤醒
+			return 0;
+	}
+
+ timed_out:
+	list_del(&waiter.list);
+	return -ETIME;
+
+ interrupted:
+	list_del(&waiter.list);
+	return -EINTR;
+}
+```
+
+然后再看看 `up()`，
+
+```c
+void up(struct semaphore *sem)
+{
+	unsigned long flags;
+
+	raw_spin_lock_irqsave(&sem->lock, flags);
+	if (likely(list_empty(&sem->wait_list))) // 一样的操作，没有进程在等待的话直接加 1
+		sem->count++;
+	else
+		__up(sem);
+	raw_spin_unlock_irqrestore(&sem->lock, flags);
+}
+
+static noinline void __sched __up(struct semaphore *sem)
+{
+	struct semaphore_waiter *waiter = list_first_entry(&sem->wait_list,
+						struct semaphore_waiter, list); // 同样是排队
+	list_del(&waiter->list);
+	waiter->up = true; // 看，在这里设置为 true
+	wake_up_process(waiter->task); // 然后唤醒等待的进程，即将进程的状态设置为 TASK_NORMAL
+}
+```
+
 ### 互斥锁
 
 ### 读写锁
