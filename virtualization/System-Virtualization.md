@@ -61,7 +61,7 @@
 
 ### CPU 虚拟化
 
-​      物理 CPU 同时运行 host 和 guest，**在不同模式间按需切换**，每个模式需要保存上下文。VMX 设计了 `VMCS`，每个 guest 的每个 VCPU 都有自己的 `VMCS`，在进行 guest 和 host 切换时就是将 `VMCS` 中的内容加载到 CPU 中和将 CPU 中的内容保存到 `VMCS` 对应的域中。通过 `VMLaunch ` 切换到 not root 模式，即进入 guest(vm entry)，当需要执行敏感指令时，退回到 root 模式，即退出 guest(vm exit)。
+物理 CPU 同时运行 host 和 guest，**在不同模式间按需切换**，每个模式需要保存上下文。VMX 设计了 `VMCS`，每个 guest 的每个 VCPU 都有自己的 `VMCS`，在进行 guest 和 host 切换时就是将 `VMCS` 中的内容加载到 CPU 中和将 CPU 中的内容保存到 `VMCS` 对应的域中。通过 `VMLaunch ` 切换到 not root 模式，即进入 guest(vm entry)，当需要执行敏感指令时，退回到 root 模式，即退出 guest(vm exit)。
 
 #### 陷入和模拟
 
@@ -91,7 +91,7 @@
    }
    ```
 
-   `kvm_cpuid_entry`就是 kvm 内核模块定义的 VCPU 特性结构体：
+   `kvm_cpuid_entry` 就是 kvm 内核模块定义的 VCPU 特性结构体：
 
    ```c
    struct kvm_cpuid_entry {
@@ -114,7 +114,7 @@
 
 #### KVM 用户空间实例
 
-​      定义结构体 vm 表示一台虚拟机，每个虚拟机可能有多个处理器，每个处理器有自己的状态，定义结构体 vcpu 表示处理器。
+定义结构体 vm 表示一台虚拟机，每个虚拟机可能有多个处理器，每个处理器有自己的状态，定义结构体 vcpu 表示处理器。
 
 1. 创建虚拟机实例
 
@@ -156,7 +156,7 @@ enum vmcs_field {
 	GUEST_LDTR_SELECTOR             = 0x0000080c,
 	GUEST_TR_SELECTOR               = 0x0000080e,
 	GUEST_INTR_STATUS               = 0x00000810,
-	GUEST_PML_INDEX			= 0x00000812,
+	GUEST_PML_INDEX					= 0x00000812,
 	HOST_ES_SELECTOR                = 0x00000c00,
 	HOST_CS_SELECTOR                = 0x00000c02,
 	HOST_SS_SELECTOR                = 0x00000c04,
@@ -176,14 +176,14 @@ enum vmcs_field {
 	VM_EXIT_MSR_LOAD_ADDR_HIGH      = 0x00002009,
 	VM_ENTRY_MSR_LOAD_ADDR          = 0x0000200a,
 	VM_ENTRY_MSR_LOAD_ADDR_HIGH     = 0x0000200b,
-	PML_ADDRESS			= 0x0000200e,
-	PML_ADDRESS_HIGH		= 0x0000200f,
+	PML_ADDRESS						= 0x0000200e,
+	PML_ADDRESS_HIGH				= 0x0000200f,
 	TSC_OFFSET                      = 0x00002010,
 	TSC_OFFSET_HIGH                 = 0x00002011,
 	VIRTUAL_APIC_PAGE_ADDR          = 0x00002012,
 	VIRTUAL_APIC_PAGE_ADDR_HIGH     = 0x00002013,
-	APIC_ACCESS_ADDR		= 0x00002014,
-	APIC_ACCESS_ADDR_HIGH		= 0x00002015,
+	APIC_ACCESS_ADDR				= 0x00002014,
+	APIC_ACCESS_ADDR_HIGH			= 0x00002015,
 	POSTED_INTR_DESC_ADDR           = 0x00002016,
 	POSTED_INTR_DESC_ADDR_HIGH      = 0x00002017,
 	VM_FUNCTION_CONTROL             = 0x00002018,
@@ -206,8 +206,8 @@ enum vmcs_field {
 	VMWRITE_BITMAP_HIGH             = 0x00002029,
 	XSS_EXIT_BITMAP                 = 0x0000202C,
 	XSS_EXIT_BITMAP_HIGH            = 0x0000202D,
-	ENCLS_EXITING_BITMAP		= 0x0000202E,
-	ENCLS_EXITING_BITMAP_HIGH	= 0x0000202F,
+	ENCLS_EXITING_BITMAP			= 0x0000202E,
+	ENCLS_EXITING_BITMAP_HIGH		= 0x0000202F,
 	TSC_MULTIPLIER                  = 0x00002032,
 	TSC_MULTIPLIER_HIGH             = 0x00002033,
 	GUEST_PHYSICAL_ADDRESS          = 0x00002400,
@@ -216,11 +216,11 @@ enum vmcs_field {
 	VMCS_LINK_POINTER_HIGH          = 0x00002801,
 	GUEST_IA32_DEBUGCTL             = 0x00002802,
 	GUEST_IA32_DEBUGCTL_HIGH        = 0x00002803,
-	GUEST_IA32_PAT			= 0x00002804,
-	GUEST_IA32_PAT_HIGH		= 0x00002805,
-	GUEST_IA32_EFER			= 0x00002806,
-	GUEST_IA32_EFER_HIGH		= 0x00002807,
-	GUEST_IA32_PERF_GLOBAL_CTRL	= 0x00002808,
+	GUEST_IA32_PAT					= 0x00002804,
+	GUEST_IA32_PAT_HIGH				= 0x00002805,
+	GUEST_IA32_EFER					= 0x00002806,
+	GUEST_IA32_EFER_HIGH			= 0x00002807,
+	GUEST_IA32_PERF_GLOBAL_CTRL		= 0x00002808,
 	GUEST_IA32_PERF_GLOBAL_CTRL_HIGH= 0x00002809,
 	GUEST_PDPTR0                    = 0x0000280a,
 	GUEST_PDPTR0_HIGH               = 0x0000280b,
@@ -232,13 +232,13 @@ enum vmcs_field {
 	GUEST_PDPTR3_HIGH               = 0x00002811,
 	GUEST_BNDCFGS                   = 0x00002812,
 	GUEST_BNDCFGS_HIGH              = 0x00002813,
-	GUEST_IA32_RTIT_CTL		= 0x00002814,
-	GUEST_IA32_RTIT_CTL_HIGH	= 0x00002815,
-	HOST_IA32_PAT			= 0x00002c00,
-	HOST_IA32_PAT_HIGH		= 0x00002c01,
-	HOST_IA32_EFER			= 0x00002c02,
-	HOST_IA32_EFER_HIGH		= 0x00002c03,
-	HOST_IA32_PERF_GLOBAL_CTRL	= 0x00002c04,
+	GUEST_IA32_RTIT_CTL				= 0x00002814,
+	GUEST_IA32_RTIT_CTL_HIGH		= 0x00002815,
+	HOST_IA32_PAT					= 0x00002c00,
+	HOST_IA32_PAT_HIGH				= 0x00002c01,
+	HOST_IA32_EFER					= 0x00002c02,
+	HOST_IA32_EFER_HIGH				= 0x00002c03,
+	HOST_IA32_PERF_GLOBAL_CTRL		= 0x00002c04,
 	HOST_IA32_PERF_GLOBAL_CTRL_HIGH	= 0x00002c05,
 	PIN_BASED_VM_EXEC_CONTROL       = 0x00004000,
 	CPU_BASED_VM_EXEC_CONTROL       = 0x00004002,
@@ -356,7 +356,7 @@ enum vmcs_field {
 
 2. 保护模式的 guest 寻址
 
-   在没有虚拟化的情况下，cr3 寄存器指向的是 HVA 到 HPA 转换的映射表。但在虚拟化需要在 guest 中将 GVA 转换成 GPA，然后 MMU 将 HVA 转换成 HPA。
+   在没有虚拟化的情况下，cr3 寄存器指向的是 HVA 到 HPA 转换的映射表。但在虚拟化环境中需要在 guest 中将 GVA 转换成 GPA，然后 MMU 将 HVA 转换成 HPA。
 
    影子页表：**KVM 建立的一张将 GVA 转换成 HPA 的表，这张表需要根据 guest 内部页表的信息更新**。guest 中每个进程都有对应的页表，所有当 guest 任务切换时，影子页表也需要跟着切换，所以需要维护的页表是非常多的。
 
@@ -378,7 +378,7 @@ enum vmcs_field {
 
 物理 CPU 在执行完一条指令后，都会检查中断引脚是否有效，一旦有效，CPU 将处理中断，然后执行下一条指令。
 
-对于软件虚拟的中断芯片而言，**“引脚”只是一个变量**。如果 KVM 发现虚拟中断芯片有中断请求，则向 `VMCS` 中的 `VM-entry control` 部分的 `VM-entry interruption-information field` 字段写入中断信息，在切入 guest 模式的一刻，**CPU** 将检查这个字段，如同检查 CPU 引脚，如果有中断，则进入中断执行过程。
+对于软件虚拟的中断芯片而言，**“引脚”只是一个变量**。如果 KVM 发现虚拟中断芯片有中断请求，则向 `VMCS` 中的 `VM-entry control` 部分的 `VM-entry interruption-information field` 字段写入中断信息，**在切入 guest 模式的一刻，CPU 将检查这个字段，如同检查 CPU 引脚，如果有中断，则进入中断执行过程**。
 
 guest 模式的 CPU 不能检测虚拟中断芯片的引脚，只能在 VM entry 时由 KVM 模块代为检查，然后写入 `VMCS`，一旦有中断注入，那么处于 guest 模式的 CPU 一定需要通过 VM exit 退出到 host 模式，这个上下文切换很麻烦。
 

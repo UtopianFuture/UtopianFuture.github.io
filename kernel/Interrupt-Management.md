@@ -794,7 +794,7 @@ serial8250_tx_chars (up=up@entry=0xffffffff836d1c60 <serial8250_ports>) at drive
 
 因为软中断和 tasklet 平时的项目中用不到，所以这里只记录一下它们的原理，不再进一步分析。
 
-中断管理中的上下半部是很重要的设计理念。硬件和汇编代码处理的跳转到中断向量表和中断上下文保存属于上半部，而软中断，tasklet，工作队列属于下半部请求。中断上半部的设计理念是尽快完成并从硬件中断返回。因为硬件中断处理程序是在关中断的情况下做的，本地 CPU 不能继续响应中断，若不能及时开中断，其他对时间敏感的中断可能会出问题。
+中断管理中的上下半部是很重要的设计理念。硬件和汇编代码处理的跳转到中断向量表和中断上下文保存属于上半部，而软中断，tasklet，工作队列属于下半部请求。**中断上半部的设计理念是尽快完成并从硬件中断返回**，因为硬件中断处理程序是在关中断的情况下做的，本地 CPU 不能继续响应中断，若不能及时开中断，其他对时间敏感的中断可能会出问题。
 
 #### 软中断
 
@@ -823,7 +823,7 @@ enum
 	NR_SOFTIRQS
 };
 
-// 软件中断描述符，只包含一个handler函数指针
+// 软件中断描述符，只包含一个 handler 函数指针
 struct softirq_action {
 	void	(*action)(struct softirq_action *);
 };
@@ -831,16 +831,16 @@ struct softirq_action {
 // 软中断描述符表，实际上就是一个全局的数组
 static struct softirq_action softirq_vec[NR_SOFTIRQS] __cacheline_aligned_in_smp;
 
-// CPU软中断状态描述，当某个软中断触发时，__softirq_pending会置位对应的bit
+// CPU 软中断状态描述，当某个软中断触发时，__softirq_pending 会置位对应的 bit
 typedef struct {
 	unsigned int __softirq_pending;
 	unsigned int ipi_irqs[NR_IPI];
 } ____cacheline_aligned irq_cpustat_t;
 
-// 每个CPU都会维护一个状态信息结构
+// 每个 CPU 都会维护一个状态信息结构
 irq_cpustat_t irq_stat[NR_CPUS] ____cacheline_aligned;
 
-// 内核为每个CPU都创建了一个软中断处理内核线程
+// 内核为每个 CPU 都创建了一个软中断处理内核线程
 DEFINE_PER_CPU(struct task_struct *, ksoftirqd);
 ```
 
@@ -853,7 +853,7 @@ DEFINE_PER_CPU(struct task_struct *, ksoftirqd);
 
 这里总结一下软中断需要注意的地方：
 
-- 软中断的回调函数在开中断的环境下执行，能够被其他中断抢占，但不能被进程抢占；
+- 软中断的回调函数在开中断的环境下执行，**能够被其他中断抢占，但不能被进程抢占**；
 - 同一类型的软中断可能在多个 CPU 上并行执行。
 - 软中断是在中断返回前，即退出硬中断上下文时，执行的，所以其还是执行在中断上下文，不能睡眠。
 
