@@ -239,6 +239,264 @@ static inline void __raw_spin_lock_irq(raw_spinlock_t *lock)
 
 ### MCS 锁
 
+在一个锁争用激烈的系统中，所有等待自旋锁的线程都在同一个共享变量上自旋，申请和释放锁也都在一个变量上修改，cache 一致性原理导致参与自旋的 CPU 的 cache 行无效，也可能导致 cache 颠簸现象（这种现象是怎样发现的，又是如何确定其和自旋锁有关），导致系统性能降低。
+
+MCS 算法可以解决 cache 颠簸问题，其关键思想是**每个锁的申请者只在本地 CPU 的变量上自旋，而不是全局变量上**。OSQ 锁是 MCS 锁机制的一种实现，而后来内核又引进了基于 MCS 机制的排队自旋锁，后面介绍。我开始以为实现了 qspinlock 后内核应该只会使用 qspinlock，其实不是 osq 也有使用。不大部分是在互斥锁中使用。
+
+```
+#0  osq_lock (lock=lock@entry=0xffffffff83014a2c <kernfs_open_file_mutex+12>) at kernel/locking/osq_lock.c:91
+#1  0xffffffff81c157fd in mutex_optimistic_spin (waiter=0x0 <fixed_percpu_data>, ww_ctx=0x0 <fixed_percpu_data>,
+    lock=0xffffffff83014a20 <kernfs_open_file_mutex>) at kernel/locking/mutex.c:453
+#2  __mutex_lock_common (use_ww_ctx=false, ww_ctx=0x0 <fixed_percpu_data>, ip=<optimized out>,
+    nest_lock=0x0 <fixed_percpu_data>, subclass=0, state=2, lock=0xffffffff83014a20 <kernfs_open_file_mutex>)
+    at kernel/locking/mutex.c:599
+#3  __mutex_lock (lock=lock@entry=0xffffffff83014a20 <kernfs_open_file_mutex>, state=state@entry=2,
+    ip=<optimized out>, nest_lock=0x0 <fixed_percpu_data>, subclass=0) at kernel/locking/mutex.c:729
+#4  0xffffffff81c15933 in __mutex_lock_slowpath (lock=lock@entry=0xffffffff83014a20 <kernfs_open_file_mutex>)
+    at kernel/locking/mutex.c:979
+#5  0xffffffff81c15972 in mutex_lock (lock=lock@entry=0xffffffff83014a20 <kernfs_open_file_mutex>)
+    at kernel/locking/mutex.c:280
+#6  0xffffffff813e9fa3 in kernfs_put_open_node (of=of@entry=0xffff8881024fc780, kn=<optimized out>)
+    at fs/kernfs/file.c:580
+#7  0xffffffff813ea05a in kernfs_fop_release (inode=0xffff8881063dea80, filp=0xffff888102345a00)
+    at fs/kernfs/file.c:760
+#8  0xffffffff8132a19f in __fput (file=0xffff888102345a00) at fs/file_table.c:280
+#9  0xffffffff8132a3ce in ____fput (work=<optimized out>) at fs/file_table.c:313
+#10 0xffffffff810c94d0 in task_work_run () at kernel/task_work.c:164
+#11 0xffffffff8113bce1 in tracehook_notify_resume (regs=0xffffc90000513f58) at ./include/linux/tracehook.h:189
+#12 exit_to_user_mode_loop (ti_work=<optimized out>, regs=<optimized out>) at kernel/entry/common.c:175
+#13 exit_to_user_mode_prepare (regs=0xffffc90000513f58) at kernel/entry/common.c:207
+#14 0xffffffff81c0b017 in __syscall_exit_to_user_mode_work (regs=regs@entry=0xffffc90000513f58)
+    at kernel/entry/common.c:289
+#15 syscall_exit_to_user_mode (regs=regs@entry=0xffffc90000513f58) at kernel/entry/common.c:300
+#16 0xffffffff81c07128 in do_syscall_64 (regs=0xffffc90000513f58, nr=<optimized out>) at arch/x86/entry/common.c:86
+#17 0xffffffff81e0007c in entry_SYSCALL_64 () at arch/x86/entry/entry_64.S:113
+#18 0x00007ffca4a40c08 in ?? ()
+```
+
+OSQ 主要涉及到两个数据结构，
+
+```c
+/*
+ * An MCS like lock especially tailored for optimistic spinning for sleeping
+ * lock implementations (mutex, rwsem, etc).
+ */
+struct optimistic_spin_node { // 本地 CPU 上的节点
+	struct optimistic_spin_node *next, *prev;
+	int locked; /* 1 if lock acquired */
+	int cpu; /* encoded CPU # + 1 value */
+};
+
+// 每个 CPU 上都有一个 MCS 节点
+static DEFINE_PER_CPU_SHARED_ALIGNED(struct optimistic_spin_node, osq_node);
+
+struct optimistic_spin_queue {
+	/*
+	 * Stores an encoded value of the CPU # of the tail node in the queue.
+	 * If the queue is empty, then it's set to OSQ_UNLOCKED_VAL.
+	 */
+	atomic_t tail;
+};
+```
+
+其初始化也很简单，
+
+```c
+#define OSQ_UNLOCKED_VAL (0)
+
+/* Init macro and function. */
+#define OSQ_LOCK_UNLOCKED { ATOMIC_INIT(OSQ_UNLOCKED_VAL) }
+
+static inline void osq_lock_init(struct optimistic_spin_queue *lock)
+{
+	atomic_set(&lock->tail, OSQ_UNLOCKED_VAL);
+}
+```
+
+其实整个 OSQ 实现并不复杂，毕竟代码才 200 多行。 `osq_lock` 用来申请 MCS 锁，其分为 3 中情况，我们一个个来看，
+
+#### 快速申请通道
+
+```c
+bool osq_lock(struct optimistic_spin_queue *lock)
+{
+	struct optimistic_spin_node *node = this_cpu_ptr(&osq_node); // 首先获取该 CPU 上的 node
+	struct optimistic_spin_node *prev, *next;
+	int curr = encode_cpu(smp_processor_id()); // cpu_nr + 1
+	int old;
+
+	node->locked = 0;
+	node->next = NULL;
+	node->cpu = curr;
+
+    // 如果 lock->tail 旧值为 OSQ_UNLOCKED_VAL，说明没有 CPU 持有锁
+    // 这就是快速申请通道，否则进入中速通道
+	old = atomic_xchg(&lock->tail, curr);
+	if (old == OSQ_UNLOCKED_VAL)
+		return true;
+
+    ...
+}
+```
+
+#### 中速申请通道
+
+```c
+bool osq_lock(struct optimistic_spin_queue *lock)
+{
+    ...
+
+	prev = decode_cpu(old); // 当前持有该锁的 CPU
+	node->prev = prev;
+
+	/*
+	 * osq_lock()			unqueue
+	 *
+	 * node->prev = prev		osq_wait_next()
+	 * WMB				MB
+	 * prev->next = node		next->prev = prev // unqueue-C
+	 *
+	 * Here 'node->prev' and 'next->prev' are the same variable and we need
+	 * to ensure these stores happen in-order to avoid corrupting the list.
+	 */
+	smp_wmb();
+
+	WRITE_ONCE(prev->next, node); // 将当前 node 插入到 MCS 链表中
+
+	/*
+	 * Normally @prev is untouchable after the above store; because at that
+	 * moment unlock can proceed and wipe the node element from stack.
+	 *
+	 * However, since our nodes are static per-cpu storage, we're
+	 * guaranteed their existence -- this allows us to apply
+	 * cmpxchg in an attempt to undo our queueing.
+	 */
+
+	/*
+	 * Wait to acquire the lock or cancellation. Note that need_resched()
+	 * will come with an IPI, which will wake smp_cond_load_relaxed() if it
+	 * is implemented with a monitor-wait. vcpu_is_preempted() relies on
+	 * polling, be careful.
+	 */
+    // 这里应该是自旋等待，检查 node->locked 是否为 1
+    // 因为 prev_node 释放锁时会把它的下一个节点中的 locked 成员设置为 1
+    // 然后才能成功释放锁，这个后面会介绍
+    // 这样感觉就是一个排队等待的过程
+    // 在自旋等待的过程中，如果有更高优先级的进程抢占或者被调度器调度出去
+    // 那么应该放弃自旋等待，跳转到 unqueue 将 node 节点从 MCS 链表中删去
+	if (smp_cond_load_relaxed(&node->locked, VAL || need_resched() ||
+				  vcpu_is_preempted(node_cpu(node->prev))))
+		return true;
+
+	...
+}
+```
+
+#### 慢速申请通道
+
+慢速通道主要是实现删除链表等操作，其过程和一般的双向编表删除类似，不过要使用原子操作，所以比较复杂，这里对其具体操作就不进一步分析，之后有需要再看。
+
+```c
+bool osq_lock(struct optimistic_spin_queue *lock)
+{
+    ...
+
+/* unqueue */
+	/*
+	 * Step - A  -- stabilize @prev
+	 *
+	 * Undo our @prev->next assignment; this will make @prev's
+	 * unlock()/unqueue() wait for a next pointer since @lock points to us
+	 * (or later).
+	 */
+
+	for (;;) {
+		/*
+		 * cpu_relax() below implies a compiler barrier which would
+		 * prevent this comparison being optimized away.
+		 */
+		if (data_race(prev->next) == node &&
+		    cmpxchg(&prev->next, node, NULL) == node)
+			break;
+
+		/*
+		 * We can only fail the cmpxchg() racing against an unlock(),
+		 * in which case we should observe @node->locked becoming
+		 * true.
+		 */
+		if (smp_load_acquire(&node->locked))
+			return true;
+
+		cpu_relax();
+
+		/*
+		 * Or we race against a concurrent unqueue()'s step-B, in which
+		 * case its step-C will write us a new @node->prev pointer.
+		 */
+		prev = READ_ONCE(node->prev);
+	}
+
+	/*
+	 * Step - B -- stabilize @next
+	 *
+	 * Similar to unlock(), wait for @node->next or move @lock from @node
+	 * back to @prev.
+	 */
+
+	next = osq_wait_next(lock, node, prev);
+	if (!next)
+		return false;
+
+	/*
+	 * Step - C -- unlink
+	 *
+	 * @prev is stable because its still waiting for a new @prev->next
+	 * pointer, @next is stable because our @node->next pointer is NULL and
+	 * it will wait in Step-A.
+	 */
+
+	WRITE_ONCE(next->prev, prev);
+	WRITE_ONCE(prev->next, next);
+
+	return false;
+}
+```
+
+#### 释放锁
+
+```c
+void osq_unlock(struct optimistic_spin_queue *lock)
+{
+	struct optimistic_spin_node *node, *next;
+	int curr = encode_cpu(smp_processor_id());
+
+	/*
+	 * Fast path for the uncontended case.
+	 */
+    // 如果 lock->tail 保存的 CPU 编号正好是该进程的 CPU 编号
+    // 说明没有 CPU 来竞争，直接释放
+	if (likely(atomic_cmpxchg_release(&lock->tail, curr,
+					  OSQ_UNLOCKED_VAL) == curr))
+		return;
+
+	/*
+	 * Second most likely case.
+	 */
+	node = this_cpu_ptr(&osq_node);
+	next = xchg(&node->next, NULL); // 返回旧值，然后 node->next == NULL
+	if (next) {
+		WRITE_ONCE(next->locked, 1); // 前面说到过，将 next->locked 设为 1
+		return;
+	}
+
+    // 如果后继节点为空，说明在执行 osq_unlock 时有成员擅自离队（？）
+    // 调用 osq_wait_next 来确定或等待后继节点
+	next = osq_wait_next(lock, node, NULL);
+	if (next)
+		WRITE_ONCE(next->locked, 1);
+}
+```
+
 ### 排队自旋锁
 
 排队自旋锁能够解决在争用激烈场景下导致的性能下降问题。
@@ -315,6 +573,8 @@ static __always_inline void queued_spin_lock(struct qspinlock *lock)
 我们以一个实际的场景来分析 `qspinlock` 的使用，假设 CPU0，CPU1，CPU2，CPU3 都在进程上下文中争用一个自旋锁。
 
 在开始时，没有 CPU 持有锁，那么 CPU0 通过 `queued_spin_lock` 去申请该锁，这时在 `lock->val` 中，locked = 1，pending = 0，tail = 0，即三元组为 {0, 0, 1}。
+
+![qspinlock](/home/guanshun/gitlab/UFuture.github.io/image/qspinlock.png)
 
 #### 中速申请通道
 
@@ -421,6 +681,10 @@ void queued_spin_lock_slowpath(struct qspinlock *lock, u32 val)
     ...
 }
 ```
+
+看图更加直观，
+
+![qspinlock-2](/home/guanshun/gitlab/UFuture.github.io/image/qspinlock-2.png)
 
 #### 慢速申请通道
 
