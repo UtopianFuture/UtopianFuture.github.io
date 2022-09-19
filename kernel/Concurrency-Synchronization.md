@@ -1,4 +1,6 @@
-Concurrency and Synchronization
+## Concurrency and Synchronization
+
+### 锁机制
 
 临界区是指访问和操作共享数据的代码段，其中的资源无法同时被多个执行线程访问，访问临界区的执行线程或代码路径称为并发源，在内核中产生并发访问的并发源主要有如下 4 中：
 
@@ -45,6 +47,20 @@ typedef struct {
 ```
 
 内核中也有一系列的原子操作来操作这些原子变量，如 `atomic_inc(v)`，`atomic_dec(v)` 等，然后 CPU 必须提供原子操作的汇编指令来保证原子变量的完整性，如 `xadd`，`cmpxchg` 等。
+
+这里记录一些之后常见的原子操作：
+
+##### 原子交换函数
+
+- atomic_cmpxchg(ptr, old, new)：原子地比较 ptr 的值是否与 old 的值相等，若相等，则将 new 的值设置到 ptr 地址中，返回 old 的值；
+- atomic_xchg(ptr, new)：原子地把 new 的值设置到 ptr 地址中并返回 ptr 的原值；
+- atomic_try_cmpxchg(ptr, old, new)：与 atomic_cmpxchg 类似，只是返回值发生变化，返回一个 bool 值，以判断 cmpxchg 返回值是否和 old 的值相等；
+
+##### 內联原子操作函数
+
+- {}_relaxed：不内联内存屏障原语；
+- {}_acquire：内联加载-获取内存屏障原语；
+- {}_release：内联存储-释放内存屏障原语；
 
 ### 内存屏障
 
@@ -97,7 +113,7 @@ typedef struct {
 - 持有者要尽快完成临界区的执行任务。自旋锁临界区不能睡眠；
 - 可以在中断上下文使用；
 
-#### 自旋锁的实现
+#### spinlock
 
 老规矩，先看看相关的数据结构，
 
@@ -153,6 +169,8 @@ typedef struct qspinlock {
 	};
 } arch_spinlock_t;
 ```
+
+#### 关键函数spin_lock
 
 再看看其是怎么实现的，
 
@@ -237,7 +255,7 @@ static inline void __raw_spin_lock_irq(raw_spinlock_t *lock)
 
 这里有一点需要注意，`spin_lock_irq` 只会关闭本地中断，其他 CPU 还是可以响应中断，如果 CPU0 持有该自旋锁，而 CPU1 响应中断且中断处理程序也申请该自旋锁，那么等 CPU0 释放后即可获取。
 
-### MCS 锁
+### MCS锁
 
 在一个锁争用激烈的系统中，所有等待自旋锁的线程都在同一个共享变量上自旋，申请和释放锁也都在一个变量上修改，cache 一致性原理导致参与自旋的 CPU 的 cache 行无效，也可能导致 cache 颠簸现象（这种现象是怎样发现的，又是如何确定其和自旋锁有关），导致系统性能降低。
 
@@ -273,6 +291,8 @@ MCS 算法可以解决 cache 颠簸问题，其关键思想是**每个锁的申�
 #17 0xffffffff81e0007c in entry_SYSCALL_64 () at arch/x86/entry/entry_64.S:113
 #18 0x00007ffca4a40c08 in ?? ()
 ```
+
+#### optimistic_spin_node
 
 OSQ 主要涉及到两个数据结构，
 
@@ -890,6 +910,8 @@ static __always_inline void queued_spin_unlock(struct qspinlock *lock)
 
 信号量最早接触是在本科的时候学操作系统的进程同步，PV 操作。它和自旋锁的区别是自旋锁是忙等，而其允许进程睡眠。它的实现比自旋锁简单很多，
 
+#### semaphore
+
 ```c
 struct semaphore {
 	raw_spinlock_t		lock; // 用自旋锁来保护 count 和 wait_list
@@ -899,6 +921,8 @@ struct semaphore {
 ```
 
 PV 操作对应内核中的 `down()` 和 `up()` 函数。其中 `down()`  还有 `down_interruptible()` 变体，其在争用信号量失败时会让进程进入可中断睡眠状态，而 `down()` 则是进入不可中断睡眠状态。
+
+#### 关键函数down
 
 ```c
 int down_interruptible(struct semaphore *sem)
@@ -963,6 +987,8 @@ static inline int __sched __down_common(struct semaphore *sem, long state,
 }
 ```
 
+#### 关键函数up
+
 然后再看看 `up()`，
 
 ```c
@@ -989,6 +1015,276 @@ static noinline void __sched __up(struct semaphore *sem)
 ```
 
 ### 互斥锁
+
+互斥锁类似于 count = 1 的信号量，那为何还要重新开发 mutex？
+
+互斥锁相比于信号量要简单轻便一些，同时在锁争用激烈的测试场景下，互斥锁比信号量执行速度更快，可扩展性更好。我们从代码上实际看看是怎么回事。
+
+#### mutex
+
+```c
+struct mutex { // 和信号量类似
+	atomic_long_t		owner; // 0 表示该锁没有被持有，非 0 表示持有者的 task_struct 指针
+	raw_spinlock_t		wait_lock;
+#ifdef CONFIG_MUTEX_SPIN_ON_OWNER
+	struct optimistic_spin_queue osq; /* Spinner MCS lock */
+#endif
+	struct list_head	wait_list;
+
+    ... // 从数据结构上来看并没有轻便啊
+
+};
+```
+
+互斥锁实现了乐观自旋等待机制（其实就是自旋等待），其核心原理是当发现锁持有者在临界区执行并且没有其他高优先级进程调度时，当前进程坚信锁持有者会很快离开临界区并释放锁，因此不睡眠等待，从而减少睡眠和唤醒的开销（这里应该就是更轻便的地方）。其实这个自旋等待也是 MCS 锁。
+
+#### 快速申请通道
+
+```c
+void __sched mutex_lock(struct mutex *lock)
+{
+	might_sleep();
+
+    // 快速通道
+    // 这里其实很 hacking 的，暂时不分析
+    // 和前面一样，检查锁是否被持有
+    // 即 lock->owner 是否为 0，前面讲到 owner 指向持有进程的 task_struct 地址
+    // unsigned long curr = (unsigned long)current;
+	if (!__mutex_trylock_fast(lock))
+		__mutex_lock_slowpath(lock);
+}
+```
+
+#### 慢速申请通道
+
+这部分不是很懂！
+
+```c
+static noinline void __sched
+__mutex_lock_slowpath(struct mutex *lock)
+{
+	__mutex_lock(lock, TASK_UNINTERRUPTIBLE, 0, NULL, _RET_IP_); // 不可抢占睡眠
+}
+
+static int __sched
+__mutex_lock(struct mutex *lock, unsigned int state, unsigned int subclass,
+	     struct lockdep_map *nest_lock, unsigned long ip)
+{
+	return __mutex_lock_common(lock, state, subclass, nest_lock, ip, NULL, false);
+}
+
+static __always_inline int __sched
+__mutex_lock_common(struct mutex *lock, unsigned int state, unsigned int subclass,
+		    struct lockdep_map *nest_lock, unsigned long ip,
+		    struct ww_acquire_ctx *ww_ctx, const bool use_ww_ctx)
+{
+	struct mutex_waiter waiter;
+	struct ww_mutex *ww; // 这个数据结构是用来干嘛的
+	int ret;
+
+	...
+
+	preempt_disable();
+	mutex_acquire_nest(&lock->dep_map, subclass, 0, nest_lock, ip);
+
+	if (__mutex_trylock(lock) || // 这个函数就是不断的检查持有锁的进程是否就是当前进程
+	    mutex_optimistic_spin(lock, ww_ctx, NULL)) { // 有了上一个函数，为什么还要自旋等待呢？
+		/* got the lock, yay! */
+		lock_acquired(&lock->dep_map, ip);
+		if (ww_ctx)
+			ww_mutex_set_context_fastpath(ww, ww_ctx);
+		preempt_enable();
+		return 0;
+	}
+
+	raw_spin_lock(&lock->wait_lock);
+	/*
+	 * After waiting to acquire the wait_lock, try again.
+	 */
+	if (__mutex_trylock(lock)) { // 不理解
+		if (ww_ctx)
+			__ww_mutex_check_waiters(lock, ww_ctx);
+
+		goto skip_wait;
+	}
+
+	debug_mutex_lock_common(lock, &waiter);
+	waiter.task = current; // 构建一个 waiter 插入到等待链表中
+	if (use_ww_ctx)
+		waiter.ww_ctx = ww_ctx;
+
+	lock_contended(&lock->dep_map, ip);
+
+	if (!use_ww_ctx) {
+		/* add waiting tasks to the end of the waitqueue (FIFO): */
+		__mutex_add_waiter(lock, &waiter, &lock->wait_list);
+	} else {
+		/*
+		 * Add in stamp order, waking up waiters that must kill
+		 * themselves.
+		 */
+		ret = __ww_mutex_add_waiter(&waiter, lock, ww_ctx);
+		if (ret)
+			goto err_early_kill;
+	}
+
+    // 这里都设置进程状态为(不)可中断睡眠了，为什么后面还有自旋等待呢？
+    // 应该是不断的睡眠，不断的被调度唤醒，直到能获取锁
+    // 确定这样能更轻便么？反复睡眠唤醒
+	set_current_state(state);
+	for (;;) {
+		bool first;
+
+		/*
+		 * Once we hold wait_lock, we're serialized against
+		 * mutex_unlock() handing the lock off to us, do a trylock
+		 * before testing the error conditions to make sure we pick up
+		 * the handoff.
+		 */
+		if (__mutex_trylock(lock))
+			goto acquired;
+
+		/*
+		 * Check for signals and kill conditions while holding
+		 * wait_lock. This ensures the lock cancellation is ordered
+		 * against mutex_unlock() and wake-ups do not go missing.
+		 */
+		if (signal_pending_state(state, current)) {
+			ret = -EINTR;
+			goto err;
+		}
+
+		if (ww_ctx) {
+			ret = __ww_mutex_check_kill(lock, &waiter, ww_ctx);
+			if (ret)
+				goto err;
+		}
+
+		raw_spin_unlock(&lock->wait_lock);
+		schedule_preempt_disabled();
+
+		first = __mutex_waiter_is_first(lock, &waiter);
+
+		set_current_state(state);
+		/*
+		 * Here we order against unlock; we must either see it change
+		 * state back to RUNNING and fall through the next schedule(),
+		 * or we must see its unlock and acquire.
+		 */
+		if (__mutex_trylock_or_handoff(lock, first) ||
+		    (first && mutex_optimistic_spin(lock, ww_ctx, &waiter)))
+			break;
+
+		raw_spin_lock(&lock->wait_lock);
+	}
+	raw_spin_lock(&lock->wait_lock);
+acquired:
+	__set_current_state(TASK_RUNNING);
+
+	if (ww_ctx) {
+		/*
+		 * Wound-Wait; we stole the lock (!first_waiter), check the
+		 * waiters as anyone might want to wound us.
+		 */
+		if (!ww_ctx->is_wait_die &&
+		    !__mutex_waiter_is_first(lock, &waiter))
+			__ww_mutex_check_waiters(lock, ww_ctx);
+	}
+
+	__mutex_remove_waiter(lock, &waiter);
+
+	debug_mutex_free_waiter(&waiter);
+
+skip_wait:
+	/* got the lock - cleanup and rejoice! */
+	lock_acquired(&lock->dep_map, ip);
+
+	if (ww_ctx)
+		ww_mutex_lock_acquired(ww, ww_ctx);
+
+	raw_spin_unlock(&lock->wait_lock);
+	preempt_enable();
+	return 0;
+
+    ...
+}
+```
+
+#### 释放锁
+
+释放同样也分快路径和慢路径，快路径就是修改 `lock->owner` 的值，主要看看慢路径，
+
+```c
+static noinline void __sched __mutex_unlock_slowpath(struct mutex *lock, unsigned long ip)
+{
+	struct task_struct *next = NULL;
+	DEFINE_WAKE_Q(wake_q);
+	unsigned long owner;
+
+	mutex_release(&lock->dep_map, ip);
+
+	/*
+	 * Release the lock before (potentially) taking the spinlock such that
+	 * other contenders can get on with things ASAP.
+	 *
+	 * Except when HANDOFF, in that case we must not clear the owner field,
+	 * but instead set it to the top waiter.
+	 */
+	owner = atomic_long_read(&lock->owner);
+	for (;;) {
+		MUTEX_WARN_ON(__owner_task(owner) != current);
+		MUTEX_WARN_ON(owner & MUTEX_FLAG_PICKUP);
+
+		if (owner & MUTEX_FLAG_HANDOFF)
+			break;
+
+		if (atomic_long_try_cmpxchg_release(&lock->owner, &owner, __owner_flags(owner))) {
+			if (owner & MUTEX_FLAG_WAITERS)
+				break;
+
+			return; // 解锁成功，且没有等待者，直接返回
+		}
+	}
+
+	raw_spin_lock(&lock->wait_lock);
+	debug_mutex_unlock(lock);
+	if (!list_empty(&lock->wait_list)) { // 有等待者
+		/* get the first entry from the wait-list: */
+		struct mutex_waiter *waiter =
+			list_first_entry(&lock->wait_list,
+					 struct mutex_waiter, list);
+
+		next = waiter->task;
+
+		debug_mutex_wake_waiter(lock, waiter);
+		wake_q_add(&wake_q, next); // 将第一个等待者加入唤醒队列
+	}
+
+	if (owner & MUTEX_FLAG_HANDOFF)
+		__mutex_handoff(lock, next);
+
+	raw_spin_unlock(&lock->wait_lock);
+
+	wake_up_q(&wake_q); // 唤醒
+}
+```
+
+我们总结一下信号量和互斥锁：
+
+比较信号量的 `down` 函数和互斥锁的 `__mutex_lock_slowpath`，我们发现互斥锁在睡眠前会先尝试自旋等待获取锁，而信号量是直接去睡眠，这就是为什么互斥锁要比信号量高效。
+
+而互斥锁的轻便和高效使得其比信号的使用场景要求更加严格：
+
+- 同一时刻时有一个线程可以持有互斥锁，而信号量的 `count` 可以不为 1，即计数信号量；
+- 只有锁持有者可以解锁，因此其不适用于内核和用户空间复杂的同步场景；
+- 不允许递归的加锁解锁；
+- 当进程持有互斥锁时，进程不能退出（？）；
+- 互斥锁必须使用官方接口来初始化；
+- 互斥锁可以睡眠，所以不能在中断上下半部使用；
+
+那么在写代码时该如何使用自旋锁、信号量和互斥锁呢？
+
+在中断上下半部可以使用自旋锁；而如果临界区有睡眠、隐含睡眠的动作以内核接口函数（？），应避免使用自旋锁；而信号量和互斥锁的选择，除非使用环境不符合上述任何一条，否则优先使用互斥锁（怪不得互斥锁更为常见）。
 
 ### 读写锁
 
