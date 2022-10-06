@@ -1,5 +1,7 @@
 ## Concurrency and Synchronization
 
+对于内核中复杂的同步机制，目前的要求是搞清楚不同的锁的原理和区别，在不同场景下应该使用什么锁，至于每种锁的具体实现，等之后需要用了再看。
+
 ### 目录
 
 - [锁机制](#锁机制)
@@ -19,7 +21,9 @@
 - [互斥锁](#互斥锁)
   - [mutex](#mutex)
 - [读写锁](#读写锁)
-- [读写信号量](#读写信号量)
+  - [读写自旋锁](#读写自旋锁)
+  - [读写信号量](#读写信号量)
+
 - [RCU](#RCU)
 
 ### 锁机制
@@ -54,7 +58,7 @@
 | 内存屏障   | 使用处理器内存屏障指令或 GCC 的屏障指令                      | 读写指令时序的调整                                           |
 | 自旋锁     | 自旋等待                                                     | 中断上下文，短期持有锁，不可递归，临界区不可睡眠             |
 | 信号量     | 可睡眠的锁                                                   | 可长时间持有锁                                               |
-| 读写信号量 | 可睡眠的锁，多个读者可以同时持有锁，同一时刻只能有一个写者，读者和写者不能同时存在 | 程序员界定出临界区后读/写属性才有用                          |
+| 读写信号量 | 可睡眠的锁，多个读者可以同时持有锁，同一时刻只能有一个写者，**读者和写者不能同时存在** | 程序员界定出临界区后读/写属性才有用                          |
 | 互斥锁     | 可睡眠的互斥锁，比信号量快速和简洁，实现自旋等待机制         | 同一时刻只有一个线程可以持有互斥锁，由锁持有者负责解锁，即在同一个上下文中解锁，不能递归持有锁，不适合内核和用户空间复杂的同步场景 |
 | RCU        | 读者持有锁没有开销，多个读者和写者可以同时共存，写者必须等待所有读者离开临界区后才能销毁相关数据 | 受保护资源必须通过指针访问，如链表等                         |
 
@@ -1310,6 +1314,107 @@ static noinline void __sched __mutex_unlock_slowpath(struct mutex *lock, unsigne
 
 ### 读写锁
 
-### 读写信号量
+信号量的 PV 操作很清晰明了，持有锁的进程能够睡眠（还没有进一步去看内核哪些地方会使用到 semaphore，这个是之后的工作）。但是其没有区分临界区的读写属性，为了进一步提高并发性能，社区又提出了读写锁，允许多个读者同时访问临界资源，但写者不允许，其具有如下特性：
+
+- 允许多个读者同时进入临界区，但同一时刻只能有一个写者进入；
+- 读者和写者不能同时进入临界区；
+
+读写锁分为自旋类型和信号量类型，我们一个个来看。
+
+#### 读写自旋锁
+
+读写自旋锁在内核初始化的时候用的蛮多的，例如：
+
+```c
+#0  _raw_write_lock (lock=lock@entry=0xffffffff836adfe8 <proc_subdir_lock>) at kernel/locking/spinlock.c:299
+#1  0xffffffff813db692 in proc_register (dir=0xffff888100222840, dp=0xffff888100222900) at fs/proc/generic.c:373
+#2  0xffffffff813db8c7 in _proc_mkdir (name=name@entry=0xffffc90000013e0e "\377\377", mode=<optimized out>,
+    mode@entry=0, parent=<optimized out>, data=data@entry=0x0 <fixed_percpu_data>,
+    force_lookup=force_lookup@entry=false) at fs/proc/generic.c:495
+#3  0xffffffff813db938 in proc_mkdir_data (data=0x0 <fixed_percpu_data>, parent=<optimized out>, mode=0,
+    name=name@entry=0xffffc90000013e0e "\377\377") at fs/proc/generic.c:504
+#4  proc_mkdir (name=name@entry=0xffffc90000013e46 "0", parent=<optimized out>) at fs/proc/generic.c:518
+#5  0xffffffff81126c4a in register_irq_proc (irq=irq@entry=0, desc=0xffff888100180200) at kernel/irq/proc.c:360
+#6  0xffffffff81126ee0 in init_irq_proc () at kernel/irq/proc.c:446
+#7  0xffffffff831bab2a in do_basic_setup () at init/main.c:1409
+#8  kernel_init_freeable () at init/main.c:1614
+#9  0xffffffff81c0b31a in kernel_init (unused=<optimized out>) at init/main.c:1505
+#10 0xffffffff81004572 in ret_from_fork () at arch/x86/entry/entry_64.S:295
+#11 0x0000000000000000 in ?? ()
+```
+
+先看看数据结构，
+
+##### rwlock_t
+
+```c
+typedef struct { // 和前面的自旋锁区别不大
+	arch_rwlock_t raw_lock;
+#ifdef CONFIG_DEBUG_SPINLOCK
+	unsigned int magic, owner_cpu;
+	void *owner;
+#endif
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+	struct lockdep_map dep_map;
+#endif
+} rwlock_t;
+
+typedef struct qrwlock {
+	union {
+		atomic_t cnts;
+		struct {
+#ifdef __LITTLE_ENDIAN
+			u8 wlocked;	/* Locked for write? */
+			u8 __lstate[3];
+#else
+			u8 __lstate[3];
+			u8 wlocked;	/* Locked for write? */
+#endif
+		};
+	};
+	arch_spinlock_t		wait_lock;
+} arch_rwlock_t;
+```
+
+其实现和前面的自旋锁类似，这里就不再详细介绍。
+
+```c
+static inline void queued_read_lock(struct qrwlock *lock)
+{
+	int cnts;
+
+	cnts = atomic_add_return_acquire(_QR_BIAS, &lock->cnts);
+	if (likely(!(cnts & _QW_WMASK)))
+		return;
+
+	/* The slowpath will decrement the reader count, if necessary. */
+	queued_read_lock_slowpath(lock);
+}
+```
+
+#### 读写信号量
 
 ### RCU
+
+之前总听到师兄说 RCU 很复杂，很难，这里开始啃吧！
+
+RCU 全称 Read-Copy-Update，首先我们需要考虑一个问题，前面介绍到内核中已有很多锁机制，那为何还要设计复杂的 RCU 机制。
+
+因为内存屏障、自旋锁、信号量、读写信号量等都需要使用原子操作，而多 CPU 争用共享变量时会让 cache 一致性协议性能很低（确实，因为需要不断更新不同 CPU 中 cache 的内容）。以读写信号量为例，除了上述问题，其只允许多个读者存在，但是读者和写者不能同时存在。
+
+RCU 的目标是使读者线程没有同步开销，或者同步开销很小，不需要额外的锁，也不需要原子操作和内存屏障即可快速的访问；而将同步任务交给写者线程，写者线程会创建一个副本，在副本中进行修改，之后等待所有读者线程完成后才将旧数据销毁，使指针指向新数据。
+
+RCU 提供的接口如下：
+
+- `rcu_read_lock`/`rcu_read_unlock`：构成一个读者临界区；
+- `rcu_dereference`：用于获取被 RCU 保护的指针，读者线程要访问 RCU 保护的贡献数据，需要使用该函数创建一个新指针，指向被 RCU 保护的指针？
+- `rcu_assign_pointer`：在写者线程完成数据更新后，调用该接口可以让被 RCU 保护的指针指向新建数据；
+- `synchronize_rcu`：同步所有的读者进程；
+- `call_rcu`：注册一个回调函数，当所有现存的读访问完成后，调用这个函数销毁旧数据。
+
+关于这些接口的使用以及更详细的说明，可以看 Documents/RCU/whatisRCU.rst。书中该章节有一个简单的例子，看看他可以加深对这些接口的理解。
+
+RCU 中有两个重要概念：
+
+- 宽限期（Grace Period, GP）。GP 有生命周期，有开始和结束之分，从 GP 开始算起，如果所有处于读者临界区的 CPU 都离开了临界区，也就是经历了一次 QS，那么认为一个 GP 结束了。GP 结束后，RCU 会调用注册的回调函数，如销毁旧数据等。
+- 静止状态（Quiescent State）。如果一个 CPU 处于读者临界区，那么认为它是活跃的，如果时钟周期中检测到该 CPU 处于用户模式或空闲状态，说明该 CPU 已经离开了读者临界区，那么它是 QS 的。
