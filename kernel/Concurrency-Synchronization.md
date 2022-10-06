@@ -1392,7 +1392,552 @@ static inline void queued_read_lock(struct qrwlock *lock)
 }
 ```
 
+常用的函数如下：
+
+- `write_lock`：申请写者锁；
+- `read_lock`：申请读者锁；
+- `read_lock_irq`：关闭中断并且申请读者锁；
+- `write_lock_irq`：关闭中断并且申请写者锁；
+
 #### 读写信号量
+
+读写自旋锁和读写信号量有什么区别？
+
+##### rw_semaphore
+
+```c
+struct rw_semaphore {
+	atomic_long_t count; // 用于读写信号量的计数，具体每位的含义下面介绍
+	/*
+	 * Write owner or one of the read owners as well flags regarding
+	 * the current state of the rwsem. Can be used as a speculative
+	 * check to see if the write owner is running on the cpu.
+	 */
+	atomic_long_t owner; // 锁持有者的 task_struct 指针
+#ifdef CONFIG_RWSEM_SPIN_ON_OWNER
+	struct optimistic_spin_queue osq; /* spinner MCS lock */
+#endif
+	raw_spinlock_t wait_lock; // 原子的保护 count
+	struct list_head wait_list; // 所有在该信号量上睡眠的进程
+
+    ...
+};
+```
+
+count 可以理解为一个二元数，其含义可以这样理解，
+
+- `0x0000 0000`：初始值，表示没有读者和写者；
+- `0x0000 000X`：表示有 x 个活跃的读者或者正在申请的读者，没有写者干扰；
+- `0xFFFF 000X`：表示可能有 x 个活跃读者，还有写者正在等待，或者表示有一个写者持有锁，还有 x 个读者正在等待；
+- `0xFFFF 0000`：表示 `WAITING_BIAS`，有读者或者写者正在等待，但是它们还没有成功获取锁；
+
+不过我看 5.15 版的内核，其定义又改了，根据源码注释要这样理解：
+
+```c
+/*
+ * On 64-bit architectures, the bit definitions of the count are:
+ *
+ * Bit  0    - writer locked bit
+ * Bit  1    - waiters present bit
+ * Bit  2    - lock handoff bit
+ * Bits 3-7  - reserved
+ * Bits 8-62 - 55-bit reader count
+ * Bit  63   - read fail bit
+ *
+ * On 32-bit architectures, the bit definitions of the count are:
+ *
+ * Bit  0    - writer locked bit
+ * Bit  1    - waiters present bit
+ * Bit  2    - lock handoff bit
+ * Bits 3-7  - reserved
+ * Bits 8-30 - 23-bit reader count // 所以 rwsem_read_trylock 中要加 0x100
+ * Bit  31   - read fail bit
+ *
+ * It is not likely that the most significant bit (read fail bit) will ever
+ * be set. This guard bit is still checked anyway in the down_read() fastpath
+ * just in case we need to use up more of the reader bits for other purpose
+ * in the future.
+ *
+ * atomic_long_fetch_add() is used to obtain reader lock, whereas
+ * atomic_long_cmpxchg() will be used to obtain writer lock.
+ *
+ * There are three places where the lock handoff bit may be set or cleared.
+ * 1) rwsem_mark_wake() for readers.
+ * 2) rwsem_try_write_lock() for writers.
+ * 3) Error path of rwsem_down_write_slowpath().
+ *
+ * For all the above cases, wait_lock will be held. A writer must also
+ * be the first one in the wait_list to be eligible for setting the handoff
+ * bit. So concurrent setting/clearing of handoff bit is not possible.
+ */
+#define RWSEM_WRITER_LOCKED	(1UL << 0)
+#define RWSEM_FLAG_WAITERS	(1UL << 1)
+#define RWSEM_FLAG_HANDOFF	(1UL << 2)
+#define RWSEM_FLAG_READFAIL	(1UL << (BITS_PER_LONG - 1))
+
+#define RWSEM_READER_SHIFT	8
+#define RWSEM_READER_BIAS	(1UL << RWSEM_READER_SHIFT)
+#define RWSEM_READER_MASK	(~(RWSEM_READER_BIAS - 1))
+#define RWSEM_WRITER_MASK	RWSEM_WRITER_LOCKED
+#define RWSEM_LOCK_MASK		(RWSEM_WRITER_MASK|RWSEM_READER_MASK)
+#define RWSEM_READ_FAILED_MASK	(RWSEM_WRITER_MASK|RWSEM_FLAG_WAITERS|\
+				 RWSEM_FLAG_HANDOFF|RWSEM_FLAG_READFAIL)
+```
+
+主要有如下接口：
+
+```c
+/*
+ * lock for reading
+ */
+extern void down_read(struct rw_semaphore *sem);
+extern int __must_check down_read_interruptible(struct rw_semaphore *sem);
+extern int __must_check down_read_killable(struct rw_semaphore *sem);
+
+/*
+ * trylock for reading -- returns 1 if successful, 0 if contention
+ */
+extern int down_read_trylock(struct rw_semaphore *sem);
+
+/*
+ * lock for writing
+ */
+extern void down_write(struct rw_semaphore *sem);
+extern int __must_check down_write_killable(struct rw_semaphore *sem);
+
+/*
+ * trylock for writing -- returns 1 if successful, 0 if contention
+ */
+extern int down_write_trylock(struct rw_semaphore *sem);
+
+/*
+ * release a read lock
+ */
+extern void up_read(struct rw_semaphore *sem);
+
+/*
+ * release a write lock
+ */
+extern void up_write(struct rw_semaphore *sem);
+
+/*
+ * downgrade write lock to read lock
+ */
+extern void downgrade_write(struct rw_semaphore *sem);
+```
+
+##### 申请读者类型信号量
+
+申请读者锁的过程比较复杂，我们先看看流程图，对整个过程有个了解。
+
+![acquire_r_sem.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/acquire_r_sem.png?raw=true)
+
+由于内核版本问题，5.15 的内核实现和书中略有不同，不过大致的思路是一致的，这里结合源码来看。
+
+```c
+down_read -> __down_read -> __down_read_common
+
+/*
+ * lock for reading
+ */
+static inline int __down_read_common(struct rw_semaphore *sem, int state)
+{
+	long count;
+
+	if (!rwsem_read_trylock(sem, &count)) { // 读者进程尝试快速路径获取锁
+		if (IS_ERR(rwsem_down_read_slowpath(sem, count, state))) // 快速通道失败，走慢速通道
+			return -EINTR;
+		DEBUG_RWSEMS_WARN_ON(!is_rwsem_reader_owned(sem), sem);
+	}
+	return 0;
+}
+```
+
+先看看快速通道，挺简单的，
+
+```c
+static inline bool rwsem_read_trylock(struct rw_semaphore *sem, long *cntp)
+{
+    // 前面我们知道从 bit 8 开始表示读者数量
+	*cntp = atomic_long_add_return_acquire(RWSEM_READER_BIAS, &sem->count);
+
+	if (WARN_ON_ONCE(*cntp < 0))
+		rwsem_set_nonspinnable(sem);
+
+	if (!(*cntp & RWSEM_READ_FAILED_MASK)) { // 检查是否有写者，等待线程等等，没有的话就设置 owner == current
+		rwsem_set_reader_owned(sem); // 可是设置之后不就是独占么，怎样达到多个读者同时持有？
+		return true;
+	}
+
+	return false;
+}
+```
+
+主要是慢速通道，这意味着已经有一个写者持有该锁了，
+
+```c
+/*
+ * Wait for the read lock to be granted
+ */
+static struct rw_semaphore __sched *
+rwsem_down_read_slowpath(struct rw_semaphore *sem, long count, unsigned int state)
+{
+	long adjustment = -RWSEM_READER_BIAS;
+	long rcnt = (count >> RWSEM_READER_SHIFT);
+	struct rwsem_waiter waiter; // 获取锁失败即为等待者，会加入到 wait_list 中
+	DEFINE_WAKE_Q(wake_q);
+	bool wake = false;
+
+	/*
+	 * To prevent a constant stream of readers from starving a sleeping
+	 * waiter, don't attempt optimistic lock stealing if the lock is
+	 * currently owned by readers.
+	 */
+    // 为了防止不断到来的读者线程将等待线程饿死，如果当前锁被读者持有
+    // 那么不要尝试使用乐观自旋等待去“偷锁”，而是将其设置为等待者
+	if ((atomic_long_read(&sem->owner) & RWSEM_READER_OWNED) &&
+	    (rcnt > 1) && !(count & RWSEM_WRITER_LOCKED))
+		goto queue;
+
+	/*
+	 * Reader optimistic lock stealing.
+	 */
+    // “偷锁”是个什么机制？
+    // 从代码上来看是没有写者持有锁
+	if (!(count & (RWSEM_WRITER_LOCKED | RWSEM_FLAG_HANDOFF))) {
+		rwsem_set_reader_owned(sem); // 读者持有锁
+		lockevent_inc(rwsem_rlock_steal);
+
+		/*
+		 * Wake up other readers in the wait queue if it is
+		 * the first reader.
+		 */
+		if ((rcnt == 1) && (count & RWSEM_FLAG_WAITERS)) {
+			raw_spin_lock_irq(&sem->wait_lock);
+			if (!list_empty(&sem->wait_list))
+				rwsem_mark_wake(sem, RWSEM_WAKE_READ_OWNED, // 唤醒其他读者等待线程，还挺复杂
+						&wake_q);
+			raw_spin_unlock_irq(&sem->wait_lock);
+			wake_up_q(&wake_q);
+		}
+		return sem;
+	}
+
+    // 这个其实很好理解，构建一个 waiter，将其加入到 wait_lock 中
+queue:
+	waiter.task = current;
+	waiter.type = RWSEM_WAITING_FOR_READ; // 读和写的 type 是不一样的
+	waiter.timeout = jiffies + RWSEM_WAIT_TIMEOUT;
+
+	raw_spin_lock_irq(&sem->wait_lock);
+	if (list_empty(&sem->wait_list)) { // 等待队列为空
+		/*
+		 * In case the wait queue is empty and the lock isn't owned
+		 * by a writer or has the handoff bit set, this reader can
+		 * exit the slowpath and return immediately as its
+		 * RWSEM_READER_BIAS has already been set in the count.
+		 */
+		if (!(atomic_long_read(&sem->count) &
+		     (RWSEM_WRITER_MASK | RWSEM_FLAG_HANDOFF))) {
+			/* Provide lock ACQUIRE */
+			smp_acquire__after_ctrl_dep();
+			raw_spin_unlock_irq(&sem->wait_lock);
+			rwsem_set_reader_owned(sem);
+			lockevent_inc(rwsem_rlock_fast);
+			return sem;
+		}
+		adjustment += RWSEM_FLAG_WAITERS; // 表示 wait_list 中有等待线程了
+	}
+	list_add_tail(&waiter.list, &sem->wait_list);
+
+	/* we're now waiting on the lock, but no longer actively locking */
+	count = atomic_long_add_return(adjustment, &sem->count);
+
+	/*
+	 * If there are no active locks, wake the front queued process(es).
+	 *
+	 * If there are no writers and we are first in the queue,
+	 * wake our own waiter to join the existing active readers !
+	 */
+	if (!(count & RWSEM_LOCK_MASK)) { // 当前没有锁
+		clear_nonspinnable(sem);
+		wake = true;
+	}
+	if (wake || (!(count & RWSEM_WRITER_MASK) && // 当前没有锁或当前没有活跃的写者且有等待线程
+		    (adjustment & RWSEM_FLAG_WAITERS)))
+		rwsem_mark_wake(sem, RWSEM_WAKE_ANY, &wake_q); // 唤醒前几个读者等待线程
+
+	raw_spin_unlock_irq(&sem->wait_lock);
+	wake_up_q(&wake_q);
+
+	/* wait to be given the lock */
+	for (;;) {
+		set_current_state(state);
+		if (!smp_load_acquire(&waiter.task)) { // 在 rwsem_mark_wake 中被唤醒读者会设置 waiter.task 为 NULL
+			/* Matches rwsem_mark_wake()'s smp_store_release(). */
+			break;
+		}
+		if (signal_pending_state(state, current)) { // 没有获取锁，去睡眠等待
+			raw_spin_lock_irq(&sem->wait_lock);
+			if (waiter.task)
+				goto out_nolock;
+			raw_spin_unlock_irq(&sem->wait_lock);
+			/* Ordered by sem->wait_lock against rwsem_mark_wake(). */
+			break;
+		}
+		schedule(); // 让出 CPU
+		lockevent_inc(rwsem_sleep_reader);
+	}
+
+	__set_current_state(TASK_RUNNING); // 成功获取锁
+	lockevent_inc(rwsem_rlock);
+	return sem;
+
+    ...
+}
+```
+
+##### 释放读者类型信号量
+
+释放比较简单。
+
+```c
+/*
+ * unlock after reading
+ */
+static inline void __up_read(struct rw_semaphore *sem)
+{
+	long tmp;
+
+	DEBUG_RWSEMS_WARN_ON(sem->magic != sem, sem);
+	DEBUG_RWSEMS_WARN_ON(!is_rwsem_reader_owned(sem), sem);
+
+	rwsem_clear_reader_owned(sem);
+	tmp = atomic_long_add_return_release(-RWSEM_READER_BIAS, &sem->count); // count - 0x100
+	DEBUG_RWSEMS_WARN_ON(tmp < 0, sem);
+    // 因为读者是可以同时存在的，那么所有读者释放后 count 应该中计数器应该为 0
+    // 不为 0 说明者期间有写者请求锁
+	if (unlikely((tmp & (RWSEM_LOCK_MASK|RWSEM_FLAG_WAITERS)) ==
+		      RWSEM_FLAG_WAITERS)) { // 还有等待者，继续唤醒
+		clear_nonspinnable(sem);
+		rwsem_wake(sem);
+	}
+}
+```
+
+##### 申请写者类型信号量
+
+再来看看申请写者锁的过程，
+
+![acquire_w_sem.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/acquire_w_sem.png?raw=true)
+
+```c
+/*
+ * lock for writing
+ */
+static inline int __down_write_common(struct rw_semaphore *sem, int state)
+{
+	if (unlikely(!rwsem_write_trylock(sem))) {
+		if (IS_ERR(rwsem_down_write_slowpath(sem, state)))
+			return -EINTR;
+	}
+
+	return 0;
+}
+```
+
+同样的，快速通道比较简单，
+
+```c
+static inline bool rwsem_write_trylock(struct rw_semaphore *sem)
+{
+	long tmp = RWSEM_UNLOCKED_VALUE;
+
+    // 只是检查是否有写者持有锁，没有的话则 owner == current
+	if (atomic_long_try_cmpxchg_acquire(&sem->count, &tmp, RWSEM_WRITER_LOCKED)) {
+		rwsem_set_owner(sem);
+		return true;
+	}
+
+	return false;
+}
+```
+
+再来看看慢速通道，
+
+```c
+/*
+ * Wait until we successfully acquire the write lock
+ */
+static struct rw_semaphore *
+rwsem_down_write_slowpath(struct rw_semaphore *sem, int state)
+{
+	long count;
+	enum writer_wait_state wstate;
+	struct rwsem_waiter waiter;
+	struct rw_semaphore *ret = sem;
+	DEFINE_WAKE_Q(wake_q);
+
+    // 不懂
+    // 是这样的，自旋等待嘛，会不断的尝试获取锁，如果获取成功了，那么自然就返回该写者锁
+	/* do optimistic spinning and steal lock if possible */
+	if (rwsem_can_spin_on_owner(sem) && rwsem_optimistic_spin(sem)) {
+		/* rwsem_optimistic_spin() implies ACQUIRE on success */
+		return sem;
+	}
+
+	/*
+	 * Optimistic spinning failed, proceed to the slowpath
+	 * and block until we can acquire the sem.
+	 */
+	waiter.task = current;
+	waiter.type = RWSEM_WAITING_FOR_WRITE; // 写者等待
+	waiter.timeout = jiffies + RWSEM_WAIT_TIMEOUT;
+
+	raw_spin_lock_irq(&sem->wait_lock);
+
+    // 整个流程跟着注释看不难
+	/* account for this before adding a new element to the list */
+	wstate = list_empty(&sem->wait_list) ? WRITER_FIRST : WRITER_NOT_FIRST;
+
+	list_add_tail(&waiter.list, &sem->wait_list);
+
+	/* we're now waiting on the lock */
+	if (wstate == WRITER_NOT_FIRST) {
+		count = atomic_long_read(&sem->count);
+
+		/*
+		 * If there were already threads queued before us and:
+		 *  1) there are no active locks, wake the front
+		 *     queued process(es) as the handoff bit might be set.
+		 *  2) there are no active writers and some readers, the lock
+		 *     must be read owned; so we try to wake any read lock
+		 *     waiters that were queued ahead of us.
+		 */
+		if (count & RWSEM_WRITER_MASK) // 有写者在等待了，只能加入到 wait_list
+			goto wait;
+
+		rwsem_mark_wake(sem, (count & RWSEM_READER_MASK)
+					? RWSEM_WAKE_READERS
+					: RWSEM_WAKE_ANY, &wake_q); // 唤醒写者前所有的读者
+
+		if (!wake_q_empty(&wake_q)) {
+			/*
+			 * We want to minimize wait_lock hold time especially
+			 * when a large number of readers are to be woken up.
+			 */
+			raw_spin_unlock_irq(&sem->wait_lock);
+			wake_up_q(&wake_q);
+			wake_q_init(&wake_q);	/* Used again, reinit */
+			raw_spin_lock_irq(&sem->wait_lock);
+		}
+	} else { // wait_list 为空，需要设置 RWSEM_FLAG_WAITERS 表示有线程在等待了
+		atomic_long_or(RWSEM_FLAG_WAITERS, &sem->count);
+	}
+
+wait:
+	/* wait until we successfully acquire the lock */
+	set_current_state(state); // 这个流程和申请读者锁类似
+	for (;;) {
+		if (rwsem_try_write_lock(sem, wstate)) {
+			/* rwsem_try_write_lock() implies ACQUIRE on success */
+			break;
+		}
+
+		raw_spin_unlock_irq(&sem->wait_lock);
+
+		/*
+		 * After setting the handoff bit and failing to acquire
+		 * the lock, attempt to spin on owner to accelerate lock
+		 * transfer. If the previous owner is a on-cpu writer and it
+		 * has just released the lock, OWNER_NULL will be returned.
+		 * In this case, we attempt to acquire the lock again
+		 * without sleeping.
+		 */
+		if (wstate == WRITER_HANDOFF &&
+		    rwsem_spin_on_owner(sem) == OWNER_NULL)
+			goto trylock_again;
+
+		/* Block until there are no active lockers. */
+		for (;;) {
+			if (signal_pending_state(state, current))
+				goto out_nolock;
+
+			schedule();
+			lockevent_inc(rwsem_sleep_writer);
+			set_current_state(state);
+			/*
+			 * If HANDOFF bit is set, unconditionally do
+			 * a trylock.
+			 */
+			if (wstate == WRITER_HANDOFF)
+				break;
+
+			if ((wstate == WRITER_NOT_FIRST) &&
+			    (rwsem_first_waiter(sem) == &waiter))
+				wstate = WRITER_FIRST;
+
+			count = atomic_long_read(&sem->count);
+			if (!(count & RWSEM_LOCK_MASK))
+				break;
+
+			/*
+			 * The setting of the handoff bit is deferred
+			 * until rwsem_try_write_lock() is called.
+			 */
+			if ((wstate == WRITER_FIRST) && (rt_task(current) ||
+			    time_after(jiffies, waiter.timeout))) {
+				wstate = WRITER_HANDOFF;
+				lockevent_inc(rwsem_wlock_handoff);
+				break;
+			}
+		}
+trylock_again:
+		raw_spin_lock_irq(&sem->wait_lock);
+	}
+	__set_current_state(TASK_RUNNING);
+	list_del(&waiter.list);
+	raw_spin_unlock_irq(&sem->wait_lock);
+	lockevent_inc(rwsem_wlock);
+
+	return ret;
+
+    ...
+}
+```
+
+##### 释放写者类型信号量
+
+```c
+/*
+ * unlock after writing
+ */
+static inline void __up_write(struct rw_semaphore *sem)
+{
+	long tmp;
+
+	DEBUG_RWSEMS_WARN_ON(sem->magic != sem, sem);
+	/*
+	 * sem->owner may differ from current if the ownership is transferred
+	 * to an anonymous writer by setting the RWSEM_NONSPINNABLE bits.
+	 */
+	DEBUG_RWSEMS_WARN_ON((rwsem_owner(sem) != current) &&
+			    !rwsem_test_oflags(sem, RWSEM_NONSPINNABLE), sem);
+
+	rwsem_clear_owner(sem);
+	tmp = atomic_long_fetch_add_release(-RWSEM_WRITER_LOCKED, &sem->count); // 一样的， -RWSEM_WRITER_LOCKED
+	if (unlikely(tmp & RWSEM_FLAG_WAITERS)) // 还有等待者
+		rwsem_wake(sem);
+}
+```
+
+我们来总结一下 down 和 up 操作，
+
+- `down_read`：如果一个进程持有读者锁，那么允许继续申请多个读者锁，申请写者锁则要等待；
+- `down_write`：如果一个进程持有写者所，那么第二个进程申请该写者锁要自旋等待，申请读者锁则要等待；
+- `up_read / up_write`：如果等待队列中第一个成员是写者，那么唤醒该写者，否则唤醒排在等待队列中最前面几个连续的读者；
+
+不过还有一个地方不清楚，`HANDOFF` 表示什么情况啊？
 
 ### RCU
 
@@ -1400,7 +1945,7 @@ static inline void queued_read_lock(struct qrwlock *lock)
 
 RCU 全称 Read-Copy-Update，首先我们需要考虑一个问题，前面介绍到内核中已有很多锁机制，那为何还要设计复杂的 RCU 机制。
 
-因为内存屏障、自旋锁、信号量、读写信号量等都需要使用原子操作，而多 CPU 争用共享变量时会让 cache 一致性协议性能很低（确实，因为需要不断更新不同 CPU 中 cache 的内容）。以读写信号量为例，除了上述问题，其只允许多个读者存在，但是读者和写者不能同时存在。
+因为内存屏障、自旋锁、信号量、读写信号量等都需要使用原子操作，而多 CPU 争用共享变量时会让 **cache 一致性协议性能很低**（确实，因为需要不断更新不同 CPU 中 cache 的内容）。以读写信号量为例，除了上述问题，**其只允许多个读者存在，但是读者和写者不能同时存在**。
 
 RCU 的目标是使读者线程没有同步开销，或者同步开销很小，不需要额外的锁，也不需要原子操作和内存屏障即可快速的访问；而将同步任务交给写者线程，写者线程会创建一个副本，在副本中进行修改，之后等待所有读者线程完成后才将旧数据销毁，使指针指向新数据。
 
