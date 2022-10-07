@@ -6,6 +6,9 @@
 
 - [锁机制](#锁机制)
 - [原子操作](#原子操作)
+  - [原子交换函数](#原子交换函数)
+  - [內联原子操作函数](#內联原子操作函数)
+
 - [内存屏障](#内存屏障)
 - [经典自旋锁](#经典自旋锁)
   - [spinlock](#spinlock)
@@ -15,34 +18,40 @@
 - [排队自旋锁](#排队自旋锁)
   - [qspinlock](#qspinlock)
 - [信号量](#信号量)
-- [semaphore](#semaphore)
+  - [semaphore](#semaphore)
   - [关键函数down](#关键函数down)
   - [关键函数up](#关键函数up)
+
 - [互斥锁](#互斥锁)
   - [mutex](#mutex)
 - [读写锁](#读写锁)
   - [读写自旋锁](#读写自旋锁)
+    - [rwlock_t](#rwlock_t)
   - [读写信号量](#读写信号量)
-
+    - [rw_semaphore](#rw_semaphore)
+    - [申请读者类型信号量](#申请读者类型信号量)
+    - [释放读者类型信号量](#释放读者类型信号量)
+    - [申请写者类型信号量](#申请写者类型信号量)
+    - [释放写者类型信号量](#释放写者类型信号量)
 - [RCU](#RCU)
 
 ### 锁机制
 
-临界区是指访问和操作共享数据的代码段，其中的资源无法同时被多个执行线程访问，访问临界区的执行线程或代码路径称为并发源，在内核中产生并发访问的并发源主要有如下 4 中：
+临界区是指访问和操作共享数据的代码段，其中的资源无法同时被多个执行线程访问，访问临界区的执行线程或代码路径称为并发源，在内核中产生并发访问的并发源主要有如下 4 种：
 
 - 中断和异常：中断发生后，中断处理程序和被中断的进程之间可能产生并发访问；
 - 软中断和 tasklet：因为它们的优先级比进程高，所以会打断当前正在执行的进程上下文；
 - 内核抢占：多进程之间的并发访问；
-- 多处理器并发执行：多个处理器同时执行多个进程。
+- 多处理器并发执行：多个处理器同时执行多个进程；
 
 在 SMP 系统中情况会复杂一些：
 
-- 同一类型的中断处理程序不会并发执行，但是不同类型的中断可能送达不同的 CPU，因此不同类型的中断处理程序可能会并发执行；
+- **同一类型的中断处理程序不会并发执行**，但是不同类型的中断可能送达不同的 CPU，因此不同类型的中断处理程序可能会并发执行；
 - 同一类型的软中断会在不同的 CPU 上并发执行；
 - 同一类型的 tasklet 是串行执行的，不会在多个 CPU 上并发执行；
-- 不同 CPU 上的进程上下文会并发执行。
+- 不同 CPU 上的进程上下文会并发执行；
 
-真实的场景是这样的，如在进程上下文中操作某个临界区的资源时发生了中断，而在中断处理程序中也访问了这个资源，如果不使用内核同步机制，那么可能会触发 bug。
+真实的场景是这样的，如**在进程上下文中操作某个临界区的资源时发生了中断，而在中断处理程序中也访问了这个资源**，如果不使用内核同步机制，那么可能会触发 bug。
 
 实际的项目中，真正的困难是如何发现内核代码存在并发访问的可能并采取保护措施。因此在编写代码时，需要考虑哪些资源位于临界区，应该采取哪些保护措施。任何可能从多个内核代码路径访问的数据都需要保护，保护对象包括静态全局变量、全局变量、共享的数据结构、缓存、链表、红黑树等各种形式锁隐含的数据。因此在编写内核和驱动代码时，需要对数据作如下考虑：
 
@@ -52,15 +61,15 @@
 
 故内核提供了多种并发访问的保护机制，这些机制有各自的应用场景，
 
-| 锁机制     | 特点                                                         | 使用规则                                                     |
-| ---------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
-| 原子操作   | 使用处理器的原子指令，开销小                                 | 临界区中的数据是变量、位（这是什么？）等简单的数据结构       |
-| 内存屏障   | 使用处理器内存屏障指令或 GCC 的屏障指令                      | 读写指令时序的调整                                           |
-| 自旋锁     | 自旋等待                                                     | 中断上下文，短期持有锁，不可递归，临界区不可睡眠             |
-| 信号量     | 可睡眠的锁                                                   | 可长时间持有锁                                               |
-| 读写信号量 | 可睡眠的锁，多个读者可以同时持有锁，同一时刻只能有一个写者，**读者和写者不能同时存在** | 程序员界定出临界区后读/写属性才有用                          |
-| 互斥锁     | 可睡眠的互斥锁，比信号量快速和简洁，实现自旋等待机制         | 同一时刻只有一个线程可以持有互斥锁，由锁持有者负责解锁，即在同一个上下文中解锁，不能递归持有锁，不适合内核和用户空间复杂的同步场景 |
-| RCU        | 读者持有锁没有开销，多个读者和写者可以同时共存，写者必须等待所有读者离开临界区后才能销毁相关数据 | 受保护资源必须通过指针访问，如链表等                         |
+| 锁机制                    | 特点                                                         | 使用规则                                                     |
+| ------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
+| 原子操作 - atomic         | 使用处理器的原子指令，开销小                                 | 临界区中的数据是变量、位（这是什么？）等简单的数据结构       |
+| 内存屏障 - memory         | 使用处理器内存屏障指令或 GCC 的屏障指令                      | 读写指令时序的调整                                           |
+| 自旋锁- spinlock          | 自旋等待                                                     | 中断上下文，短期持有锁，不可递归，临界区不可睡眠，现在的实现是 qspinlock |
+| 信号量 - semaphore        | 可睡眠的锁                                                   | 可长时间持有锁，适合内核和用户空间复杂的同步场景             |
+| 读写信号量 - rw_semaphore | 可睡眠的锁，多个读者可以同时持有锁，同一时刻只能有一个写者，**读者和写者不能同时存在** | 程序员界定出临界区后读/写属性才有用                          |
+| 互斥锁 - mutex            | 可睡眠的互斥锁，比信号量快速和简洁，实现自旋等待机制         | 同一时刻只有一个线程可以持有互斥锁，由锁持有者负责解锁，即在同一个上下文中解锁，不能递归持有锁，不适合内核和用户空间复杂的同步场景 |
+| RCU - Read Copy Update    | 读者持有锁没有开销，多个读者和写者可以同时共存，写者必须等待所有读者离开临界区后才能销毁相关数据 | 受保护资源必须通过指针访问，如链表等                         |
 
 ### 原子操作
 
@@ -76,13 +85,13 @@ typedef struct {
 
 这里记录一些之后常见的原子操作：
 
-##### 原子交换函数
+#### 原子交换函数
 
-- atomic_cmpxchg(ptr, old, new)：原子地比较 ptr 的值是否与 old 的值相等，若相等，则将 new 的值设置到 ptr 地址中，返回 old 的值；
-- atomic_xchg(ptr, new)：原子地把 new 的值设置到 ptr 地址中并返回 ptr 的原值；
-- atomic_try_cmpxchg(ptr, old, new)：与 atomic_cmpxchg 类似，只是返回值发生变化，返回一个 bool 值，以判断 cmpxchg 返回值是否和 old 的值相等；
+- `atomic_cmpxchg(ptr, old, new)`：原子地比较 ptr 的值是否与 old 的值相等，若相等，则将 new 的值设置到 ptr 地址中，返回 old 的值；
+- `atomic_xchg(ptr, new)`：原子地把 new 的值设置到 ptr 地址中并返回 ptr 的原值；
+- `atomic_try_cmpxchg(ptr, old, new)`：与 atomic_cmpxchg 类似，只是返回值发生变化，返回一个 bool 值，以判断 cmpxchg 返回值是否和 old 的值相等；
 
-##### 內联原子操作函数
+#### 內联原子操作函数
 
 - {}_relaxed：不内联内存屏障原语；
 - {}_acquire：内联加载-获取内存屏障原语；
@@ -105,8 +114,8 @@ typedef struct {
 | rmb()                                          | 读内存屏障                                                   |
 | wmb()                                          | 写内存屏障                                                   |
 | smp_mb()                                       | 顾名思义，smp 的内存屏障，从下面的实现可以看出，和 mb 有些不一样 |
-| smp_rmb()                                      |                                                              |
-| smp_wmb()                                      |                                                              |
+| smp_rmb()                                      | smp 读内存屏障                                               |
+| smp_wmb()                                      | smp 写内存屏障                                               |
 | __smp_mb__before_atomic/__smp_mb__after_atomic | 在原子操作中插入一个通用内存屏障（还可以这样？）             |
 
 ```c
@@ -130,14 +139,46 @@ typedef struct {
 #define __smp_mb__after_atomic()	do { } while (0)
 ```
 
+我们来看看常见的例子。在进程睡眠前需要设置进程状态，这个过程就需要使用内存屏障，下面这段代码是读写信号量机制中 `down_read` 慢路经的代码，之后也会遇到，这里以它为例分析，
+
+```c
+	/* wait to be given the lock */
+	for (;;) {
+		set_current_state(state); // 在睡眠前需要设置进程状态为不可中断/可中断等等
+		if (!smp_load_acquire(&waiter.task)) {
+			/* Matches rwsem_mark_wake()'s smp_store_release(). */
+			break;
+		}
+
+        ...
+
+		schedule(); // 让出 CPU，进入睡眠
+		lockevent_inc(rwsem_sleep_reader);
+	}
+```
+
+而 `set_current_state` 宏在修改进程状态时隐含插入了内存屏障函数 `__smp_mb`，
+
+```c
+#define set_current_state(state_value)					\
+	do {								\
+		debug_normal_state_change((state_value));		\
+		smp_store_mb(current->__state, (state_value));		\
+	} while (0)
+```
+
+在更改 current->state 后需要插入一条内存屏障指令保证加载唤醒标志（可能是 I/O 操作、锁等等事件的发生）不会出现在修改 current->state 前，否则进程运行错误。
+
 ### 经典自旋锁
 
-如果临界区只有一个变量，那么适合用原子变量，但是大多数情况临界区中是一个数据操作的集合，例如一个链表及相关操作。那么在整个执行过程中都需要保证原子性，即在数据更新完毕前，不能从其他内核代码路径访问和更改这些数据，这就需要用锁来完成。自旋锁是内核中最常见的一种锁机制。自旋锁的特性如下：
+如果**临界区只有一个变量，那么适合用原子变量**，但是大多数情况临界区中是一个数据操作的集合，例如一个链表及相关操作。那么在整个执行过程中都需要保证原子性，即**在数据更新完毕前，不能从其他内核代码路径访问和更改这些数据**，这就需要用锁来完成。自旋锁是内核中最常见的一种锁机制。自旋锁的特性如下：
 
 - 忙等。OS 中的锁可分为两类，一类是忙等，一类是睡眠等待。当内核路径无法获取自旋锁时会不断尝试，直到获取到锁为止；
 - 同一时刻只能有一个内核代码路径可以获得锁；
 - 持有者要尽快完成临界区的执行任务。自旋锁临界区不能睡眠；
-- 可以在中断上下文使用；
+- **可以在中断上下文使用**；
+
+当然，现在 spinlock 都是使用 qspinlock 实现的，这一点通过代码就能看出来，后面也会介绍，所以这些锁很多都不是孤立的，它们的出现都是为了解决特定的问题一步步迭代出来的。
 
 #### spinlock
 
@@ -157,7 +198,7 @@ typedef struct spinlock {
 typedef struct raw_spinlock {
 	arch_spinlock_t raw_lock;
 
-    #ifdef CONFIG_DEBUG_SPINLOCK
+#ifdef CONFIG_DEBUG_SPINLOCK
 	unsigned int magic, owner_cpu;
 	void *owner;
 #endif
@@ -215,7 +256,7 @@ void __lockfunc _raw_spin_lock(raw_spinlock_t *lock)
 
 static inline void __raw_spin_lock(raw_spinlock_t *lock)
 {
-	preempt_disable(); // 关闭内核抢占，为什么是调用 barrier
+	preempt_disable(); // 关闭内核抢占，为什么是调用 barrier，而且什么时候开启呢？
 	spin_acquire(&lock->dep_map, 0, 0, _RET_IP_);
 	LOCK_CONTENDED(lock, do_raw_spin_trylock, do_raw_spin_lock);
 }
@@ -279,13 +320,13 @@ static inline void __raw_spin_lock_irq(raw_spinlock_t *lock)
 }
 ```
 
-这里有一点需要注意，`spin_lock_irq` 只会关闭本地中断，其他 CPU 还是可以响应中断，如果 CPU0 持有该自旋锁，而 CPU1 响应中断且中断处理程序也申请该自旋锁，那么等 CPU0 释放后即可获取。
+这里有一点需要注意，**`spin_lock_irq` 只会关闭本地中断，其他 CPU 还是可以响应中断**，如果 CPU0 持有该自旋锁，而 CPU1 响应中断且中断处理程序也申请该自旋锁，那么等 CPU0 释放后即可获取。
 
 ### MCS锁
 
-在一个锁争用激烈的系统中，所有等待自旋锁的线程都在同一个共享变量上自旋，申请和释放锁也都在一个变量上修改，cache 一致性原理导致参与自旋的 CPU 的 cache 行无效，也可能导致 cache 颠簸现象（这种现象是怎样发现的，又是如何确定其和自旋锁有关），导致系统性能降低。
+在一个锁争用激烈的系统中，**所有等待自旋锁的线程都在同一个共享变量上自旋**，申请和释放锁也都在一个变量上修改，cache 一致性原理导致参与自旋的 CPU 的 cache 行无效，也可能导致 cache 颠簸现象（这种现象是怎样发现的，又是如何确定其和自旋锁有关），导致系统性能降低。
 
-MCS 算法可以解决 cache 颠簸问题，其关键思想是**每个锁的申请者只在本地 CPU 的变量上自旋，而不是全局变量上**。OSQ 锁是 MCS 锁机制的一种实现，而后来内核又引进了基于 MCS 机制的排队自旋锁，后面介绍。我开始以为实现了 qspinlock 后内核应该只会使用 qspinlock，其实不是 osq 也有使用。不大部分是在互斥锁中使用。
+MCS 算法可以解决 cache 颠簸问题，其关键思想是**每个锁的申请者只在本地 CPU 的变量上自旋，而不是全局变量上**，各个 CPU 会等待其他 CPU 将锁传给自己，即每个持有锁的 CPU 在释放锁时会将 next->locked 设为 1。OSQ 锁是 MCS 锁机制的一种实现，而后来内核又引进了基于 MCS 机制的排队自旋锁，后面介绍。我开始以为实现了 qspinlock 后内核应该只会使用 qspinlock，其实不是， osq 也有使用，大部分是在互斥锁中使用。
 
 ```
 #0  osq_lock (lock=lock@entry=0xffffffff83014a2c <kernfs_open_file_mutex+12>) at kernel/locking/osq_lock.c:91
@@ -359,7 +400,7 @@ static inline void osq_lock_init(struct optimistic_spin_queue *lock)
 }
 ```
 
-其实整个 OSQ 实现并不复杂，毕竟代码才 200 多行。 `osq_lock` 用来申请 MCS 锁，其分为 3 中情况，我们一个个来看，
+其实整个 OSQ 实现并不复杂，毕竟代码才 200 多行。 `osq_lock` 用来申请 MCS 锁，其分为 3 种情况，我们一个个来看，
 
 #### 快速申请通道
 
@@ -545,7 +586,7 @@ void osq_unlock(struct optimistic_spin_queue *lock)
 
 ### 排队自旋锁
 
-排队自旋锁能够解决在争用激烈场景下导致的性能下降问题。
+上面介绍的 MCS 锁能够解决 cache 颠簸问题，但是其会使 spinlock 数据结构变大，而 spinlock 在内核中的应用十分广泛，有些地方对数据结构的大小十分敏感，所以 MCS 机制一直没有应用到 spinlock 中，spinlock 也一直没有解决 cache 颠簸问题，直到排队自旋锁出现。
 
 #### qspinlock
 
@@ -571,15 +612,7 @@ typedef struct qspinlock {
 			u16	tail;
 		};
 #else
-		struct {
-			u16	tail;
-			u16	locked_pending;
-		};
-		struct {
-			u8	reserved[2];
-			u8	pending;
-			u8	locked;
-		};
+	... // 分为大小端
 #endif
 	};
 } arch_spinlock_t;
@@ -590,9 +623,9 @@ typedef struct qspinlock {
 | 位      | 描述                                                         |
 | ------- | ------------------------------------------------------------ |
 | 0 - 7   | locked 域，表示持有锁                                        |
-| 8       | pending 域，表示第一顺位继承者，自旋等待锁释放               |
+| 8       | pending 域，表示第一顺位继承者，自旋等待锁释放，pending 是 8 bit，但只有第一位使用了 |
 | 9 - 15  | 保留位                                                       |
-| 16 - 17 | tail_idx 域，用来获取 q_nodes，目前支持 4 种上下文的 msc_nodes —— 进程上下文、软中断上下文、硬中断上下文和不可屏蔽中断上下文 |
+| 16 - 17 | tail_idx 域，用来获取 q_nodes，目前支持 4 种上下文的 msc_nodes —— 进程上下文、软中断上下文、硬中断上下文和不可屏蔽中断上下文（不懂） |
 | 18 - 31 | tail_cpu 域，用来标识等待队列末尾的 CPU                      |
 
 内核使用一个三元组 {x, y, z} 来表示锁的状态，`x` 表示 tail，`y` 表示 pending，`z` 表示 locked。
@@ -694,7 +727,7 @@ void queued_spin_lock_slowpath(struct qspinlock *lock, u32 val)
 	if (unlikely(val & ~_Q_LOCKED_MASK)) { // 为什么这里还要判断一次？
 
 		/* Undo PENDING if we set it. */
-		if (!(val & _Q_PENDING_MASK))
+		if (!(val & _Q_PENDING_MASK)) // 这里判断锁是否已经被占用
 			clear_pending(lock);
 
 		goto queue;
@@ -934,7 +967,7 @@ static __always_inline void queued_spin_unlock(struct qspinlock *lock)
 
 ### 信号量
 
-信号量最早接触是在本科的时候学操作系统的进程同步，PV 操作。它和自旋锁的区别是自旋锁是忙等，而其允许进程睡眠。它的实现比自旋锁简单很多，
+信号量最早接触是在本科的时候学操作系统的进程同步，PV 操作，它的经典使用场景是生产者和消费者问题。它和自旋锁的区别是自旋锁是忙等，能够在中断上下文中使用，而信号量允许进程睡眠，不能在中断上下文中使用。它的实现比自旋锁简单很多，
 
 #### semaphore
 
@@ -1040,9 +1073,32 @@ static noinline void __sched __up(struct semaphore *sem)
 }
 ```
 
+信号量的一个特点是允许有任意数量的锁持有者，`sema_init` 就是信号量的初始化函数，
+
+```c
+#define __SEMAPHORE_INITIALIZER(name, n)				\
+{									\
+	.lock		= __RAW_SPIN_LOCK_UNLOCKED((name).lock),	\
+	.count		= n,						\
+	.wait_list	= LIST_HEAD_INIT((name).wait_list),		\
+}
+
+#define DEFINE_SEMAPHORE(name)	\
+	struct semaphore name = __SEMAPHORE_INITIALIZER(name, 1)
+
+static inline void sema_init(struct semaphore *sem, int val)
+{
+	static struct lock_class_key __key;
+	*sem = (struct semaphore) __SEMAPHORE_INITIALIZER(*sem, val);
+	lockdep_init_map(&sem->lock.dep_map, "semaphore->lock", &__key, 0);
+}
+```
+
+当 count > 1 时，我们称之为计数信号量；当 count == 1 时，我们称之为互斥信号量，在内核中，大多使用 count == 1 的信号量（在内核初始化过程中没有用到 semaphore），其适用于情况复杂，加锁时间较长的应用场景。
+
 ### 互斥锁
 
-互斥锁类似于 count = 1 的信号量，那为何还要重新开发 mutex？
+互斥锁类似于 count == 1 的信号量，那为何还要重新开发 mutex？
 
 互斥锁相比于信号量要简单轻便一些，同时在锁争用激烈的测试场景下，互斥锁比信号量执行速度更快，可扩展性更好。我们从代码上实际看看是怎么回事。
 
@@ -1062,7 +1118,7 @@ struct mutex { // 和信号量类似
 };
 ```
 
-互斥锁实现了乐观自旋等待机制（其实就是自旋等待），其核心原理是当发现锁持有者在临界区执行并且没有其他高优先级进程调度时，当前进程坚信锁持有者会很快离开临界区并释放锁，因此不睡眠等待，从而减少睡眠和唤醒的开销（这里应该就是更轻便的地方）。其实这个自旋等待也是 MCS 锁。
+互斥锁实现了乐观自旋等待机制（其实就是自旋等待），其核心原理是**当发现锁持有者在临界区执行并且没有其他高优先级进程调度时，当前进程坚信锁持有者会很快离开临界区并释放锁，因此不睡眠等待，从而减少睡眠和唤醒的开销（这里应该就是更轻便的地方，semaphore 会调用 timeout_schedule 让出 CPU）**。其实这个自旋等待也就是 MCS 锁。
 
 #### 快速申请通道
 
@@ -1083,21 +1139,14 @@ void __sched mutex_lock(struct mutex *lock)
 
 #### 慢速申请通道
 
-这部分不是很懂！
+这部分不是很懂！我们结合流程图看，加深印象。
+
+![acquire_mutex_slow.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/acquire_mutex_slow.png?raw=true)
+
+这里还涉及到乐观自旋等待，下次再分析。
 
 ```c
-static noinline void __sched
-__mutex_lock_slowpath(struct mutex *lock)
-{
-	__mutex_lock(lock, TASK_UNINTERRUPTIBLE, 0, NULL, _RET_IP_); // 不可抢占睡眠
-}
-
-static int __sched
-__mutex_lock(struct mutex *lock, unsigned int state, unsigned int subclass,
-	     struct lockdep_map *nest_lock, unsigned long ip)
-{
-	return __mutex_lock_common(lock, state, subclass, nest_lock, ip, NULL, false);
-}
+__mutex_lock_slowpath -> __mutex_lock -> __mutex_lock_common
 
 static __always_inline int __sched
 __mutex_lock_common(struct mutex *lock, unsigned int state, unsigned int subclass,
@@ -1114,7 +1163,7 @@ __mutex_lock_common(struct mutex *lock, unsigned int state, unsigned int subclas
 	mutex_acquire_nest(&lock->dep_map, subclass, 0, nest_lock, ip);
 
 	if (__mutex_trylock(lock) || // 这个函数就是不断的检查持有锁的进程是否就是当前进程
-	    mutex_optimistic_spin(lock, ww_ctx, NULL)) { // 有了上一个函数，为什么还要自旋等待呢？
+	    mutex_optimistic_spin(lock, ww_ctx, NULL)) {
 		/* got the lock, yay! */
 		lock_acquired(&lock->dep_map, ip);
 		if (ww_ctx)
@@ -1301,7 +1350,7 @@ static noinline void __sched __mutex_unlock_slowpath(struct mutex *lock, unsigne
 
 而互斥锁的轻便和高效使得其比信号的使用场景要求更加严格：
 
-- 同一时刻时有一个线程可以持有互斥锁，而信号量的 `count` 可以不为 1，即计数信号量；
+- 同一时刻时只有一个线程可以持有互斥锁，而信号量的 `count` 可以不为 1，即计数信号量；
 - 只有锁持有者可以解锁，因此其不适用于内核和用户空间复杂的同步场景；
 - 不允许递归的加锁解锁；
 - 当进程持有互斥锁时，进程不能退出（？）；
@@ -1314,9 +1363,9 @@ static noinline void __sched __mutex_unlock_slowpath(struct mutex *lock, unsigne
 
 ### 读写锁
 
-信号量的 PV 操作很清晰明了，持有锁的进程能够睡眠（还没有进一步去看内核哪些地方会使用到 semaphore，这个是之后的工作）。但是其没有区分临界区的读写属性，为了进一步提高并发性能，社区又提出了读写锁，允许多个读者同时访问临界资源，但写者不允许，其具有如下特性：
+信号量的 PV 操作很清晰明了，持有锁的进程能够睡眠（还没有进一步去看内核哪些地方会使用到 semaphore，这个是之后的工作）。但是其**没有区分临界区的读写属性**，为了进一步提高并发性能，社区又提出了读写锁，允许多个读者同时访问临界资源，但写者不允许，其具有如下特性：
 
-- 允许多个读者同时进入临界区，但同一时刻只能有一个写者进入；
+- 允许多个读者同时进入临界区，但**同一时刻只能有一个写者进入**；
 - 读者和写者不能同时进入临界区；
 
 读写锁分为自旋类型和信号量类型，我们一个个来看。
@@ -1963,3 +2012,13 @@ RCU 中有两个重要概念：
 
 - 宽限期（Grace Period, GP）。GP 有生命周期，有开始和结束之分，从 GP 开始算起，如果所有处于读者临界区的 CPU 都离开了临界区，也就是经历了一次 QS，那么认为一个 GP 结束了。GP 结束后，RCU 会调用注册的回调函数，如销毁旧数据等。
 - 静止状态（Quiescent State）。如果一个 CPU 处于读者临界区，那么认为它是活跃的，如果时钟周期中检测到该 CPU 处于用户模式或空闲状态，说明该 CPU 已经离开了读者临界区，那么它是 QS 的。
+
+### 问题
+
+- 在[关键函数spin_lock](#关键函数spin_lock) 中涉及到关闭内核抢占，关于内核抢占的东西可以看看[这篇](https://zhuanlan.zhihu.com/p/405965784)文章，讲的很全面。
+
+### Reference
+
+[1] 《奔跑吧 Linux 内核》卷 2 苯叔.
+
+[2] https://zhuanlan.zhihu.com/p/405965784
