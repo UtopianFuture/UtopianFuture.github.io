@@ -11,4 +11,8 @@
 
 然后 printk 的实现似乎是涉及到 ring buffer，我以为就是简单从 serial 输出。其实不对，messages 都从 console 输出，但是其可能加载到 serial, graphic adapters or nexwork connections。
 
-获取应该去看看这个 ring buffer 是什么东西。
+或许应该去看看这个 ring buffer 是什么东西。
+
+### [Why RISC-V doesn't (yet) support KVM](https://lwn.net/Articles/856685/)
+
+总的来说，RISC-V 的 KVM 支持其实已经完成了，并且在 hardware 上工作良好，但是 RISC-V 分支的代码合并策略（patch acceptance policy）有些问题，总在变化，导致 RISC-V KVM 一直处于 staging 状态，而没有 frozen，不能合并和 mainline 中。
