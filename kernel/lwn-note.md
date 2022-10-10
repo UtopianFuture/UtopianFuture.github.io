@@ -19,6 +19,12 @@
 
 ### [VMX virtualization runs afoul of split-lock detection](https://lwn.net/Articles/816918/)
 
+这篇文章提到 split-lock（分体锁）的使用会影响到 VMX 的正确性。首先分体锁的使用是有一定意义的，它能够避开潜在的 denial-of-service attack vector（不清楚是啥），同时也能摆脱延迟密集型负载的性能问题。但是使用分体锁会导致 guest 需要处理对其检查异常。
+
+这里涉及到到的分体锁之后去了解，同时对 x86 的非对其访问也需要看看。
+
+### [Detecting and handling split locks](https://lwn.net/Articles/790464/)
+
 ### MISC
 
 - Spectre: it is a subset of security [vulnerabilities](https://en.wikipedia.org/wiki/Vulnerability_(computing)) within the class of vulnerabilities known as microarchitectural timing [side-channel attacks](https://en.wikipedia.org/wiki/Side-channel_attacks). 一个安全漏洞的 patch
