@@ -8,10 +8,10 @@
 - [Memory Management](./kernel/Memory-Management.md)
 - [Process Schedule](./kernel/Process-Schedule.md)
 - [Time Subsystem](./kernel/Time-Subsystem.md)
-
 - 🚧[File System](./kernel/File-System.md)
 - [Concurrency and Synchronization](./kernel/Concurrency-Synchronization)
 - [Interrupt Management](./kernel/Interrupt-Management.md)
+- [lwn note](./kernel/lwn-note.md)
 - [From keyboard to Display](./kernel/From-keyboard-to-Display.md)
 - [start_kernel](./kernel/start_kernel.md)
 - [kernel init](./kernel/kernel_init.md)
