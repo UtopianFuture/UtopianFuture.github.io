@@ -1,6 +1,33 @@
 ## File System
 
-文件系统我觉得是三个部分中最难的，可能是因为《奔跑吧 linux》降低了学习成本。但我也觉得这部分非常有用，有意思，在开发过程中，常常不能理解各种挂载，格式化操作，所以系统的学习这部分。
+文件系统我觉得是三个部分中最难的，可能是因为《奔跑吧 linux 内核》降低了学习成本。但我也觉得这部分非常有用，有意思，在开发过程中，常常不能理解各种挂载，格式化操作，所以系统的学习这部分。
+
+### 目录
+
+- [虚拟文件系统](#虚拟文件系统)
+  - [通用文件模型](#通用文件模型)
+- [VFS的数据结构](#VFS的数据结构)
+  - [super_block](#super_block)
+  - [inode](#inode)
+  - [dentry](#dentry)
+  - [fs_struct](#fs_struct)
+  - [files_struct](#files_struct)
+  - [file](#file)
+- [文件系统类型](#文件系统类型)
+  - [特殊文件系统](#特殊文件系统)
+- [文件系统处理](#文件系统处理)
+  - [命名空间](#命名空间)
+  - [文件系统安装](#文件系统安装)
+  - [vfsmount](#vfsmount)
+  - [安装普通文件系统](#安装普通文件系统)
+    - [关键函数do_mount](#关键函数do_mount)
+    - [关键函数do_new_mount_fc](#关键函数do_new_mount_fc)
+    - [关键函数vfs_create_mount](#关键函数vfs_create_mount)
+    - [关键函数do_add_mount](#关键函数do_add_mount)
+- [路径名查找](#路径名查找)
+  - [nameidata](#nameidata)
+  - [关键函数link_path_walk](#关键函数link_path_walk)
+- [VFS系统调用的实现](#VFS系统调用的实现)
 
 ### 虚拟文件系统
 
@@ -40,7 +67,7 @@ VFS 为了支持尽可能多的文件系统，引入了一个通用的文件模�
 
 ![process-VFS.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/process-VFS.png?raw=true)
 
-### VFS 的数据结构
+### VFS的数据结构
 
 这节介绍 VFS 相关的数据结构及其关系。这些数据结构都是通过 slub 描述符分配内存空间。我们先看看整体的关系图。
 
@@ -50,7 +77,7 @@ VFS 为了支持尽可能多的文件系统，引入了一个通用的文件模�
 
 ```c
 struct super_block {
-	struct list_head	s_list;		/* Keep this first */ // 指向超级块链表的指针
+	struct list_head	s_list;		/* Keep this first */ // 所有文件系统的 sb 组成以
 	dev_t			s_dev;		/* search index; _not_ kdev_t */ // 设备标识符
 	unsigned char		s_blocksize_bits; // 以位为单位的块大小
 	unsigned long		s_blocksize; // 以字节为单位的块大小
@@ -67,31 +94,8 @@ struct super_block {
 	struct rw_semaphore	s_umount; // 卸载使用的信号量
 	int			s_count; // 引用计数器
 	atomic_t		s_active; // 此即引用计数器
-#ifdef CONFIG_SECURITY
-	void                    *s_security;
-#endif
-	const struct xattr_handler **s_xattr; // 扩展属性结构
-#ifdef CONFIG_FS_ENCRYPTION
-	const struct fscrypt_operations	*s_cop;
-	struct key		*s_master_keys; /* master crypto keys in use */
-#endif
-#ifdef CONFIG_FS_VERITY
-	const struct fsverity_operations *s_vop;
-#endif
-#ifdef CONFIG_UNICODE
-	struct unicode_map *s_encoding;
-	__u16 s_encoding_flags;
-#endif
-	struct hlist_bl_head	s_roots;	/* alternate root dentries for NFS */
-	struct list_head	s_mounts;	/* list of mounts; _not_ for fs use */
-	struct block_device	*s_bdev;
-	struct backing_dev_info *s_bdi;
-	struct mtd_info		*s_mtd;
-	struct hlist_node	s_instances;
-	unsigned int		s_quota_types;	/* Bitmask of supported quota types */
-	struct quota_info	s_dquot;	/* Diskquota specific options */
 
-	struct sb_writers	s_writers;
+    ...
 
 	/*
 	 * Keep s_fs_info, s_time_gran, s_fsnotify_mask, and
@@ -100,68 +104,14 @@ struct super_block {
 	 */
 	void			*s_fs_info;	/* Filesystem private info */ // 指向特定文件系统的超级块信息的指针
 
-	/* Granularity of c/m/atime in ns (cannot be worse than a second) */
-	u32			s_time_gran; // 时间戳粒度
-	/* Time limits for c/m/atime in seconds */
-	time64_t		   s_time_min;
-	time64_t		   s_time_max;
-#ifdef CONFIG_FSNOTIFY
-	__u32			s_fsnotify_mask;
-	struct fsnotify_mark_connector __rcu	*s_fsnotify_marks;
-#endif
+	...
 
 	char			s_id[32];	/* Informational name */
 	uuid_t			s_uuid;		/* UUID */
 
-	unsigned int		s_max_links;
-	fmode_t			s_mode;
-
-	/*
-	 * The next field is for VFS *only*. No filesystems have any business
-	 * even looking at it. You had been warned.
-	 */
-	struct mutex s_vfs_rename_mutex;	/* Kludge */
-
-	/*
-	 * Filesystem subtype.  If non-empty the filesystem type field
-	 * in /proc/mounts will be "type.subtype"
-	 */
-	const char *s_subtype;
+	...
 
 	const struct dentry_operations *s_d_op; /* default d_op for dentries */
-
-	/*
-	 * Saved pool identifier for cleancache (-1 means none)
-	 */
-	int cleancache_poolid;
-
-	struct shrinker s_shrink;	/* per-sb shrinker handle */
-
-	/* Number of inodes with nlink == 0 but still referenced */
-	atomic_long_t s_remove_count;
-
-	/*
-	 * Number of inode/mount/sb objects that are being watched, note that
-	 * inodes objects are currently double-accounted.
-	 */
-	atomic_long_t s_fsnotify_connectors;
-
-	/* Being remounted read-only */
-	int s_readonly_remount;
-
-	/* per-sb errseq_t for reporting writeback errors via syncfs */
-	errseq_t s_wb_err;
-
-	/* AIO completions deferred from interrupt context */
-	struct workqueue_struct *s_dio_done_wq;
-	struct hlist_head s_pins;
-
-	/*
-	 * Owning user namespace and default context in which to
-	 * interpret filesystem uids, gids, quotas, device nodes,
-	 * xattrs and security labels.
-	 */
-	struct user_namespace *s_user_ns;
 
 	/*
 	 * The list_lru structure is essentially just a pointer to a table
@@ -191,9 +141,11 @@ struct super_block {
 
 `s_fs_info` 成员变量指向特定文件系统的超级块信息，如果使用的实际文件系统是 Ext2，那么 `s_fs_info` 指向 `ext2_sb_info`，该结构包含磁盘分配位掩码和其他与 VFS 通用文件模型无关的数据。
 
-通常为了效率，`s_fs_info` 指向的数据结构会被复制到内存中，任何基于磁盘的文件系统都需要读写自己的磁盘分配位图，VFS 允许这些文件系统直接对 `s_fs_info` 进行操作，而无需访问磁盘。这样就需要引用 `s_dirt` 位来表示该超级块是否是脏的，这个在之后再分析。
+通常为了效率，`s_fs_info` 指向的数据结构会被复制到内存中，任何基于磁盘的文件系统都需要读写自己的磁盘分配位图，VFS 允许这些文件系统直接对 `s_fs_info` 进行操作，而无需访问磁盘。这样就需要引用 `s_dirt` 位来表示该超级块是否是脏的，这个之后再分析。
 
 #### inode
+
+inode 是内核选择用于表示文件内容和相关元数据的方法。应该注意这里分析的 inode 是用于在内存中进行处理的，和物理文件系统的 inode 有些不一样，这里的 inode 包含了一些物理存储介质上所没有的信息，这些信息是由内核在从底层文件系统读入信息时动态建立的。有些文件系统是没有 inode 这个结构的。
 
 ```c
 struct inode {
@@ -212,7 +164,7 @@ struct inode {
 	...
 
 	/* Stat data, not accessed from path walking */
-	unsigned long		i_ino; // 索引节点号
+	unsigned long		i_ino; // 唯一的标号，索引节点号
 	/*
 	 * Filesystems may only read i_nlink directly.  They shall use the
 	 * following functions for modification:
@@ -224,7 +176,7 @@ struct inode {
 		const unsigned int i_nlink; // 硬链接数目
 		unsigned int __i_nlink;
 	};
-	dev_t			i_rdev; // 实设备标识符
+	dev_t			i_rdev; // 设备标识符，可以通过其找到 struct block_device
 	loff_t			i_size; // 文件的字节数
 	struct timespec64	i_atime; // 上次访问文件的时间
 	struct timespec64	i_mtime; // 上次写文件的时间
@@ -297,57 +249,9 @@ struct inode {
 - 正在使用的索引节点链表。不为脏，`i_count` 为正数。
 - 脏索引节点链表。链表中的首元素和尾元素由相应超级块的 `s_dirty` 字段引用。
 
-#### file
-
-该数据结构描述进程怎样与一个打开的文件进行交互（文件描述符？）。`struct file` 在磁盘上没有对应的映像，所以没有 `dirty` 位。
-
-```c
-struct file {
-	union {
-		struct llist_node	fu_llist; // 文件链表指针
-		struct rcu_head 	fu_rcuhead;
-	} f_u;
-	struct path		f_path; // 目录么。并不是，其报刊文件名和 inode 之间的关系和文件所在文件系统的有关信息
-	struct inode		*f_inode;	/* cached value */
-	const struct file_operations	*f_op; // 该文件的所有操作
-
-	/*
-	 * Protects f_ep, f_flags.
-	 * Must not be taken from IRQ context.
-	 */
-	spinlock_t		f_lock;
-	enum rw_hint		f_write_hint;
-	atomic_long_t		f_count; // 引用计数器
-	unsigned int 		f_flags; // 打开文件时所指定的标志
-	fmode_t			f_mode; // 进程的访问模式
-	struct mutex		f_pos_lock;
-	loff_t			f_pos; // 当前的文件偏移量（文件指针）
-	struct fown_struct	f_owner; // 通过信号进行 I/O 时间通知的数据
-	const struct cred	*f_cred;
-	struct file_ra_state	f_ra; // 文件预读状态
-
-	u64			f_version;
-#ifdef CONFIG_SECURITY
-	void			*f_security;
-#endif
-	/* needed for tty driver, and maybe others */
-	void			*private_data; // 指向特定文件系统或设备驱动程序所需的数据
-
-#ifdef CONFIG_EPOLL
-	/* Used by fs/eventpoll.c to link all the hooks to this file */
-	struct hlist_head	*f_ep; // 文件的事件轮询等待者链表的头
-#endif /* #ifdef CONFIG_EPOLL */
-	struct address_space	*f_mapping;
-	errseq_t		f_wb_err;
-	errseq_t		f_sb_err; /* for syncfs */
-} __randomize_layout
-```
-
-存放在 `struct file` 中的主要信息是文件指针，即文件当前的位置，下一个操作将在该位置发生。
-
 #### dentry
 
-VFS 把每个目录看作由若干个子目录和文件组成的一个普通的文件，当从实际的磁盘文件系统中读取目录项到内存时，VFS 会将其转换成基于 dentry 结构的一个目录项对象。对于进程查找的路径名中的每个分量，内核都为其**创建一个目录项对象**，目录项对象将每个分量与其对应的索引节点相联系。可以这样理解 `struct dentry` 提供了文件名和 `inode` 之间的关联。
+VFS 把每个目录看作由若干个子目录和文件组成的一个普通的文件，当从实际的磁盘文件系统中读取目录项到内存时，VFS 会将其转换成基于 dentry 结构的一个目录项对象。对于进程查找的路径名中的每个分量，内核都为其**创建一个目录项对象**，目录项对象将每个分量与其对应的索引节点相联系。可以这样理解，`struct dentry` 提供了文件名和 `inode` 之间的关联。
 
 ```c
 struct dentry {
@@ -391,6 +295,8 @@ struct dentry {
 - 正在使用状态：正在被使用，包含有效信息，不会被丢弃；
 - 负状态：与该目录项关联的索引节点不存在，但该目录项依旧保存在内存中，便于后续操作。
 
+但为何要这样设计，直接将文件名放在 `struct file` 中不就可以了？
+
 #### fs_struct
 
 该数据结构**维护进程当前的工作目录和根目录**，`struct task_struct` 中的 `fs_struct fs` 就指向该结构。
@@ -408,7 +314,7 @@ struct fs_struct {
 
 #### files_struct
 
-该数据结构表示进程当前打开的文件。这个和 `struct file` 有什么区别？这个数据结构可以理解为打开文件表，而 `struct file` 则是表中的表项，表示具体的文件信息。
+该数据结构表示进程当前打开的文件。这个和 `struct file` 有什么区别？这个数据结构可以理解为**打开文件表**，而 `struct file` 则是表中的表项，表示具体的文件信息。
 
 ```c
 /*
@@ -428,13 +334,15 @@ struct files_struct {
    * written part on a separate cache line in SMP
    */
 	spinlock_t file_lock ____cacheline_aligned_in_smp;
-	unsigned int next_fd;
-	unsigned long close_on_exec_init[1];
+	unsigned int next_fd; // 下一次打开新文件使用的文件描述符
+	unsigned long close_on_exec_init[1]; // 位图，保存了所有在 exec 系统调用时将要关闭的文件描述符信息
 	unsigned long open_fds_init[1];
 	unsigned long full_fds_bits_init[1];
 	struct file __rcu * fd_array[NR_OPEN_DEFAULT]; // 文件指针的初始化数组
 };
 ```
+
+`fdtable` 的 `close_on_exec`, `open_fds`, `full_fds_bits` 其实都初始化为指向 `files_struct` 中对应的值，至于为何要这样，不理解。
 
 ```c
 struct fdtable {
@@ -450,6 +358,65 @@ struct fdtable {
 `fdtable->fd` 通常指向 `files_struct->fd_array`，该数组的索引就是文件描述符（哪个数据结构？），通常第一个元素（索引为 0）时进程的标准输入文件，第二个是标准输出文件（索引为 1），第三个是标准错误文件（索引为 2）。
 
 我们打开了一个文件后，操作系统会跟踪进程打开的所有文件，即**为每个进程维护一个打开文件表**，文件表里的每一项代表「**文件描述符**」，所以说文件描述符是打开文件的标识。
+
+#### file
+
+该数据结构描述进程怎样与一个打开的文件进行交互（文件描述符？）。`struct file` 在磁盘上没有对应的映像，所以没有 `dirty` 位。
+
+```c
+struct file {
+	union {
+		struct llist_node	fu_llist; // 文件链表指针
+		struct rcu_head 	fu_rcuhead;
+	} f_u;
+	struct path		f_path; // 目录么。并不是，其文件名和 inode 之间的关系和文件所在文件系统的有关信息
+	struct inode		*f_inode;	/* cached value */
+	const struct file_operations	*f_op; // 该文件的所有操作
+
+	/*
+	 * Protects f_ep, f_flags.
+	 * Must not be taken from IRQ context.
+	 */
+	spinlock_t		f_lock;
+	enum rw_hint		f_write_hint;
+	atomic_long_t		f_count; // 引用计数器
+	unsigned int 		f_flags; // 打开文件时所指定的标志
+	fmode_t			f_mode; // 进程的访问模式
+	struct mutex		f_pos_lock;
+	loff_t			f_pos; // 当前的文件偏移量（文件指针）
+	struct fown_struct	f_owner; // 通过信号进行 I/O 时间通知的数据
+	const struct cred	*f_cred;
+	struct file_ra_state	f_ra; // 文件预读状态
+
+	u64			f_version;
+#ifdef CONFIG_SECURITY
+	void			*f_security;
+#endif
+	/* needed for tty driver, and maybe others */
+	void			*private_data; // 指向特定文件系统或设备驱动程序所需的数据
+
+#ifdef CONFIG_EPOLL
+	/* Used by fs/eventpoll.c to link all the hooks to this file */
+	struct hlist_head	*f_ep; // 文件的事件轮询等待者链表的头
+#endif /* #ifdef CONFIG_EPOLL */
+	struct address_space	*f_mapping;
+	errseq_t		f_wb_err;
+	errseq_t		f_sb_err; /* for syncfs */
+} __randomize_layout
+```
+
+存放在 `struct file` 中的主要信息是文件指针，即文件当前的位置，下一个操作将在该位置发生。
+
+前面说到 path 封装了文件名和 inode 之间的关联以及文件所在文件系统的信息，其实就是两个数据结构：`vfsmount` 和 `dentry`。
+
+```c
+struct path {
+	struct vfsmount *mnt;
+	struct dentry *dentry;
+} __randomize_layout;
+```
+
+这些复杂的数据结构结合上面的图看会更清晰。然后关于各个 struct 的 operation，下面再分析。
 
 ### 文件系统类型
 
@@ -502,7 +469,7 @@ mount -t ext2 /dev/fd0 /flp // 将存放在 /dev/fd0 软盘上的 ext2 文件系
 
 #### vfsmount
 
-这个数据结构是记录每个安装点的信息（这个地方没有弄懂）。
+其记录每个装载的文件系统的信息，在 linux 中，装载是可以嵌套的，如上面的图，所以需要一个数据结构表示这样的关系。
 
 ```c
 struct vfsmount
@@ -510,8 +477,8 @@ struct vfsmount
 	struct list_head mnt_hash;
 	struct vfsmount *mnt_parent;	/* fs we are mounted on */ // 指向父文件系统
 	struct dentry *mnt_mountpoint;	/* dentry of mountpoint */ // 该文件系统安装点目录的 dentry
-	struct dentry *mnt_root;	/* root of the mounted tree */
-	struct super_block *mnt_sb;	/* pointer to superblock */
+	struct dentry *mnt_root;	/* root of the mounted tree */ // 该文件系统本身的根 dentry
+	struct super_block *mnt_sb;	/* pointer to superblock */ // 建立与超级块的联系
 	struct list_head mnt_mounts;	/* list of children, anchored here */
 	struct list_head mnt_child;	/* and going through their mnt_child */
 	atomic_t mnt_count;
@@ -524,13 +491,15 @@ struct vfsmount
 };
 ```
 
+`mnt_mountpoint` 和 `mnt_root` 表示的其实是一个 dentry。
+
 #### 安装普通文件系统
 
-这部分分析内核安装一个文件系统需要执行的操作，首先考虑一个文件系统将被安装在一个已安装文件系统之上的情形。`mount` 系统调用被用来安装一个普通文件系统，它的执行函数是 `sys_mount`。
+这部分分析内核安装一个文件系统需要执行的操作，首先考虑一个文件系统安装在另一个文件系统上的情形。`mount` 系统调用被用来安装一个普通文件系统，它的执行函数是 `sys_mount`。
 
 ```c
 // 文件系统所在的设备文件的路径名
-// 文集呐系统被安装在某个目录的路径名（安装点）
+// 文件系统被安装在某个目录的路径名（安装点）
 // 文件系统的类型，有 MS_RDONLY, MS_NOSUID, MS_NODEV 等等
 // 安装标志
 // 指向一个与文件系统相关的数据结构
@@ -562,7 +531,7 @@ SYSCALL_DEFINE5(mount, char __user *, dev_name, char __user *, dir_name,
 long do_mount(const char *dev_name, const char __user *dir_name,
 		const char *type_page, unsigned long flags, void *data_page)
 {
-	struct path path; // 这个数据结构是用来干嘛的
+	struct path path; // 这个数据结构是用来干嘛的？上面补充介绍了
 	int ret;
 
 	ret = user_path_at(AT_FDCWD, dir_name, LOOKUP_FOLLOW, &path); // 获取路径名
@@ -660,7 +629,7 @@ int path_mount(const char *dev_name, struct path *path,
 `do_new_mount` -> `do_new_mount_fc`
 
 ```c
-
+/*
  * Create a new mount using a superblock configuration and request it
  * be added to the namespace tree.
  */
@@ -672,16 +641,9 @@ static int do_new_mount_fc(struct fs_context *fc, struct path *mountpoint,
 	struct super_block *sb = fc->root->d_sb;
 	int error;
 
-	error = security_sb_kern_mount(sb);
-	if (!error && mount_too_revealing(sb, &mnt_flags))
-		error = -EPERM;
+	...
 
-	if (unlikely(error)) {
-		fc_drop_locked(fc);
-		return error;
-	}
-
-	up_write(&sb->s_umount);
+	up_write(&sb->s_umount); // 读写信号量
 
 	mnt = vfs_create_mount(fc);
 	if (IS_ERR(mnt))
@@ -704,6 +666,8 @@ static int do_new_mount_fc(struct fs_context *fc, struct path *mountpoint,
 
 ##### 关键函数vfs_create_mount
 
+这个函数主要是配置 vfsmount，并将其插入到链表中。
+
 ```c
 /**
  * vfs_create_mount - Create a mount for a configured superblock
@@ -718,15 +682,7 @@ struct vfsmount *vfs_create_mount(struct fs_context *fc)
 {
 	struct mount *mnt;
 
-	if (!fc->root)
-		return ERR_PTR(-EINVAL);
-
-	mnt = alloc_vfsmnt(fc->source ?: "none");
-	if (!mnt)
-		return ERR_PTR(-ENOMEM);
-
-	if (fc->sb_flags & SB_KERNMOUNT)
-		mnt->mnt.mnt_flags = MNT_INTERNAL;
+	...
 
 	atomic_inc(&fc->root->d_sb->s_active);
 	mnt->mnt.mnt_sb		= fc->root->d_sb;
@@ -744,6 +700,8 @@ EXPORT_SYMBOL(vfs_create_mount);
 
 ##### 关键函数do_add_mount
 
+这个函数主要是防止同一个文件系统装载到同一个位置。
+
 ```c
 /*
  * add a mount into a namespace's mount tree
@@ -755,14 +713,7 @@ static int do_add_mount(struct mount *newmnt, struct mountpoint *mp,
 
 	mnt_flags &= ~MNT_INTERNAL_FLAGS;
 
-	if (unlikely(!check_mnt(parent))) {
-		/* that's acceptable only for automounts done in private ns */
-		if (!(mnt_flags & MNT_SHRINKABLE))
-			return -EINVAL;
-		/* ... and for those we'd better have mountpoint still alive */
-		if (!parent->mnt_ns)
-			return -EINVAL;
-	}
+	...
 
 	/* Refuse the same filesystem on the same mount point */
 	if (path->mnt->mnt_sb == newmnt->mnt.mnt_sb &&
@@ -777,9 +728,91 @@ static int do_add_mount(struct mount *newmnt, struct mountpoint *mp,
 }
 ```
 
+##### 关键函数attach_recursive_mnt
+
+文件系统通过 `attach_recursive_mnt` 添加到父文件系统的**命名空间**（对命名空间不了解）。这部分之后再分析。
+
+`graft_tree` -> `attach_recursive_mnt`
+
+```c
+static int attach_recursive_mnt(struct mount *source_mnt,
+			struct mount *dest_mnt,
+			struct mountpoint *dest_mp,
+			bool moving)
+{
+	struct user_namespace *user_ns = current->nsproxy->mnt_ns->user_ns;
+	HLIST_HEAD(tree_list);
+	struct mnt_namespace *ns = dest_mnt->mnt_ns;
+	struct mountpoint *smp;
+	struct mount *child, *p;
+	struct hlist_node *n;
+	int err;
+
+	/* Preallocate a mountpoint in case the new mounts need
+	 * to be tucked under other mounts.
+	 */
+	smp = get_mountpoint(source_mnt->mnt.mnt_root);
+	if (IS_ERR(smp))
+		return PTR_ERR(smp);
+
+	/* Is there space to add these mounts to the mount namespace? */
+	if (!moving) {
+		err = count_mounts(ns, source_mnt);
+		if (err)
+			goto out;
+	}
+
+	if (IS_MNT_SHARED(dest_mnt)) {
+		err = invent_group_ids(source_mnt, true);
+		if (err)
+			goto out;
+		err = propagate_mnt(dest_mnt, dest_mp, source_mnt, &tree_list);
+		lock_mount_hash();
+		if (err)
+			goto out_cleanup_ids;
+		for (p = source_mnt; p; p = next_mnt(p, source_mnt))
+			set_mnt_shared(p);
+	} else {
+		lock_mount_hash();
+	}
+	if (moving) {
+		unhash_mnt(source_mnt);
+		attach_mnt(source_mnt, dest_mnt, dest_mp);
+		touch_mnt_namespace(source_mnt->mnt_ns);
+	} else {
+		if (source_mnt->mnt_ns) {
+			/* move from anon - the caller will destroy */
+			list_del_init(&source_mnt->mnt_ns->list);
+		}
+		mnt_set_mountpoint(dest_mnt, dest_mp, source_mnt);
+		commit_tree(source_mnt);
+	}
+
+	hlist_for_each_entry_safe(child, n, &tree_list, mnt_hash) {
+		struct mount *q;
+		hlist_del_init(&child->mnt_hash);
+		q = __lookup_mnt(&child->mnt_parent->mnt,
+				 child->mnt_mountpoint);
+		if (q)
+			mnt_change_mountpoint(child, smp, q);
+		/* Notice when we are propagating across user namespaces */
+		if (child->mnt_parent->mnt_ns->user_ns != user_ns)
+			lock_mnt_tree(child);
+		child->mnt.mnt_flags &= ~MNT_LOCKED;
+		commit_tree(child);
+	}
+	put_mountpoint(smp);
+	unlock_mount_hash();
+
+	return 0;
+
+	...
+}
+```
+
 ### 路径名查找
 
-路径名查找也就是根据给定的文件路径名导出相应的索引节点。执行这一任务的标准过程就是分析路径名并把它们拆分成一个文件名序列。根据第一个字符是不是 “/” 决定从 `current -> fs -> root` 还是 `current -> fs -> pwd` 开始搜索。
+路径名查找也就是**根据给定的文件路径名导出相应的索引节点**。执行这一任务的标准过程就是分析路径名并把它们拆分成一个文件名序列。根据第一个字符是不是 “/” 决定从 `current->fs->root` 还是 `current->fs->pwd` 开始搜索。
 
 整个查找过程是一个循环，内核首先检查与第一个名字匹配的目录项以获取相应的索引节点，然后从磁盘中读取包含哪个索引节点的目录，并检查与第二个名字匹配的目录项，以获取第二个索引节点，如此反复。而反复读取磁盘效率低下，所以有目录项高速缓存，将最近常使用的目录项保存在内存中。
 
@@ -829,7 +862,7 @@ static int path_lookupat(struct nameidata *nd, unsigned flags, struct path *path
 }
 ```
 
-##### nameidata
+#### nameidata
 
 变化很大，和 understanding 上。
 
@@ -975,7 +1008,7 @@ OK:
 
 
 
-### VFS 系统调用的实现
+### VFS系统调用的实现
 
 文件系统中有几个重要的数据结构（这应该是存储在硬盘中的实际文件系统的数据结构）：
 
