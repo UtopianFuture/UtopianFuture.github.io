@@ -251,7 +251,7 @@ struct inode {
 
 #### dentry
 
-VFS 把每个目录看作由若干个子目录和文件组成的一个普通的文件，当从实际的磁盘文件系统中读取目录项到内存时，VFS 会将其转换成基于 dentry 结构的一个目录项对象。对于进程查找的路径名中的每个分量，内核都为其**创建一个目录项对象**，目录项对象将每个分量与其对应的索引节点相联系。可以这样理解，`struct dentry` 提供了文件名和 `inode` 之间的关联。
+VFS 把每个目录看作由若干个子目录和文件组成的一个普通的文件，当从实际的磁盘文件系统中读取目录项到内存时，VFS 会将其转换成基于 dentry 结构的一个目录项对象。对于进程查找的路径名中的每个分量，内核都为其**创建一个目录项对象**，目录项对象将每个分量与其对应的索引节点相联系。可以这样理解，**`struct dentry` 提供了文件名和 `inode` 之间的关联**。
 
 ```c
 struct dentry {
@@ -308,7 +308,7 @@ struct fs_struct {
 	seqcount_spinlock_t seq;
 	int umask; // 设置为文件权限的掩码
 	int in_exec;
-	struct path root, pwd; // 根目录和当前工作目录的目录项
+	struct path root, pwd; // 根目录和当前工作目录的目录项，一个用于绝对路径，一个用于相对路径搜索
 } __randomize_layout;
 ```
 
@@ -816,7 +816,7 @@ static int attach_recursive_mnt(struct mount *source_mnt,
 
 整个查找过程是一个循环，内核首先检查与第一个名字匹配的目录项以获取相应的索引节点，然后从磁盘中读取包含哪个索引节点的目录，并检查与第二个名字匹配的目录项，以获取第二个索引节点，如此反复。而反复读取磁盘效率低下，所以有目录项高速缓存，将最近常使用的目录项保存在内存中。
 
-虽然 Linux 使用万物皆文件的思想，但路径名的查找并不想上面描述的那样简单，有很多情况需要考虑：
+虽然 Linux 使用万物皆文件的思想，但路径名的查找并不像上面描述的那样简单，有很多情况需要考虑：
 
 - 检查每个目录的访问权限；
 - 文件名可能是与任意一个路径名对应的符号链接，这样需要扩展到那个路径名的所有分量（是不是符号链接对应的文件？）；
@@ -842,23 +842,8 @@ static int path_lookupat(struct nameidata *nd, unsigned flags, struct path *path
 	while (!(err = link_path_walk(s, nd)) &&
 	       (s = lookup_last(nd)) != NULL)
 		;
-	if (!err && unlikely(nd->flags & LOOKUP_MOUNTPOINT)) {
-		err = handle_lookup_down(nd);
-		nd->state &= ~ND_JUMPED; // no d_weak_revalidate(), please...
-	}
-	if (!err)
-		err = complete_walk(nd);
 
-	if (!err && nd->flags & LOOKUP_DIRECTORY)
-		if (!d_can_lookup(nd->path.dentry))
-			err = -ENOTDIR;
-	if (!err) {
-		*path = nd->path;
-		nd->path.mnt = NULL;
-		nd->path.dentry = NULL;
-	}
-	terminate_walk(nd);
-	return err;
+    ...
 }
 ```
 
@@ -912,9 +897,9 @@ static int link_path_walk(const char *name, struct nameidata *nd)
 	nd->flags |= LOOKUP_PARENT;
 	if (IS_ERR(name))
 		return PTR_ERR(name);
-	while (*name=='/')
+	while (*name=='/') // 跳过路径名第一个分量前的任何斜杠 '/'
 		name++;
-	if (!*name) {
+	if (!*name) { // 路径为空，直接返回
 		nd->dir_mode = 0; // short-circuit the 'hardening' idiocy
 		return 0;
 	}
@@ -927,7 +912,7 @@ static int link_path_walk(const char *name, struct nameidata *nd)
 		int type;
 
 		mnt_userns = mnt_user_ns(nd->path.mnt);
-		err = may_lookup(mnt_userns, nd);
+		err = may_lookup(mnt_userns, nd); // 不懂
 		if (err)
 			return err;
 
@@ -1006,14 +991,6 @@ OK:
 }
 ```
 
+### 问题
 
-
-### VFS系统调用的实现
-
-文件系统中有几个重要的数据结构（这应该是存储在硬盘中的实际文件系统的数据结构）：
-
-- **superblock**: 记录此 fs 的整体信息，包括 inode/block 的总量、使用量、剩余量，以及文件系统的格式与相关信息等；
-- **inode table**: superblock 之后就是 inode table，存储了全部 inode；
-- **data block**: inode table 之后就是 data block。文件的内容保存在这个区域，磁盘上所有块的大小都一样；
-- **inode**: 记录文件的属性，同时记录此文件的数据所在的 block 号码。**每个 inode 对应一个文件/目录的结构**，这个结构它包含了一个文件的长度、创建及修改时间、权限、所属关系、磁盘中的位置等信息。
-- **block**: 实际记录文件的内容。一个较大的文件很容易分布上千个独产的磁盘块中，而且，一般都不连续，太散会导致读写性能急剧下降。
+- 进程读取一个文件中的某个字节的具体流程。
