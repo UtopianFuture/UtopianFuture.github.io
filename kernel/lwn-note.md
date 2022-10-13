@@ -44,6 +44,10 @@
 
 ### [BPF: the universal in-kernel virtual machine](https://lwn.net/Articles/599755/)
 
+这篇文章主要是介绍的 BPF 的，借着这个契机，开始系统的学习 BPF。
+
+### [Bcache: Caching beyond just RAM](https://lwn.net/Articles/394672/)
+
 ### MISC
 
 - Spectre: it is a subset of security [vulnerabilities](https://en.wikipedia.org/wiki/Vulnerability_(computing)) within the class of vulnerabilities known as microarchitectural timing [side-channel attacks](https://en.wikipedia.org/wiki/Side-channel_attacks). 一个安全漏洞的 patch
