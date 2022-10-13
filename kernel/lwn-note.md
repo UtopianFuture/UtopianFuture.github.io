@@ -15,17 +15,17 @@
 
 ### [Why RISC-V doesn't (yet) support KVM](https://lwn.net/Articles/856685/)
 
-总的来说，RISC-V 的 KVM 支持其实已经完成了，并且在 hardware 上工作良好，但是 RISC-V 分支的代码合并策略（patch acceptance policy）有些问题，总在变化，导致 RISC-V KVM 一直处于 staging 状态，而没有 frozen，不能合并和 mainline 中。
+总的来说，RISC-V 的 KVM 支持其实已经完成了，并且在 hardware 上工作良好，但是 RISC-V 分支的代码合并策略（patch acceptance policy）有些问题，总在变化，导致 RISC-V KVM 系列 patch 一直处于 staging 状态，没有 frozen，不能合并和 mainline 中。
 
 ### [VMX virtualization runs afoul of split-lock detection](https://lwn.net/Articles/816918/)
 
 这篇文章提到 split-lock（分体锁）的使用会影响到 VMX 的正确性。首先分体锁的使用是有一定意义的，它能够避开潜在的 denial-of-service attack vector（不清楚是啥），同时也能摆脱延迟密集型负载的性能问题。但是使用分体锁会导致 guest 需要处理对其检查异常。
 
-这里涉及到到的分体锁之后去了解，同时对 x86 的非对其访问也需要看看。
+这里涉及到到的分体锁之后去了解，同时对 x86 的非对齐访问也需要看看。
 
 ### [Detecting and handling split locks](https://lwn.net/Articles/790464/)
 
-非对齐访问可以看看[这篇](https://www.sunxidong.com/532.html)文章，当然这篇 lwn 的文章也介绍了什么是非对齐访问。总的来说，CPU 在硬件设计上只能进行对其访问，但是 x86 内核能够支持非对齐访问，一般的做法是多次读取对齐内存，然后进行数据拼接，从而实现非对齐访问。
+非对齐访问可以看看[这篇](https://www.sunxidong.com/532.html)文章，或者[这篇](https://www.kernel.org/doc/Documentation/unaligned-memory-access.txt#:~:text=Unaligned%20memory%20accesses%20occur%20when,be%20an%20unaligned%20memory%20access.)英文文章，当然这篇 lwn 的文章也介绍了什么是非对齐访问。总的来说，CPU 在硬件设计上只能进行对其访问，但是 x86 内核能够支持非对齐访问，一般的做法是多次读取对齐内存，然后进行数据拼接，从而实现非对齐访问。
 
 而非对齐访问会导致分t锁问题，因为一个原子操作可能会被分成访问多个 cacheline，然后根据 cache 一致性协议，需要在多个 CPU 的 cache 中保持数据的正确性，这会导致不可预料的性能和安全问题。因此嵌入式和高性能设备应该避免使用非对齐访问（平时开发也尽量避免吧，不然要是遇到 bug 都要怀疑人生）。
 
@@ -34,6 +34,15 @@
 更好的解决方案还在路上。
 
 ### [Support for Intel's Linear Address Masking](https://lwn.net/Articles/902094/)
+
+因为 64 位系统中，地址肯定用不完，所以可以将高位部分用来存储一些信息。Intel 提供两种方式：
+
+- `LAM_U57` allows six bits of metadata in bits 62 to 57.
+- `LAM_U48` allows 15 bits of metadata in bits 62 to 48.
+
+这种方式和 AMD 的做法略有区别，AMD 是将整个高 7 位用来做额外用处，但因为内核是通过最高位地址是否为 1 来判断是内核地址还是用户地址，所以他的这种做法会导致很多问题。
+
+### [BPF: the universal in-kernel virtual machine](https://lwn.net/Articles/599755/)
 
 ### MISC
 
