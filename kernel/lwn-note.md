@@ -48,6 +48,34 @@
 
 ### [Bcache: Caching beyond just RAM](https://lwn.net/Articles/394672/)
 
+这个其实是一个很容易理解的想法，将 SSD 作为 HDD 的 cache，亦或者是将本地硬盘作为远程硬盘的 cache。
+
+而为了做到这一点，bcache 在 block layer 加上 hooks，这样就可以劫持文件系统操作。然后将 cache 设备按照磁盘的分区分成一个个的 buckets，同时还有一个类似于 superblock 的数组单独存储在 cache 设备中。这样就能够使整个 cache 操作对于 os 来说是透明的。
+
+好家伙，内核中有这部分代码，
+
+/linux-5.15/drivers/md/bcache/super.c
+
+```
+/*
+ * Module hooks
+ */
+module_exit(bcache_exit);
+module_init(bcache_init);
+
+module_param(bch_cutoff_writeback, uint, 0);
+MODULE_PARM_DESC(bch_cutoff_writeback, "threshold to cutoff writeback");
+
+module_param(bch_cutoff_writeback_sync, uint, 0);
+MODULE_PARM_DESC(bch_cutoff_writeback_sync, "hard threshold to cutoff writeback");
+
+MODULE_DESCRIPTION("Bcache: a Linux block layer cache");
+MODULE_AUTHOR("Kent Overstreet <kent.overstreet@gmail.com>");
+MODULE_LICENSE("GPL");
+```
+
+### [How likely should likely() be?](https://lwn.net/Articles/70473/)
+
 ### MISC
 
 - Spectre: it is a subset of security [vulnerabilities](https://en.wikipedia.org/wiki/Vulnerability_(computing)) within the class of vulnerabilities known as microarchitectural timing [side-channel attacks](https://en.wikipedia.org/wiki/Side-channel_attacks). 一个安全漏洞的 patch
