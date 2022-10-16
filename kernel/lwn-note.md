@@ -76,6 +76,10 @@ MODULE_LICENSE("GPL");
 
 ### [How likely should likely() be?](https://lwn.net/Articles/70473/)
 
+这篇文章主要是介绍 `likely()/unlikely()`。因为分支预测的原因，可以通过这两个“函数”暗示编译器这个条件判断的结果，从而提高性能，但是这两个函数在不同架构上的实现是不一样的，对于那些站在更高角度的 maintainer 来说，这样不是很好，应该用 `probable(condition, percent)` 这样的 macro 来替换。其给出的原因是使用这两个 macro 需要 programmer 去判断条件判断的结果，万一判断错了，带来的代价会很大。
+
+### [The cost of inline functions](https://lwn.net/Articles/82495/)
+
 ### MISC
 
 - Spectre: it is a subset of security [vulnerabilities](https://en.wikipedia.org/wiki/Vulnerability_(computing)) within the class of vulnerabilities known as microarchitectural timing [side-channel attacks](https://en.wikipedia.org/wiki/Side-channel_attacks). 一个安全漏洞的 patch
