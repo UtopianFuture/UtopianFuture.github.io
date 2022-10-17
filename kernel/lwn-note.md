@@ -80,6 +80,10 @@ MODULE_LICENSE("GPL");
 
 ### [The cost of inline functions](https://lwn.net/Articles/82495/)
 
+inline 函数在每一个调用函数中生成一个 copy，从而避免函数跳转带来的性能损失。但是在 socket buffers 中这样做却会带来性能损失，因为在 'SKBs' 中太多 inline 函数，使得整个内核变大，然后 cache miss 增大，性能下降。
+
+### [A filesystem for namespaces](https://lwn.net/Articles/877308/)
+
 ### MISC
 
 - Spectre: it is a subset of security [vulnerabilities](https://en.wikipedia.org/wiki/Vulnerability_(computing)) within the class of vulnerabilities known as microarchitectural timing [side-channel attacks](https://en.wikipedia.org/wiki/Side-channel_attacks). 一个安全漏洞的 patch
