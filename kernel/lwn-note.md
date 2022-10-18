@@ -84,6 +84,16 @@ inline 函数在每一个调用函数中生成一个 copy，从而避免函数�
 
 ### [A filesystem for namespaces](https://lwn.net/Articles/877308/)
 
+namespacefs 是一种内核提供的能够展示运行的 namespaces 之间的层次结构，能够为开发者提供有效的检测、监控所有正在运行的 containers 的方法。
+
+但是这个 patch 在如何表示每个 containers 上遇到了很大的问题，问题的关键在于内核中其实没有 container 这个概念，有的只是一个个 namespace。
+
+其实 namespacefs 这个机制以后也很难合并到内核中，表面上看这方面的工作无法达到预期的目标，但是它能够让大家一起来讨论现有的内核有什么问题，如没有 container 概念，这会让大家进一步解决这方面的问题。
+
+而这篇文章对我的意义是又告诉我一遍：你不懂 namespace :joy:.
+
+### [Namespaces in operation, part 1: namespaces overview](https://lwn.net/Articles/531114/)
+
 ### MISC
 
 - Spectre: it is a subset of security [vulnerabilities](https://en.wikipedia.org/wiki/Vulnerability_(computing)) within the class of vulnerabilities known as microarchitectural timing [side-channel attacks](https://en.wikipedia.org/wiki/Side-channel_attacks). 一个安全漏洞的 patch
