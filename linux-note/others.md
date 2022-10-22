@@ -1161,3 +1161,7 @@ cache 一致性协议主要有两大类：
 ```
 
 **智能指针的本质是使用引用计数（reference counting）来延迟对指针的释放。**
+
+### Spectre
+
+Spectre: it is a subset of security [vulnerabilities](https://en.wikipedia.org/wiki/Vulnerability_(computing)) within the class of vulnerabilities known as microarchitectural timing [side-channel attacks](https://en.wikipedia.org/wiki/Side-channel_attacks). 一个安全漏洞的 patch.
