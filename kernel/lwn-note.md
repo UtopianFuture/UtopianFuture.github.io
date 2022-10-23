@@ -108,3 +108,20 @@ namespacefs 是一种内核提供的能够展示运行的 namespaces 之间的�
 应该还有其他的 namespace 会慢慢开发出来。
 
 ### [Namespaces in operation, part 2: the namespaces API](https://lwn.net/Articles/531381/)
+
+主要介绍了基本的 namesapces API：
+
+- clone：创造一个新的 namespace
+
+  ```c
+  child_pid =
+        clone(childFunc, child_stack + STACK_SIZE, /* Points to start of
+                                                      downwardly growing stack */
+              CLONE_NEWUTS | SIGCHLD, argv[1]);
+  ```
+
+- setns：能够使进程加入一个新的 namespace；
+
+- unshare：使进程离开某个 namespace；
+
+### [Namespaces in operation, part 3: PID namespaces](https://lwn.net/Articles/531419/)
