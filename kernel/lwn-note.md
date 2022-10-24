@@ -125,3 +125,9 @@ namespacefs 是一种内核提供的能够展示运行的 namespaces 之间的�
 - unshare：使进程离开某个 namespace；
 
 ### [Namespaces in operation, part 3: PID namespaces](https://lwn.net/Articles/531419/)
+
+PID namespace 能够创建不同的 PID，那么会产生一个问题，新的 namespace 中子进程的父进程是什么？因为在新的 namespace 中不能再看到原先 namespace 的进程，这里 clone 将新进程的 ppid 统一设置为 0。
+
+同时 pid namespaces 也能够嵌套使用，子 namespace 能够看到（看到意味着能够发送信号给这些进程）所有在该 namespace 中的进程，包括嵌套在其中的进程，但不能看见父 namespace 的进程。
+
+### [Namespaces in operation, part 4: more on PID namespaces](https://lwn.net/Articles/532748/)
