@@ -135,3 +135,16 @@ PID namespace 能够创建不同的 PID，那么会产生一个问题，新的 n
 这个系列的文章非常硬核，需要花更多的时间去理解，和这篇博客的出发点不太合适，所以单独列出来成为[一篇](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/Namespaces.md)博客。
 
 ### [CMA and ARM](https://lwn.net/Articles/450286/)
+
+CMA(contiguous memory allocator) 能够为驱动提供大块的、连续的 DMA 缓存而不需要内存再来处理这一请求。但是这种做法有一个隐含的问题——cache conflicting。CMA 分配的 cache coherent DMA buffer 必须是 “uncached”，但是如果其他的具有不同 cache 属性的内存映射到同一位置，那么就会产生冲突。内核在 boot 阶段为了访存性能会创建一个 "linear mapping"，即在内核空间能够访问所有的内存地址，在 32 位系统中这一工作都是在低地址空间完成的（ZONE_HIGH），而这些低地址空间是能够使用 cache 的，这些 cache 就会和 CMA 的地址产生冲突。
+
+而 ARM 的 maintainer 认为 cache conflicting 在 ARM CPU 中有发生的风险，拒绝 merge。
+
+解决的方法有两个：
+
+- CMA 只分配高地址空间。高地址空间不会参与 cache
+- 将用做 coherent DMA buffer 的内存从内核的线性地址空间移除，直到该 buffer 不再使用；
+
+好吧，CMA 和 CAM 不是同一个东西。
+
+### [AMD memory encryption technologies](https://lwn.net/Articles/699820/)
