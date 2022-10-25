@@ -131,3 +131,7 @@ PID namespace 能够创建不同的 PID，那么会产生一个问题，新的 n
 同时 pid namespaces 也能够嵌套使用，子 namespace 能够看到（看到意味着能够发送信号给这些进程）所有在该 namespace 中的进程，包括嵌套在其中的进程，但不能看见父 namespace 的进程。
 
 ### [Namespaces in operation, part 4: more on PID namespaces](https://lwn.net/Articles/532748/)
+
+这个系列的文章非常硬核，需要花更多的时间去理解，和这篇博客的出发点不太合适，所以单独列出来成为[一篇](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/Namespaces.md)博客。
+
+### [CMA and ARM](https://lwn.net/Articles/450286/)
