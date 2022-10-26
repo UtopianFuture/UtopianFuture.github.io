@@ -148,3 +148,12 @@ CMA(contiguous memory allocator) 能够为驱动提供大块的、连续的 DMA 
 好吧，CMA 和 CAM 不是同一个东西。
 
 ### [AMD memory encryption technologies](https://lwn.net/Articles/699820/)
+
+在云计算环境中，能够通过 "user-aeecss attacks" 和 "physical-access attacks" 来从一个 guest 访问到其他 guest 的内存或者在 host 中访问所有 guest 的内存。该加密技术能够解决这一问题，其实现是一个 AMD Secure Processor，其中包含两个特性：SME(Secure Memory Encryption) 和 SEV(Secure Encrypted Virtualization)，目前将一个单独的 32-bit ARM Cortex A5 集成到 SoC 中。
+
+- SME 比较简单。其在 boot 阶段产生一个随机数来透明的加密在页表中所有被标记为 "encrypted" 的页，OS 或 hypervisor 管理哪些页会被加密，这个标记其实就是一个比特位。该特性是为了防范 "physical-access attacks" 的；
+- SVE 更加复杂。它有多个 encryption keys 去保护所有的 guest 内存不受其他 guest 和 hypervisor 的攻击。在 boot 阶段，hypervisor 会在 guest 和 scure processor 之间创建一个 secure channel，然后为每个 guest 分配一个 ASID，根据 ASID 生成一个ie key，这个 key 就是访问对应 guest 内存的关键。
+
+虽然听起来不错，但 hypervisor 肯定还是有办法 hack 到 guest 的内存吧。
+
+### [Supporting Intel/AMD memory encryption](https://lwn.net/Articles/752683/)
