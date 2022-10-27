@@ -157,3 +157,16 @@ CMA(contiguous memory allocator) 能够为驱动提供大块的、连续的 DMA 
 虽然听起来不错，但 hypervisor 肯定还是有办法 hack 到 guest 的内存吧。
 
 ### [Supporting Intel/AMD memory encryption](https://lwn.net/Articles/752683/)
+
+Intel 和 AMD 都有自己的内存加密方式：
+
+- intel 是将地址高 6 位作为加密位；
+- AMD 只是将最高位作为加密位；
+
+但是地址加密会带来一个问题，同样内容的 page 但是不同的 key 会在 cache 中同时存在，这就会导致性能的下降。maintainer 提出的一种方法是记住最后使用的 page，这样如果如果新分配的 page 和原来的 page 具有相同的 key，那么就不需要刷新任何 old cache。
+
+这需要包装一下现有的 page allocator（也就是 buddy system）。设想是将 key 存储在 `page` 中，但其他子系统的 maintainer 认为这样会增加 page allocator 的复杂性，尤其是内存加密可能只在未来的 CPU 中能更好的工作，当前的工作没有必要以及其他不同意见。目前的做法是将 key 存储在 `anon_vma` 中，但是这意味着只有匿名页面能使用这一特性。
+
+内存加密这一技术还在完善中。
+
+哈哈哈，不过评论很有意思”可能未来有人会问 Intel 为啥要花费前 10% 的比特位来作为地址加速的 ID“。不过目前来看地址位是够用的。
