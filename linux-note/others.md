@@ -1169,3 +1169,7 @@ Spectre: it is a subset of security [vulnerabilities](https://en.wikipedia.org/w
 ### Zen 4
 
 Zen 4: is the [codename](https://en.wikipedia.org/wiki/Codename) for a [CPU](https://en.wikipedia.org/wiki/CPU) [microarchitecture](https://en.wikipedia.org/wiki/Microarchitecture) by [AMD](https://en.wikipedia.org/wiki/AMD), released on September 27, 2022. It is the successor to [Zen 3](https://en.wikipedia.org/wiki/Zen_3) and uses [TSMC](https://en.wikipedia.org/wiki/TSMC)'s [5 nm](https://en.wikipedia.org/wiki/5_nm_process) process. Zen 4 powers [Ryzen 7000](https://en.wikipedia.org/wiki/Ryzen_7000) mainstream desktop processors (codenamed "Raphael") and will be used in high-end mobile processors (codenamed "Dragon Range"), thin & light mobile processors (codenamed "Phoenix"), as well as [Epyc](https://en.wikipedia.org/wiki/Epyc) 7004 server processors (codenamed "Genoa" and "Bergamo"). CPU 微架构。
+
+### [内存训练](https://zhuanlan.zhihu.com/p/107898009)
+
+好家伙，这么复杂，还是简单将其理解为内存初始化。其是 BIOS（不过现在是不是都用 ACPI 了）代码的一部分。
