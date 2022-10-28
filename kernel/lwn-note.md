@@ -172,3 +172,5 @@ Intel 和 AMD 都有自己的内存加密方式：
 哈哈哈，不过评论很有意思”可能未来有人会问 Intel 为啥要花费前 10% 的比特位来作为地址加密的 ID“。不过目前来看地址位是够用的。
 
 ### [Saving frequency scaling in the data center](https://lwn.net/Articles/820872/)
+
+Frequency scaling，频率调整，能够在低工作负载的情况下调整 CPU 的频率，从而节能。但是在 data center 中这一功能似乎没啥用，因为 data center 需要要在乎能耗，更关注能不能获得最好的硬件性能。
