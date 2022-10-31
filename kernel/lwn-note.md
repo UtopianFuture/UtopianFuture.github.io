@@ -175,4 +175,10 @@ Intel 和 AMD 都有自己的内存加密方式：
 
 Frequency scaling，频率调整，能够在低工作负载的情况下调整 CPU 的频率，从而节能。但是在 data center 中这一功能似乎没啥用，因为 data center 需要要在乎能耗，更关注能不能获得最好的硬件性能。
 
-### [Another Fedora integrity-management proposal](https://lwn.net/Articles/880263/)
+### [Bringing kgdb into 2.6](https://lwn.net/Articles/70465/)
+
+看了 Linus 关于 debugger 的[邮件](https://lwn.net/2000/0914/a/lt-debugger.php3)，很有意思，收获很大。确实，不用 debugger 会迫使你从其他的角度去思考你的代码，从而真正理解你的代码。另一方面是面对 bug 的态度，不应该感到沮丧，而是以后要加倍小心。但这在实际的工作环境中是否合适，会不会效率太低被淘汰？
+
+回到 kgdb 的问题，Linus 的态度是内核不会在 mainline 中支持 kgdb，但其他开发者对其持开放态度。
+
+### [Debugging ARM kernels using fast interrupts](https://lwn.net/Articles/600359/)
