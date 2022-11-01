@@ -181,4 +181,8 @@ Frequency scaling，频率调整，能够在低工作负载的情况下调整 CP
 
 回到 kgdb 的问题，Linus 的态度是内核不会在 mainline 中支持 kgdb，但其他开发者对其持开放态度。
 
-### [Debugging ARM kernels using fast interrupts](https://lwn.net/Articles/600359/)
+### [KVM, QEMU, and kernel project management](https://lwn.net/Articles/379869/)
+
+好吧，这篇文章每咋看懂，阅读能力还需要增强。开发者在讨论要不要将 qemu 合并到 kernel 中，因为 qemu 和 kvm 是强相关的，合并会使整个开发进度更快。但是 qemu 的开发者不这样认为，qemu 不仅仅是 kvm 在用（这个确实，很多基于 qemu 的二次开发，比如我们），合并会使得 qemu 的开发者和用户减少。内核开发是非常严肃的事情，有事说事，我现在的心态、习惯不太适合，需要改变。
+
+### [On saying "no"](https://lwn.net/Articles/571995/)
