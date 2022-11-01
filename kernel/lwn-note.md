@@ -186,3 +186,5 @@ Frequency scaling，频率调整，能够在低工作负载的情况下调整 CP
 好吧，这篇文章每咋看懂，阅读能力还需要增强。开发者在讨论要不要将 qemu 合并到 kernel 中，因为 qemu 和 kvm 是强相关的，合并会使整个开发进度更快。但是 qemu 的开发者不这样认为，qemu 不仅仅是 kvm 在用（这个确实，很多基于 qemu 的二次开发，比如我们），合并会使得 qemu 的开发者和用户减少。内核开发是非常严肃的事情，有事说事，我现在的心态、习惯不太适合，需要改变。
 
 ### [On saying "no"](https://lwn.net/Articles/571995/)
+
+几个核心的 maintainer 在抱怨他们对代码的审核能力不足——“that kernel maintainers are getting old and just don't have the energy to fight against substandard code like they once used to"，很多非必要的代码合入了内核，导致例如"Linux security modules debacle" 的问题。内核开发者也面临着退休和人手不足的问题，很多代码没人继续跟进。解决的方法是搞一个 "graybeards@" 的列表，所有 Kernel Summit 参与者都要订阅，否则会被视为对核心 issues 不感兴趣，不想参加 Kernel Summit。不理解，这是为了筛选 maintainer 么？
