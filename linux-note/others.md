@@ -1191,3 +1191,22 @@ Zen 4: is the [codename](https://en.wikipedia.org/wiki/Codename) for a [CPU](htt
   当内核执行到该处代码之后，就会触发非法指令异常，此后内核将在异常处理流程中调用与该指令对应的kprobe插桩函数以及被保存的原始指令。若需要删除kprobe插桩点，则只需要将被保存代码还原回去即可。systemtap 和 ebpf 都是基于该技术实现的；
 
 - perf，前面都是通过跟踪点的方式实现内核观测功能的，它们的优点是能精确地跟踪到我们所期望的事件，但也可能对系统带来较大的性能损失。而且有时我们也希望能得到一些性能统计信息，以判断系统的一些运行状态。例如通过 cache miss 的统计数据，来观测当前的内存访问效率，或者通过分支预测数据，观测 cpu 流水线的情况等。perf 通过采样的方式来跟踪相关事件，其基本原理是对监测对象进行采样，然后在采样点中判断其相关上下文。即它是通过抽样统计方式，计算监测对象统计信息的。其中它的抽样事件由固定间隔的 cpu 中断触发，其通常为 tick 时钟中断；
+
+### binfmt_misc
+
+**binfmt_misc** (*Miscellaneous Binary Format*) is a capability of the Linux kernel which allows arbitrary executable file formats to be recognized and passed to certain user space applications, such as emulators and virtual machines.
+
+```
+xxx@xxx /m/l/6/h/l/s/result> cd /proc/sys/fs/binfmt_misc/
+xxx@xxx /p/s/f/binfmt_misc> ls
+i386  jar  python2.7  python3.7  register  status  x86_64
+xxx@xxx /p/s/f/binfmt_misc> cat x86_64
+enabled
+interpreter /opt/LATX/latx-x86_64
+flags:
+offset 0
+magic 7f454c4602010100000000000000000002003e00
+mask fffffffffffefe00fffffffffffffffffeffffff
+```
+
+简而言之就是有了 binfmt_misc，如果可执行文件的 mask 和 magic 符合 binfmt_misc 下任一格式，那么就会调用对应的 interpreter 执行该可执行文件，从而达到执行异架构程序的效果。
