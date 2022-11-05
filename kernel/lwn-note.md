@@ -173,7 +173,7 @@ Intel 和 AMD 都有自己的内存加密方式：
 
 ### [Saving frequency scaling in the data center](https://lwn.net/Articles/820872/)
 
-Frequency scaling，频率调整，能够在低工作负载的情况下调整 CPU 的频率，从而节能。但是在 data center 中这一功能似乎没啥用，因为 data center 需要要在乎能耗，更关注能不能获得最好的硬件性能。
+Frequency scaling，频率调整，能够在低工作负载的情况下调整 CPU 的频率，从而节能。但是在 data center 中这一功能似乎没啥用，因为 data center 不在乎能耗，更关注能不能获得最好的硬件性能。
 
 ### [Bringing kgdb into 2.6](https://lwn.net/Articles/70465/)
 
@@ -188,3 +188,7 @@ Frequency scaling，频率调整，能够在低工作负载的情况下调整 CP
 ### [On saying "no"](https://lwn.net/Articles/571995/)
 
 几个核心的 maintainer 在抱怨他们对代码的审核能力不足——“that kernel maintainers are getting old and just don't have the energy to fight against substandard code like they once used to"，很多非必要的代码合入了内核，导致例如"Linux security modules debacle" 的问题。内核开发者也面临着退休和人手不足的问题，很多代码没人继续跟进。解决的方法是搞一个 "graybeards@" 的列表，所有 Kernel Summit 参与者都要订阅，否则会被视为对核心 issues 不感兴趣，不想参加 Kernel Summit。不理解，这是为了筛选 maintainer 么？
+
+### [Security requirements for new kernel features](https://lwn.net/Articles/902466/)
+
+首先是内核文件系统新支持的 io_uring 子系统没有经过内核安全社区足够的检查，即在 io_uring 代码中没有安全或审查 hooking，这使得 io_uring 的各种操作在安全模块的控制之外。之后各个 maintainer 聊到这不仅仅是 io_uring 一个 feature 的问题，而是 LSM(Linux Security Module) 没有足够的人再去维护了，这些 maintainer 希望有更多的公司允许开发者花时间去 review 这 LSM 方面的 patch。
