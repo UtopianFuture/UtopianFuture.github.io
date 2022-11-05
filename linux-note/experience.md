@@ -40,6 +40,9 @@
 
    直接使用 `ssh-copy-id username@remote-server` 命令更方便。
 
+9. 设置开机自启动
+   `sudo systemctl enable ssh`
+
 9. 遇到这个问题，diffie-hellman-xxxxxx
 
    ![](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/experience.1.png?raw=true)
