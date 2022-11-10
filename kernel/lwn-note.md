@@ -192,3 +192,64 @@ Frequency scaling，频率调整，能够在低工作负载的情况下调整 CP
 ### [Security requirements for new kernel features](https://lwn.net/Articles/902466/)
 
 首先是内核文件系统新支持的 io_uring 子系统没有经过内核安全社区足够的检查，即在 io_uring 代码中没有安全或审查 hooking，这使得 io_uring 的各种操作在安全模块的控制之外。之后各个 maintainer 聊到这不仅仅是 io_uring 一个 feature 的问题，而是 LSM(Linux Security Module) 没有足够的人再去维护了，这些 maintainer 希望有更多的公司允许开发者花时间去 review 这 LSM 方面的 patch。
+
+### [Linux kernel design patterns - part 1](https://lwn.net/Articles/336224/)
+
+这个系列的文章探究内核中的设计模式。设计模式在本科的时候学过，不过基本都忘记了。而内核中的设计模式主要是为了提高代码质量：例如检查代码格式、检查锁的使用、控制进程对未分配内存的访问等等。
+
+设计模式可以简单理解为对一类问题的描述，以及能够高效解决这类问题的方法。而 developer 或 reviewer 使用这类术语能够高效的工作。
+
+这篇文章首先介绍 reference count。其实就是使用一个计数器来管理某个对象的生存周期，但是简单的加加减减操作在一些临界情况会出问题，所以抽象出一个设计模式来对其进行总结。
+
+内核中常用的引用可以分为两种："external" 和 "internal"。
+
+- external：这类引用通常是通过 "get" 和 "put" 之类的操作来在其他子系统中使用当前子系统中定义的对象；
+- internal：这类引用通常不用做计数，在当前子系统内部使用；
+
+#### The "kref" style
+
+```c
+if (atomic_dec_and_test(&obj->refcnt)) { ... do stuff ... }
+```
+
+这种就是 "kref" style，其适用于对象的生存周期不会超过它最后一次引用（？）。但它貌似就是正常的对计数器进行操作，
+
+```c
+struct kref {
+	refcount_t refcount;
+};
+
+/**
+ * kref_get - increment refcount for object.
+ * @kref: object.
+ */
+static inline void kref_get(struct kref *kref)
+{
+	refcount_inc(&kref->refcount);
+}
+```
+
+#### The "kcref" style
+
+在内核中没有 "kcref" 结构（到目前也没有）。多了个 'c' 表示 "cached"，表示引用的对象在 cache 中经常使用。
+
+```c
+if (atomic_dec_and_lock(&obj->refcnt, &subsystem_lock)) {
+    ..... do stuff ....
+	spin_unlock(&subsystem_lock);
+}
+```
+
+#### The "plain" style
+
+这个就是正常的计数器操作，
+
+```c
+static inline void put_bh(struct buffer_head *bh)
+{
+    smp_mb__before_atomic_dec();
+    atomic_dec(&bh->b_count);
+}
+```
+
+### [Linux kernel design patterns - part 2](Linux kernel design patterns - part 2)
