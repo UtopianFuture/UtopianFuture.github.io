@@ -253,3 +253,47 @@ static inline void put_bh(struct buffer_head *bh)
 ```
 
 ### [Linux kernel design patterns - part 2](Linux kernel design patterns - part 2)
+
+这篇文章讨论复杂数据结构方面的设计模式。
+
+首先是为什么内核中需要使用抽象数据类型，例如 "Linked Listd", "RB-trees", "Radix tree"。
+
+- 封装细节，提供更加简介的代码隔离，程序员不需要了解具体的实现也可能使用；
+- 为了性能（？）；
+
+#### Linked Lists
+
+```c
+struct list_head {
+	struct list_head *next, *prev;
+};
+```
+
+需要仔细研究一下内核的 "Linked Lists" 是怎么样实现的。
+
+通过 "Linked Lists" 的实现，可以总结出两个有价值的模式
+
+- **Embedded Anchor**: A good way to include generic objects in a data structure is to embed an anchor in them and build the data structure around the anchors. The object can be found from the anchor using container_of();
+- **Broad Interfaces**: Don't fall for the trap of thinking that "one size fits all". While having 20 or more macros that all do much the same thing is uncommon, it can be a very appropriate way of dealing with the complexity of finding the optimal solution. Trying to squeeze all possibilities into one narrow interface can be inefficient and choosing not to provide for all possibilities is counter-productive.
+
+#### RB-trees
+
+对于红黑树的特性还不了解，
+
+```c
+struct rb_node {
+	unsigned long  __rb_parent_color;
+	struct rb_node *rb_right;
+	struct rb_node *rb_left;
+} __attribute__((aligned(sizeof(long))));
+```
+
+- **Tool Box**: Sometimes it is best not to provide a complete solution for a generic service, but rather to provide a suite of tools that can be used to build custom solutions.
+
+#### Radix tree
+
+### [Linux kernel design patterns - part 3](https://lwn.net/Articles/336262/)
+
+### [Trees I: Radix trees](https://lwn.net/Articles/175432/)
+
+### [Trees II: red-black trees](https://lwn.net/Articles/184495/)
