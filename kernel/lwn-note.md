@@ -296,4 +296,35 @@ struct rb_node {
 
 ### [Trees I: Radix trees](https://lwn.net/Articles/175432/)
 
+理解 radix tree 看这张图就可以了，
+
+![[big radix tree]](https://static.lwn.net/images/ns/kernel/radix-tree-2.png)
+
+通过一个 64 bit 的 integer key 就可以找到是哪个 node。
+
+关键的数据结构如下：
+
+```c
+#define radix_tree_root		xarray
+struct xarray {
+	spinlock_t	xa_lock;
+/* private: The rest of the data structure is not to be used directly. */
+	gfp_t		xa_flags;
+	void __rcu *	xa_head;
+};
+```
+
+Radix trees 的声明有两种方式：
+
+```c
+#define RADIX_TREE_INIT(name, mask)	XARRAY_INIT(name, mask)
+
+#define RADIX_TREE(name, mask) \ // 使用 name 声明和初始化一个 radix tree
+	struct radix_tree_root name = RADIX_TREE_INIT(name, mask)
+
+#define INIT_RADIX_TREE(root, mask) xa_init_flags(root, mask) // 运行时初始化
+```
+
+后面有需要再进一步分析。
+
 ### [Trees II: red-black trees](https://lwn.net/Articles/184495/)
