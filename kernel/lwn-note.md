@@ -325,6 +325,18 @@ Radix trees 的声明有两种方式：
 #define INIT_RADIX_TREE(root, mask) xa_init_flags(root, mask) // 运行时初始化
 ```
 
+radix trees 最常用的是在内存管理部分，用于跟踪后备存储的 address_space 结构包含一个跟踪与该映射相关的核心页面（？）的 radix tree。同时，address space 中的这棵 radix tree 也能让内存管理代码能够快速找到脏页和写回页。
+
 后面有需要再进一步分析。
 
 ### [Trees II: red-black trees](https://lwn.net/Articles/184495/)
+
+这篇文章没有介绍 red-black tree 的原理，主要是介绍其使用场景和使用原语。
+
+- The anticipatory, deadline, and CFQ I/O schedulers all employ rbtrees to track requests;
+- the packet CD/DVD driver does the same;
+- The high-resolution timer code uses an rbtree to organize outstanding timer requests;
+- The ext3 filesystem tracks directory entries in a red-black tree;
+- Virtual memory areas (VMAs) are tracked with red-black trees, as are epoll file descriptors, cryptographic keys, and network packets in the "hierarchical token bucket" scheduler.
+
+其原理可以看[这里](https://www.jianshu.com/p/e136ec79235c)。
