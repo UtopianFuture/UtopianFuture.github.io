@@ -294,6 +294,12 @@ struct rb_node {
 
 ### [Linux kernel design patterns - part 3](https://lwn.net/Articles/336262/)
 
+这篇文章主要讨论 "midlayer" 这一设计思想。在我的认知中，这一思想很早就出现了吧，忘记在哪本书看到这样一句话“计算机科学领域的任何问题都可以通过增加一个间接的中间层来解决“，这句话几乎概括了计算机软件体系结构的设计要点.整个体系从上到下都是按照严格的层级结构设计的，而这个中间层通过映射来连接上下文。
+
+- **Midlayer Mistake**: When services need to be provided to a number of low-level drivers, provide them with a library rather than imposing them with a midlayer.
+
+这个 pattern 不懂。
+
 ### [Trees I: Radix trees](https://lwn.net/Articles/175432/)
 
 理解 radix tree 看这张图就可以了，
