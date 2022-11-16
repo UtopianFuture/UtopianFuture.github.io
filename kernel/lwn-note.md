@@ -346,3 +346,11 @@ radix trees 最常用的是在内存管理部分，用于跟踪后备存储的 a
 - Virtual memory areas (VMAs) are tracked with red-black trees, as are epoll file descriptors, cryptographic keys, and network packets in the "hierarchical token bucket" scheduler.
 
 其原理可以看[这里](https://www.jianshu.com/p/e136ec79235c)。
+
+### [A retry-based AIO infrastructure](https://lwn.net/Articles/73847/)
+
+这段话是对 AIO 的最佳描述：
+
+> The architecture implemented by these patches is based on **retries**. When an asynchronous file operation is requested, the code gets things started and goes as far as it can until something would block; at that point it makes a note and returns to the caller. Later, when the roadblock has been taken care of, **the operation is retried until the next blocking point is hit**. Eventually, all the work gets done and user space can be notified that the requested operation is complete. The initial work is done in the context of the process which first requested the operation; **the retries are handled out of a workqueue**.
+
+### [Asynchronous I/O and vectored operations](https://lwn.net/Articles/170954/)
