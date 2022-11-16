@@ -354,3 +354,14 @@ radix trees 最常用的是在内存管理部分，用于跟踪后备存储的 a
 > The architecture implemented by these patches is based on **retries**. When an asynchronous file operation is requested, the code gets things started and goes as far as it can until something would block; at that point it makes a note and returns to the caller. Later, when the roadblock has been taken care of, **the operation is retried until the next blocking point is hit**. Eventually, all the work gets done and user space can be notified that the requested operation is complete. The initial work is done in the context of the process which first requested the operation; **the retries are handled out of a workqueue**.
 
 ### [Asynchronous I/O and vectored operations](https://lwn.net/Articles/170954/)
+
+这篇文章主要是讨论怎样修改 read 系统调用的接口，使得 aio 能够批量的处理 I/O 操作。这个 [patch](API changes: interrupt handlers and vectored I/O) 最终确认了 aio 的 API。
+
+```c
+ssize_t (*aio_read) (struct kiocb *iocb, const struct iovec *iov,
+             unsigned long niov, loff_t pos);
+ssize_t (*aio_write) (struct kiocb *iocb, const struct iovec *iov,
+             unsigned long niov, loff_t pos);
+```
+
+### [Asynchronous buffered file I/O](https://lwn.net/Articles/216200/)
