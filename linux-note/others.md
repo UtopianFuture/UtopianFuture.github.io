@@ -1210,3 +1210,11 @@ mask fffffffffffefe00fffffffffffffffffeffffff
 ```
 
 简而言之就是有了 binfmt_misc，如果可执行文件的 mask 和 magic 符合 binfmt_misc 下任一格式，那么就会调用对应的 interpreter 执行该可执行文件，从而达到执行异架构程序的效果。
+
+### Direct I/O
+
+Direct I/O is a feature of the file system whereby **file reads and writes go directly from the applications to the storage device**, bypassing the operating system read and write caches. Direct I/O **is used only** by applications (such as **databases**) that manage their own caches. An application invokes direct I/O by opening a file with the `O_DIRECT` flag.
+
+- The primary benefit of direct I/O is to reduce CPU utilization for file reads and writes by eliminating the copy from the cache to the user buffer;
+
+- A second benefit of direct I/O is that it allows applications to avoid diluting the effectiveness of caching of other files.
