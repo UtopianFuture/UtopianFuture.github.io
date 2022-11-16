@@ -1218,3 +1218,7 @@ Direct I/O is a feature of the file system whereby **file reads and writes go di
 - The primary benefit of direct I/O is to reduce CPU utilization for file reads and writes by eliminating the copy from the cache to the user buffer;
 
 - A second benefit of direct I/O is that it allows applications to avoid diluting the effectiveness of caching of other files.
+
+### Buffered I/O
+
+Buffered I/O passes through the kernel's page cache; it is relatively easy to use and can yield significant performance benefits for data that is accessed multiple times.
