@@ -365,3 +365,21 @@ ssize_t (*aio_write) (struct kiocb *iocb, const struct iovec *iov,
 ```
 
 ### [Asynchronous buffered file I/O](https://lwn.net/Articles/216200/)
+
+> Asynchronous I/O (AIO) operations have the property of not blocking in the kernel. If an operation cannot be completed immediately, it is set in motion and control returns to the calling application while things are still in progress.
+
+看了那么多关于 AIO 的文章，发现还是要看这些英文资料更加简明易懂，fxxk。
+
+这篇文章主要介绍 [Buffered I/O](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/linux-note/others.md#buffered-io) 是怎样处理 AIO 的。大致流程是这样的：
+
+```pseudocode
+for each file page to be read
+	get the page into the page cache // 这里会被 block，需要进行 I/O 操作
+	copy the contents to the user buffer
+```
+
+在 "get the page" 阶段，内核会创建一个 "wait entry" 加入到 `task_struct` 的 "wait queue" 中，然后返回到用户空间继续执行，等到 I/O 操作完成后，AIO queue 相关联的 "wakeup function" 会完成接下来的工作。
+
+"wakeup function" 不会继续在原来发起 I/O 操作的进程上下文执行，而是创建一个 workqueue 线程去检查 I/O 操作的状态，如果需要的话，就返回到原来的进程继续执行。而在返回前，workqueue 线程还需要调整一个自己的 `mm_struct` 从而与发起 I/O 操作的进程共享进程地址空间，这样才能将 page 复制到 "user buffer"。当然，需要复制的可能不止一个 page，如果下一个 page 不在 cache  中，那么 workqueue 线程会确保新的获取 page 操作正常开始了，然后再 "go to sleep"，这样反复，直到整个 I/O 操作完成。
+
+### [Fibrils and asynchronous system calls](https://lwn.net/Articles/219954/)
