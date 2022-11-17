@@ -383,3 +383,28 @@ for each file page to be read
 "wakeup function" 不会继续在原来发起 I/O 操作的进程上下文执行，而是创建一个 workqueue 线程去检查 I/O 操作的状态，如果需要的话，就返回到原来的进程继续执行。而在返回前，workqueue 线程还需要调整一个自己的 `mm_struct` 从而与发起 I/O 操作的进程共享进程地址空间，这样才能将 page 复制到 "user buffer"。当然，需要复制的可能不止一个 page，如果下一个 page 不在 cache  中，那么 workqueue 线程会确保新的获取 page 操作正常开始了，然后再 "go to sleep"，这样反复，直到整个 I/O 操作完成。
 
 ### [Fibrils and asynchronous system calls](https://lwn.net/Articles/219954/)
+
+> The kernel's support for asynchronous I/O is incomplete, and it always has been. While certain types of operations (direct filesystem I/O, for example) work well in an asynchronous mode, many others do not. Often implementing asynchronous operation is hard, and nobody has ever gotten around to making it work. In other cases, patches have been around for some time, but they have not made it into the mainline; AIO patches can be fairly intrusive and hard to merge. Regardless of the reason, things tend to move very slowly in the AIO area.
+
+总的来说就是 AIO 只能在部分 I/O 操作中使用，例如 direct/buffered I/O 等等，然后要增加新的 AIO 操作很困难（？）这就导致 AIO 发展很慢。这也是为什么说 io_uring 是革命性的技术，**将 linux-aio 的所有优良特性带给了普罗大众**（而非局限于数据库这样的细分领域）。
+
+> Could it be that the way the kernel implements AIO is all wrong?  ——Zach Brown
+
+我去，灵魂发问。
+
+Zach Brown 提出使用一个新的名为 "fibril" 的轻量级内核线程来完成所有的 I/O 操作，但貌似这个做法没有被接受。
+
+大致的思路是使用新的用户态 API：
+
+```c
+struct asys_input {
+	int 		syscall_nr; // 系统调用号
+	unsigned long	cookie;
+	unsigned long	nr_args;
+	unsigned long	*args; // 传入的参数
+};
+```
+
+然后内核会为每个 "asys" 请求创建一个 fibril 完成所有的工作并返回用户态。但我感觉这种方法和上面的没有本质区别的。
+
+### [Kernel fibrillation](https://lwn.net/Articles/220897/)
