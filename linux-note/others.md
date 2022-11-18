@@ -1222,3 +1222,7 @@ Direct I/O is a feature of the file system whereby **file reads and writes go di
 ### Buffered I/O
 
 Buffered I/O passes through the kernel's page cache; it is relatively easy to use and can yield significant performance benefits for data that is accessed multiple times.
+
+### [Coroutines](https://dev.to/thibmaek/explain-coroutines-like-im-five-2d9)
+
+A coroutine is similar to a thread (in the sense of multithreading): it is a line of execution, with its own stack, its own local variables, and its own instruction pointer; but **it shares global variables and mostly anything else with other coroutines**. The main difference between threads and coroutines is that, conceptually (or literally, in a multiprocessor machine), **a program with threads runs several threads in parallel**. Coroutines, on the other hand, are collaborative: at any given time, **a program with coroutines is running only one of its coroutines**, and this running coroutine suspends its execution only when it explicitly requests to be suspended(`next(it)`).
