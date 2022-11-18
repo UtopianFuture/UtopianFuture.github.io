@@ -353,6 +353,34 @@ radix trees 最常用的是在内存管理部分，用于跟踪后备存储的 a
 
 > The architecture implemented by these patches is based on **retries**. When an asynchronous file operation is requested, the code gets things started and goes as far as it can until something would block; at that point it makes a note and returns to the caller. Later, when the roadblock has been taken care of, **the operation is retried until the next blocking point is hit**. Eventually, all the work gets done and user space can be notified that the requested operation is complete. The initial work is done in the context of the process which first requested the operation; **the retries are handled out of a workqueue**.
 
+关于 Async [这里](https://dev.to/thibmaek/explain-coroutines-like-im-five-2d9)的解释更加直接。
+
+**The problem async trying to solve is that IOs are slow**, but suffer very little performance hit when parallelized. So if you have 10 IOs that take one second each, running them synchronously one after the other will take 10 seconds:
+
+```pseudocode
+for io in ios:  # 10 iterations
+    io.start()  # so fast we are not going to measure it
+    io.wait()  # takes 1 second
+    process_result(io.result)  # so fast we are not going to measure it
+# Overall - 10 sconds
+```
+
+But - if you can perform all of them **in parallel** it will take one second **total**:
+
+```pseudocode
+for io in ios:
+    io.start()
+    pending.add(io)
+
+while pending:
+    io = pending.poll_one_that_is_ready()
+    process_result(io.result)
+```
+
+The `for` loop is immediate - all it does is start the IOs(doesn't block) and add them to a data structure. In the second loop, the first iteration will take one second on `poll_one_that_is_ready()`. But during that second, the other 9 IOs were also running so they are also ready - and in the following iterations `poll_one_that_is_ready()` will be immediate. Since everything else will also be so much faster than 1 second that it can be considered immediate - the entire thing will run in 1 second.
+
+So, this is what async means - you start an IO and instead of waiting for it to finish you go to do other things(like sending more IOs).
+
 ### [Asynchronous I/O and vectored operations](https://lwn.net/Articles/170954/)
 
 这篇文章主要是讨论怎样修改 read 系统调用的接口，使得 aio 能够批量的处理 I/O 操作。这个 [patch](API changes: interrupt handlers and vectored I/O) 最终确认了 aio 的 API。
@@ -408,3 +436,9 @@ struct asys_input {
 然后内核会为每个 "asys" 请求创建一个 fibril 完成所有的工作并返回用户态。但我感觉这种方法和上面的没有本质区别的。
 
 ### [Kernel fibrillation](https://lwn.net/Articles/220897/)
+
+社区就 "fibril" 这一想法进行进一步的讨论。
+
+LWN 关于 AIO 的讨论还有很多，深入了解的话太耗时间，目前就到此为止，要看的东西太多了。
+
+### [A JIT for packet filters](https://lwn.net/Articles/437981/)
