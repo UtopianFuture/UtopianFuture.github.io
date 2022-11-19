@@ -442,3 +442,28 @@ struct asys_input {
 LWN 关于 AIO 的讨论还有很多，深入了解的话太耗时间，目前就到此为止，要看的东西太多了。
 
 ### [A JIT for packet filters](https://lwn.net/Articles/437981/)
+
+BPF 的设想是能够让应用程序指定一个 filtering function 去根据网络包的 IP 选择它想要的网络包。BPF 最初是工作在用户态的，但是网络流量非常高，如果将所有的网络包都从内核态 copy 到用户态，效率很低，所以直接将 BPF 运行在内核态，过滤不需要的包。
+
+BPF 的组成大概是这样的（我也每搞懂），其拥一小块内存区域，一些算术、逻辑、跳转指令，一个 implicit array 包含对包的限制以及 2 个寄存器：
+
+- 累加器：其用来完成算术操作；
+- 索引寄存器：提供包或内存区域的偏移量（？）；
+
+最简单的 BPF 程序大概长这样：
+
+```pseudocode
+	ldh	[12] // 在包的 [12] 偏移量处加载 16bit 标量（the Ethernet protocol type field）到累加器中
+	jeq	#ETHERTYPE_IP, l1, l2 // 判断该包是不是想要的
+l1:	ret	#TRUE
+l2:	ret	#0
+```
+
+之后的 maintainer 又增加了一些改变：
+
+- JIT compiler：翻译 BPF 代码到 host 汇编代码，每一条 BPF 指令都对应一系列的 x86（或其他架构）指令；
+- 一些汇编语言的 helper 来实现虚拟机的 senmantics（？）；
+- 累加器和索引寄存器直接存储在 CPU 寄存器中；
+- 运行结果存在的 `vmalloc` 分配的一段空间；
+
+### [BPF: the universal in-kernel virtual machine](https://lwn.net/Articles/599755/)
