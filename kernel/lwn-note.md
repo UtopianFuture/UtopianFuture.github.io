@@ -467,3 +467,7 @@ l2:	ret	#0
 - 运行结果存在的 `vmalloc` 分配的一段空间；
 
 ### [BPF: the universal in-kernel virtual machine](https://lwn.net/Articles/599755/)
+
+这篇文章有用的不多，主要是介绍 BPF 的发展史，有兴趣可以看看。
+
+### [Extending extended BPF](https://lwn.net/Articles/603983/)
