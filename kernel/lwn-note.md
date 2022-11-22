@@ -471,3 +471,92 @@ l2:	ret	#0
 这篇文章有用的不多，主要是介绍 BPF 的发展史，有兴趣可以看看。
 
 ### [Extending extended BPF](https://lwn.net/Articles/603983/)
+
+很多地方都提到 BPF 是一种特殊的虚拟机，哪里体现出它虚拟机的特性？
+
+BPF 从网络子系统中移出来，称为一个独立的子系统 `kernel/bpf`，然后 Alexei 又提交了一系列的 patch，使 BPF 能够在用户态发起系统调用，然后在内核态执行，
+
+```c
+static int __sys_bpf(int cmd, bpfptr_t uattr, unsigned int size)
+{ // 使用 wrapper 函数，而不是将不同的功能函数实现为单独的 syscall
+	union bpf_attr attr;
+	int err;
+
+	if (sysctl_unprivileged_bpf_disabled && !bpf_capable())
+		return -EPERM;
+
+	err = bpf_check_uarg_tail_zero(uattr, sizeof(attr), size);
+	if (err)
+		return err;
+	size = min_t(u32, size, sizeof(attr));
+
+	/* copy attributes from user space, may be less than sizeof(bpf_attr) */
+	memset(&attr, 0, sizeof(attr));
+	if (copy_from_bpfptr(&attr, uattr, size) != 0)
+		return -EFAULT;
+
+	err = security_bpf(cmd, &attr, size);
+	if (err < 0)
+		return err;
+
+	switch (cmd) {
+	case BPF_MAP_CREATE:
+		err = map_create(&attr);
+		break;
+	case BPF_MAP_LOOKUP_ELEM:
+		err = map_lookup_elem(&attr);
+		break;
+
+    ...
+
+	case BPF_PROG_BIND_MAP:
+		err = bpf_prog_bind_map(&attr);
+		break;
+	default:
+		err = -EINVAL;
+		break;
+	}
+
+	return err;
+}
+
+SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, size)
+{
+	return __sys_bpf(cmd, USER_BPFPTR(uattr), size);
+}
+```
+
+自然，在内核中运行代码会带来一系列的安全问题，所以 patch 中很大一部分是 'verifier' 的实现，'verifier' 的作用是模拟（？） BPF 代码的执行，如果有问题，那么这个程序就不会被加载到内核执行。其工作大致包含如下几类：
+
+- 跟踪每个 BPF 寄存器，保证它们不会发生“写前读”；
+- 跟踪每个寄存器的数据类型（？）；
+- ld/st 指令只能操作包含正确数据类型的寄存器；
+- 对所有指令进行边界检查；
+- 保证 BPF 程序没有循环，能正常退出；
+
+`bpf_prog_load` 中还定义了一个 `license` 变量，用来检查 BPF 程序是否使用 GPL 协议。
+
+在这一系列的 patch 中，还增加了一个 feature——'map'，
+
+> A map is a simple key/value data store that can be shared between user space and eBPF scripts and is persistent within the kernel.
+
+这个 feature 没有搞懂有什么用。具体的使用可以看[这里](https://lwn.net/Articles/603984/)，
+
+```c
+static struct sock_filter_int prog[] = { // 这就是一个 BPF 程序么
+	BPF_ALU64_REG(BPF_MOV, BPF_REG_6, BPF_REG_1),
+	BPF_LD_ABS(BPF_B, 14 + 9 /* R0 = ip->proto */),
+	BPF_STX_MEM(BPF_W, BPF_REG_10, BPF_REG_0, -4), /* *(u32 *)(fp - 4) = r0 */
+	BPF_ALU64_REG(BPF_MOV, BPF_REG_2, BPF_REG_10),
+	BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4), /* r2 = fp - 4 */
+	BPF_ALU64_IMM(BPF_MOV, BPF_REG_1, MAP_ID), /* r1 = MAP_ID */
+	BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, 0, 0, BPF_FUNC_map_lookup_elem),
+	BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 2),
+	BPF_ALU64_IMM(BPF_MOV, BPF_REG_1, 1), /* r1 = 1 */
+	BPF_RAW_INSN(BPF_STX | BPF_XADD | BPF_DW, BPF_REG_0, BPF_REG_1, 0, 0), /* xadd r0 += r1 */
+	BPF_ALU64_IMM(BPF_MOV, BPF_REG_0, 0), /* r0 = 0 */
+	BPF_EXIT_INSN(),
+};
+```
+
+### [A reworked BPF API](https://lwn.net/Articles/606089/)
