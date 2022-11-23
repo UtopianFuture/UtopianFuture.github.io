@@ -559,4 +559,78 @@ static struct sock_filter_int prog[] = { // 这就是一个 BPF 程序么
 };
 ```
 
-### [A reworked BPF API](https://lwn.net/Articles/606089/)
+### [Persistent BPF objects](https://lwn.net/Articles/664688/)
+
+背景知识了解的差不多了，接下来应该具体学学 BPF 是怎么用的。
+
+### [A thorough introduction to eBPF](https://lwn.net/Articles/740157/)
+
+这篇文章算是对前面几篇文章的总结，以及介绍如何在内核中使用它。
+
+- What can you do with eBPF?
+
+  eBPF 程序是 "attached" 到内核代码路径上的，所以除了最开始的“过滤”的功能，还能用来调试和分析内核。它相比其他分析方法，最大的优点就是“快速”和“安全”；
+
+- The eBPF in-kernel verifier
+
+  前面有介绍；
+
+- The bpf() system call
+
+  前面有介绍；
+
+- eBPF program types
+
+  目前 eBPF 支持的程序类型（这个看 syscal_bpf 很清楚）：
+
+  - `BPF_PROG_TYPE_SOCKET_FILTER`: a network packet filter
+  - `BPF_PROG_TYPE_KPROBE`: determine whether a kprobe should fire or not
+  - `BPF_PROG_TYPE_SCHED_CLS`: a network traffic-control classifier
+  - `BPF_PROG_TYPE_SCHED_ACT`: a network traffic-control action
+  - `BPF_PROG_TYPE_TRACEPOINT`: determine whether a tracepoint should fire or not
+  - `BPF_PROG_TYPE_XDP`: a network packet filter run from the device-driver receive path
+  - `BPF_PROG_TYPE_PERF_EVENT`: determine whether a perf event handler should fire or not
+  - `BPF_PROG_TYPE_CGROUP_SKB`: a network packet filter for control groups
+  - `BPF_PROG_TYPE_CGROUP_SOCK`: a network packet filter for control groups that is allowed to modify socket options
+  - `BPF_PROG_TYPE_LWT_*`: a network packet filter for lightweight tunnels
+  - `BPF_PROG_TYPE_SOCK_OPS`: a program for setting socket parameters
+  - `BPF_PROG_TYPE_SK_SKB`: a network packet filter for forwarding packets between sockets
+  - `BPF_PROG_CGROUP_DEVICE`: determine if a device operation should be permitted or not
+
+  还可以继续增加新的类型。
+
+- eBPF data structures
+
+  eBPF 程序使用的主要的数据结构就是 eBPF map。map 能够让数据在用户态和内核态之间来回传送。而数据是通过 key 去索引的，所以将其称之为 map。
+
+  map 通过 `bpf` 系统调用创建，创建成功后会返回一个 `fd`，`fd` 销毁后 map 也就销毁了。内核中支持如下 map 类型：
+
+  - `BPF_MAP_TYPE_HASH`: a hash table
+  - `BPF_MAP_TYPE_ARRAY`: an array map, optimized for fast lookup speeds, often used for counters
+  - `BPF_MAP_TYPE_PROG_ARRAY`: an array of file descriptors corresponding to eBPF programs; used to implement jump tables and sub-programs to handle specific packet protocols
+  - `BPF_MAP_TYPE_PERCPU_ARRAY`: a per-CPU array, used to implement histograms of latency
+  - `BPF_MAP_TYPE_PERF_EVENT_ARRAY`: stores pointers to `struct perf_event`, used to read and store perf event counters
+  - `BPF_MAP_TYPE_CGROUP_ARRAY`: stores pointers to control groups
+  - `BPF_MAP_TYPE_PERCPU_HASH`: a per-CPU hash table
+  - `BPF_MAP_TYPE_LRU_HASH`: a hash table that only retains the most recently used items
+  - `BPF_MAP_TYPE_LRU_PERCPU_HASH`: a per-CPU hash table that only retains the most recently used items
+  - `BPF_MAP_TYPE_LPM_TRIE`: a longest-prefix match trie, good for matching IP addresses to a range
+  - `BPF_MAP_TYPE_STACK_TRACE`: stores stack traces
+  - `BPF_MAP_TYPE_ARRAY_OF_MAPS`: a map-in-map data structure
+  - `BPF_MAP_TYPE_HASH_OF_MAPS`: a map-in-map data structure
+  - `BPF_MAP_TYPE_DEVICE_MAP`: for storing and looking up network device references
+  - `BPF_MAP_TYPE_SOCKET_MAP`: stores and looks up sockets and allows socket redirection with BPF helper functions
+
+  所有的 map 在 eBPF 程序和用户程序中都可以通过 `bpf_map_lookup_elem` 和 `bpf_map_update_elem` 函数访问。
+
+- How to write an eBPF program
+
+  > Historically, it was necessary to write eBPF assembly by hand and use the kernel's `bpf_asm` assembler to generate BPF bytecode.
+
+  好家伙，如果只能写汇编，那发展困难啊！
+
+  现在可以直接用 C 写 eBPF 程序，然后用 LLVM Clang 使用 `-march=bpf` 参数编译成可执行文件，然后再用 `bpf` 系统调用加 `BPF_PROG_LOAD` 命令加载到内核中执行。
+
+  在内核 `samples/bpf` 路径中有 bpf 程序的简单例子。带有 `_kern.c` 后缀的就是 bpf 程序，带有 `_user.c` 后缀的是使用这个 bpf 程序的用户程序。但是这种用法有个问题，需要将 bpf 程序编译到内核源码中才能使用，比较麻烦，所以又有了下面介绍的 BCC。
+
+### [An introduction to the BPF Compiler Collection](https://lwn.net/Kernel/Index/)
