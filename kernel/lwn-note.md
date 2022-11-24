@@ -634,3 +634,58 @@ static struct sock_filter_int prog[] = { // 这就是一个 BPF 程序么
   在内核 `samples/bpf` 路径中有 bpf 程序的简单例子。带有 `_kern.c` 后缀的就是 bpf 程序，带有 `_user.c` 后缀的是使用这个 bpf 程序的用户程序。但是这种用法有个问题，需要将 bpf 程序编译到内核源码中才能使用，比较麻烦，所以又有了下面介绍的 BCC。
 
 ### [An introduction to the BPF Compiler Collection](https://lwn.net/Kernel/Index/)
+
+介绍了如何写 eBPF 程序，有几个非常有用的网站：
+
+- [BPF Compiler Collection](https://github.com/iovisor/bcc)
+
+- [the BCC tools](https://www.brendangregg.com/ebpf.html)
+
+#### Example - Hello World
+
+在 `bcc/examples` 中有一个简单的例子 `hello_world.py`（python 的学习也要提上日程啊），
+
+```c
+#!/usr/bin/python
+# Copyright (c) PLUMgrid, Inc.
+# Licensed under the Apache License, Version 2.0 (the "License")
+
+# run in project examples directory with:
+# sudo ./hello_world.py"
+# see trace_fields.py for a longer example
+
+from bcc import BPF
+
+# This may not work for 4.17 on x64, you need replace kprobe__sys_clone with kprobe____x64_sys_clone
+BPF(text='int kprobe__sys_clone(void *ctx) { bpf_trace_printk("Hello, Clone!\\n"); return 0; }').trace_print()
+```
+
+这个 eBPF 程序会在每次执行 `clone` 系统调用时打印 `Hello, Clone!`。`kprobe__` 前缀就是 BCC 工具链将一个 kprobe attach 到内核 symbol 的标识。
+
+text="..." 中的就是要执行的 eBPF 程序，BPF() 和 `trace_print()` 就是将 eBPF 代码加载到内核中运行的函数。
+
+正确执行会产生如下输出：
+
+```
+ThreadPoolForeg-1323464 [003] d...1 343831.036264: bpf_trace_printk: Hello, Clone!'
+ThreadPoolSingl-913145  [006] d...1 343835.207102: bpf_trace_printk: Hello, Clone!'
+ThreadPoolForeg-1302374 [004] d...1 343842.572502: bpf_trace_printk: Hello, Clone!'
+ThreadPoolForeg-1318650 [003] d...1 343842.576755: bpf_trace_printk: Hello, Clone!'
+ThreadPoolForeg-1325165 [005] d...1 343842.580014: bpf_trace_printk: Hello, Clone!'
+ThreadPoolForeg-1325165 [005] d...1 343842.581470: bpf_trace_printk: Hello, Clone!'
+```
+
+输出的格式为：
+
+- 触发 kprobe 的进程；
+- 进程 ID；
+- 该进程运行的 CPU；
+- 时间戳；
+
+其实这个简单的 eBPF 程序其运行的流程就是上面介绍的，只不过所有复杂的工作都由 bcc 完成了，比如使用 LLVM 编译成可执行文件，调用 `bpf` 系统调用，使用 `BPF_PROG_LOAD` 命令将其加载到内核中。
+
+#### More Exaples
+
+更多 eBPF 的用法，先要懂一些 python 语法。
+
+### [Some advanced BCC topics](https://lwn.net/Articles/747640/)
