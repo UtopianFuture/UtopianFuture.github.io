@@ -689,3 +689,68 @@ ThreadPoolForeg-1325165 [005] d...1 343842.581470: bpf_trace_printk: Hello, Clon
 更多 eBPF 的用法，先要懂一些 python 语法。
 
 ### [Some advanced BCC topics](https://lwn.net/Articles/747640/)
+
+这篇文章介绍了 BPF 其他的用法。
+
+BCC 提供了 `TRACEPOINT_PROBE` 宏，它声明了一个被挂载到 tracepoint 的函数，
+
+```python
+#!/usr/bin/env python
+
+    from bcc import BPF
+    from time import sleep
+
+    program = """
+    	# PF_HASH 固定用法，callers 是创建的 map，u64 是默认的 value，
+    	# unsigned long 是 key
+        BPF_HASH(callers, u64, unsigned long);
+
+		# 参数为 tracepoint 的类型和要挂载的 tracepoint
+        TRACEPOINT_PROBE(kmem, kmalloc) {
+        	# kmalloc 传递的参数能够通过 args 访问
+        	# args->call_site 就是 kmalloc 函数调用者的地址
+            u64 ip = args->call_site;
+            unsigned long *count;
+            unsigned long c = 1;
+
+			# 根据地址来判断不同的调用者，并计算不同的调用者执行 kmalloc 的次数
+            count = callers.lookup((u64 *)&ip);
+            if (count != 0)
+                c += *count;
+
+			# 将次数存储在创建的 hash table 中
+			# 之后也可以通过 lookup 访问 hash table
+            callers.update(&ip, &c);
+
+            return 0;
+        }
+    """
+    b = BPF(text=program)
+
+    while True:
+        try:
+            sleep(1)
+            for k,v in sorted(b["callers"].items()): # callers 就是 hash table
+                # b.ksym() 函数能够将调用函数地址转换成符号
+                print ("%s %u" % (b.ksym(k.value), v.value))
+            print
+        except KeyboardInterrupt: # python 直接定义了一个键盘终端啊
+            exit()
+```
+
+这就是使用 BCC 调试内核的过程。
+
+因为 BCC 中集成了 LLVM 的编译器，所以还可以使用 `cflags` 来控制编译过程，
+
+```python
+program = """
+	...
+
+""", cflags=["-w", "-DRETURNCODE=%s" % ret, "-DCTXTYPE=%s" % ctxtype,
+			 "-DMAPTYPE=\"%s\"" % maptype],
+     device=offload_device)
+```
+
+当然还可以使用 debugging flags 来调试。BCC 项目中有很多相关的例子，需要多看看源码，这比什么网上的教程都管用。
+
+### [Using user-space tracepoints with BPF](https://lwn.net/Articles/753601/)
