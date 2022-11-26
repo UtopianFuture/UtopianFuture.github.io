@@ -754,3 +754,9 @@ program = """
 当然还可以使用 debugging flags 来调试。BCC 项目中有很多相关的例子，需要多看看源码，这比什么网上的教程都管用。
 
 ### [Using user-space tracepoints with BPF](https://lwn.net/Articles/753601/)
+
+User Statically-Defined Tracing(USDT) ，BPF 可以用这种 probe 来分析、调试用户态程序（以后调试可以试试用这个）。
+
+这里分析了一些 BCC 中的例子，之后有需要再详细看。
+
+### [Binary portability for BPF programs](https://lwn.net/Articles/773198/)
