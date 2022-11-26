@@ -760,3 +760,9 @@ User Statically-Defined Tracing(USDT) ，BPF 可以用这种 probe 来分析、�
 这里分析了一些 BCC 中的例子，之后有需要再详细看。
 
 ### [Binary portability for BPF programs](https://lwn.net/Articles/773198/)
+
+使用 BPF 分析内核有个问题，某个结构体中的变量的偏移是随着架构、内核配置的改变而改变的，如果 BPF 没有正确获取到变量的偏移量，那么程序就无法获取正确的结果。
+
+对于问题的场景和解决方法还无法理解。
+
+### [Concurrency management in BPF](https://lwn.net/Articles/779120/)
