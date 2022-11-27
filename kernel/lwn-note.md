@@ -766,3 +766,48 @@ User Statically-Defined Tracing(USDT) ，BPF 可以用这种 probe 来分析、�
 对于问题的场景和解决方法还无法理解。
 
 ### [Concurrency management in BPF](https://lwn.net/Articles/779120/)
+
+eBPF 的 map 能够在内核态和用户态之间传递信息，也能在多个 eBPF 程序之间共享信息，这就会导致并发问题。所以 developers 讨论需要增加原子操作和自旋锁机制，然后也讨论了 BPF 的内存模型（BPF 有内存模型么？）。
+
+#### BPF spinlock
+
+`bpf_spin_lock` 的用法和一般的 spinlock 一样，
+
+```c
+struct hash_elem {
+	int cnt;
+   	struct bpf_spin_lock lock;
+};
+
+struct hash_elem *val = bpf_map_lookup_elem(&hash_map, &key);
+if (val) {
+   	bpf_spin_lock(&val->lock);
+   	val->cnt++;
+  	bpf_spin_unlock(&val->lock);
+}
+```
+
+由于 eBPF 程序运行在要求严格的内核态，所以其使用 spinlock 要十分小心，[这里](https://lwn.net/ml/netdev/20190131234012.3712779-2-ast@kernel.org/)介绍了具体的要求，
+
+- bpf_spin_lock is only allowed inside HASH and ARRAY maps.
+- BTF description of the map is mandatory for safety analysis.
+- bpf program can take one bpf_spin_lock at a time, since two or more can cause dead locks.
+- only one 'struct bpf_spin_lock' is allowed per map element. It drastically simplifies implementation yet allows bpf program to use any number of bpf_spin_locks.
+- when bpf_spin_lock is taken the calls (either bpf2bpf or helpers) are not allowed.
+- bpf program must bpf_spin_unlock() before return.
+- bpf program can access 'struct bpf_spin_lock' only via bpf_spin_lock()/bpf_spin_unlock() helpers.
+- load/store into 'struct bpf_spin_lock lock;' field is not allowed.
+- to use bpf_spin_lock() helper the BTF description of map value must be a struct and have 'struct bpf_spin_lock anyname;' field at the top level. Nested lock inside another struct is not allowed.
+- syscall map_lookup doesn't copy bpf_spin_lock field to user space.
+- syscall map_update and program map_update do not update bpf_spin_lock field.
+- bpf_spin_lock cannot be on the stack or inside networking packet. bpf_spin_lock can only be inside HASH or ARRAY map value.
+- bpf_spin_lock is available to root only and to all program types.
+- bpf_spin_lock is not allowed in inner maps of map-in-map.
+- ld_abs is not allowed inside spin_lock-ed region.
+- tracing progs and socket filter progs cannot use bpf_spin_lock due to insufficient preemption checks
+
+#### The BPF memory model
+
+目前社区对于 BPF 内存模型的做法就是和底层架构保持一致，没有更好的做法。
+
+### [Managing sysctl knobs with BPF](https://lwn.net/Articles/785263/)
