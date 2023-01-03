@@ -819,10 +819,16 @@ guanshun@guanshun-ubuntu /p/sys> ls
 abi/  debug/  dev/  fs/  kernel/  net/  user/  vm/
 ```
 
-这个功能平时没有遇到过。
+这个功能平时没有用到过。
 
 OK，但是如果想控制 sysctl knob 访问权限，目前没有相应的解决方案，要不就是限制对整个 /proc 的访问，无法做到细粒度的控制。使用 BPF 可以做到这点。BPF 增加了一个新的程序类型 `BPF_PROG_TYPE_CGROUP_SYSCTL` 和一个新的操作新的 bpf 系统调用操作 `BPF_CGROUP_SYSCTL`。也就是说 BPF 可以像 cgroup 管理硬件资源那样控制用户对 sysctl knob 的访问。关于 cgroup 可以看 [Namespaces](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/Namespaces.md) 和 [Control group](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/kernel/Control-groups.md) 两篇文章。
 
 我的理解是，将 BPF 程序 attach 到对应的 sysctl knob 上后，当用户要访问该 sysctl knob 就是触发该 BPF 程序，根据系统调用传来的数据，“过滤”掉没有权限的访问。
 
 ### [BPF: what's good, what's coming, and what's needed](https://lwn.net/Articles/787856/)
+
+### [A formal kernel memory-ordering model (part 1)](https://lwn.net/Articles/718628/)
+
+这个系列的文章我开始以为是介绍 linux 内存模型的，但其是因为内存模型过于复杂，提出一个自动态工具 - [herd](https://github.com/herd/herdtools7/) 来分析代码是否符合特定架构的内存模型。这篇文章是介绍工具开发的原则，在没有了解工具的使用前这篇文章看不懂。当然，如果想了解 linux [强](https://mirrors.edge.kernel.org/pub/linux/kernel/people/paulmck/LWNLinuxMM/StrongModel.html)/[弱](https://mirrors.edge.kernel.org/pub/linux/kernel/people/paulmck/LWNLinuxMM/WeakModel.html)内存模型，文章也给出了传送门。之后可以分析。
+
+### [A formal kernel memory-ordering model (part 2)](https://lwn.net/Articles/720550/)
