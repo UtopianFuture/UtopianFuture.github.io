@@ -831,4 +831,20 @@ OK，但是如果想控制 sysctl knob 访问权限，目前没有相应的解�
 
 这个系列的文章我开始以为是介绍 linux 内存模型的，但其是因为内存模型过于复杂，提出一个自动态工具 - [herd](https://github.com/herd/herdtools7/) 来分析代码是否符合特定架构的内存模型。这篇文章是介绍工具开发的原则，在没有了解工具的使用前这篇文章看不懂。当然，如果想了解 linux [强](https://mirrors.edge.kernel.org/pub/linux/kernel/people/paulmck/LWNLinuxMM/StrongModel.html)/[弱](https://mirrors.edge.kernel.org/pub/linux/kernel/people/paulmck/LWNLinuxMM/WeakModel.html)内存模型，文章也给出了传送门。之后可以分析。
 
-### [A formal kernel memory-ordering model (part 2)](https://lwn.net/Articles/720550/)
+这个系列的文章不适合 lwn_note 的主题，太复杂了，遂另起[一篇](./Memory-Order.md)分析。
+
+### [ARM's multiply-mapped memory mess](https://lwn.net/Articles/409689/)
+
+内存可以分为 "normal memory" 和 "device memory"，两者具有不同的性质。MMU 也会根据不同的内存采用不同的缓存机制，如 ARM 将 ARM 映射为 "normal memory"，并采用 "writeback caching" 机制，而 "device memory" 是 "uncached" 的。
+
+`ioremap` 系统调用是用来映射 I/O 内存给 CPU 使用的，这些内存映射为 "device memory"，但是当使用 `ioremap` 创建一个 RAM 的映射时，事情变得棘手起来。问题在于 RAM 的多重映射导致其具有多重内存属性（？）。在 ARM 架构第 6 个版本中这种行为被定义成 "unpredictable"，可能会导致数据泄露。但是它又允许这样的映射（？），这让很多驱动开发人员通过 `ioremap` 重映射 RAM。
+
+**这里有个不理解的点，为什么 RAM 不能多重映射？然后其他架构是什么情况？**
+
+之后就是内核维护者和驱动开发人员的扯皮，内核开发者为了安全直接让 `ioremap` 无法映射 RAM，很多驱动没法跑了。
+
+最后的解决方案是在内核启动时保留一部分 RAM 内存留作它用，驱动就可以从这块内存池中申请内存。
+
+内核开发的通常原则是任何人修改了 API 也要负责搞定该行为带来的混乱。
+
+### [ARM wrestling](https://lwn.net/Articles/437162/)
