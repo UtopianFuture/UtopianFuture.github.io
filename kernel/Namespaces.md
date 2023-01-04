@@ -2,11 +2,22 @@
 
 namespace 的学习从 lwn 的[这个](https://lwn.net/Articles/531114/#series_index)系列文章开始。
 
+在学习之前有一个疑惑： namespaces 和 cgroup 之间有什么区别？
+
+两者都是内核的 feature，用来隔离进程的，它们可以一起使用，也可以分开使用。namespaces 是将一组进程和系统其他部分隔离开的机制，其有下面 6 个 namaspaces，每个 namespaces 对于系统有它自己的视角；而 cgroups 是为每个 group 分配资源的机制，其可以控制 4 种资源的分配：
+
+- CPU：限制每 group 进程的 CPU 使用时间；
+- Memory：限制内存使用量；
+- I/O：限制磁盘等使用量；
+- Network：限制网络带宽；
+
+感觉可以简单理解为 namespace 隔离内核资源，而 cgroup 隔离物理资源。
+
 ### [Namespaces in operation, part 1: namespaces overview](https://lwn.net/Articles/531114/)
 
-首先 namaspace 的提出是为了支持 containers——一种轻量化虚拟机的实现。
+首先 namaspaces 的提出是为了支持 containers——一种轻量化虚拟机的实现。
 
-按照在内核中的实现的顺序，文章介绍了几种 namespace：
+按照在内核中的实现的顺序，文章介绍了几种 namespaces：
 
 - mount namespaces：其隔离了文件系统的挂载点，使得每个 namespace 的进程看到的文件系统结构是不一样的。然后 mount 和 umount 系统调用操作的也不再是全局变量，而是仅能影响到每个 namespace。同时该 namespace 能够构成一个主从树状结构；
 - UTS namespaces: 该 namespace 影响的主要是 uname 系统调用（不知道这个 uname 系统调用和 uname 命令是不是同一个东西，如果是同一个东西，那么就很好理解），其隔离两个系统标识符 `nodename` 和 `domainname`，使得每个 container 能够拥有自己的 hostname 和 [NIS](https://en.wikipedia.org/wiki/Network_Information_Service) domain name；
@@ -15,7 +26,7 @@ namespace 的学习从 lwn 的[这个](https://lwn.net/Articles/531114/#series_i
 - network namespaces: 每个 network namespace 有它们自己的网络设备（虚拟的）、IP 地址、IP 路由表、端口号等等；
 - user namespaces: 没搞懂这个和 PID 有什么区别，user and group ID 是啥？内核中有这个结构么。但是它能实现的功能很有意思，一个在 namespace 外普通特权级（这里说的不准确，那有什么普通特权级，应该是特权级为 3）的进程在 namespace 内能够有成为特权级 0 的进程；
 
-应该还有其他的 namespace 会慢慢开发出来。
+应该还有其他的 namespaces 会慢慢开发出来。
 
 ### [Namespaces in operation, part 2: the namespaces API](https://lwn.net/Articles/531381/)
 

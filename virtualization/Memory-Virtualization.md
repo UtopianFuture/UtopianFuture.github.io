@@ -449,9 +449,9 @@ static void ram_block_add(RAMBlock *new_block, Error **errp)
 
 而除了 ram 会分配内存外，pc.bios, pc.rom, vga.vram 等虚拟设备的 ROM 也会分配虚拟机的物理内存。但是 MMIO 就不会分配物理内存，而是截获对 MMIO 的访问，调用相应的虚拟设备。
 
-ok，上文涉及到的用来做内存虚拟化的结构体很多：RAMBlock，MemoryRegion，AddressSpace，MemoryRegionSection，KVMSlot和kvm_userspace_memory_region，我们这里总结一下：
+ok，上文涉及到的用来做内存虚拟化的结构体很多：RAMBlock，MemoryRegion，AddressSpace，MemoryRegionSection，KVMSlot 和 kvm_userspace_memory_region，我们这里总结一下：
 
-ROMBlock 才是真正分配了host内存的地方，如果把它直接理解成一个内存条也是非常合适的，但实际上不仅仅如此，还有设备自有内存，显存。它的主要元素就是mr，host, offset 和 used_length。
+ROMBlock 才是真正分配了 host 内存的地方，如果把它直接理解成一个内存条也是非常合适的，但实际上不仅仅如此，还有设备自有内存，显存。它的主要元素就是 mr，host, offset 和 used_length。
 
 ```c
 struct RAMBlock {
