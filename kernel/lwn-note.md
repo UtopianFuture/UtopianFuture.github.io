@@ -862,3 +862,7 @@ ARM 架构的内核代码存在一个问题，每一代芯片和上一代相差�
 看下面的评论，大家相互扯皮也很有意思。
 
 ### [Rationalizing the ARM tree](https://lwn.net/Articles/439314/)
+
+好家伙，说干就干。问题不仅仅是在 ARM 社区内部讨论，linus 提出了意见，很多 maintainer 在将架构无关的代码分离出来。大家的执行力真的高。
+
+### [ARM kernel consolidation](https://lwn.net/Articles/443510/)
