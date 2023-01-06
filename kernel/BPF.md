@@ -6,6 +6,10 @@
 
 网上关于 eBPF 的资料很多，头昏眼花，无从下手，推荐 [Brendan Gregg](https://www.brendangregg.com/blog/2019-01-01/learn-ebpf-tracing.html)，他的博客写了从入门到高级应该怎么学。这里先搞懂 bcc 中 11 个 BPF 程序。
 
+所有的 bpf 工具如下图所示，
+
+![bpf tool](https://www.brendangregg.com/Perf/bcc_tracing_tools.png)
+
 ### execsnoop
 
 首要要学习很多 python 的东西，不然代码看不懂。
@@ -212,6 +216,163 @@ int do_ret_sys_execve(struct pt_regs *ctx)
   This attempts to safely **read size bytes from user address space to the BPF stack**, so that BPF can later operate on it. For safety, all user address space memory reads must pass through `bpf_probe_read_user()`.
 
 就目前看到的，BPF 确实能够帮助分析内核，所以最终目标就是学会根据自己的需求编写 BPF 程序。
+
+### opensnoop
+
+从图中来看，execsnoop 和 opensnoop 都是跟踪系统调用的，为什么 BPF 程序完全不一样呢？
+
+其是并没有不一样，只是将程序分开来写，
+
+```python
+    bpf_text += bpf_text_kfunc_header_open.replace('FNNAME', fnname_open)
+    bpf_text += bpf_text_kfunc_body
+
+    bpf_text += bpf_text_kfunc_header_openat.replace('FNNAME', fnname_openat)
+    bpf_text += bpf_text_kfunc_body
+```
+
+因为 open 系统调用有 `open`、`openat` 和 `openat2` 三种形式，需要分开考虑。python 好方便啊！！！
+
+- BPF_HASH
+
+  Creates a hash map (associative array) named ```name```, with optional parameters.
+
+  Defaults: ```BPF_HASH(name, key_type=u64, leaf_type=u64, size=10240)```
+
+  For example:
+
+  ```C
+  BPF_HASH(start, struct request *);
+  ```
+
+  This creates a hash named ```start``` where the key is a ```struct request *```, and the value defaults to u64.
+
+  map 能够让数据在用户态和内核态之间来回传送。而数据是通过 key 去索引的，所以将其称之为 map。
+
+- kretfuncs
+
+  This is a macro that instruments the kernel function via trampoline *after* the function is executed.
+
+  For example:
+  ```C
+  KRETFUNC_PROBE(do_sys_open, int dfd, const char *filename, int flags, int mode, int ret)
+  {
+      ...
+  ```
+
+  This instruments the `do_sys_open` kernel function and **make its arguments accessible as standard argument values together with its return value**.
+
+我们以 `open` 系统调用为例分析，
+
+```C
+#include <uapi/linux/ptrace.h>
+#include <uapi/linux/limits.h>
+#include <linux/sched.h>
+#ifdef FULLPATH
+#include <linux/fs_struct.h>
+#include <linux/dcache.h>
+
+#define MAX_ENTRIES 32
+
+enum event_type {
+    EVENT_ENTRY,
+    EVENT_END,
+};
+#endif
+
+struct val_t {
+    u64 id;
+    char comm[TASK_COMM_LEN];
+    const char *fname;
+    int flags; // EXTENDED_STRUCT_MEMBER
+};
+
+struct data_t {
+    u64 id;
+    u64 ts;
+    u32 uid;
+    int ret;
+    char comm[TASK_COMM_LEN];
+#ifdef FULLPATH
+    enum event_type type;
+#endif
+    char name[NAME_MAX];
+    int flags; // EXTENDED_STRUCT_MEMBER
+};
+
+BPF_PERF_OUTPUT(events);
+BPF_HASH(infotmp, u64, struct val_t); // 不用 HASH，用 execsnoop 中的方法可以么
+
+int trace_return(struct pt_regs *ctx)
+{
+    u64 id = bpf_get_current_pid_tgid();
+    struct val_t *valp;
+    struct data_t data = {};
+
+    u64 tsp = bpf_ktime_get_ns();
+
+    valp = infotmp.lookup(&id);
+    if (valp == 0) {
+        // missed entry
+        return 0;
+    }
+
+    bpf_probe_read_kernel(&data.comm, sizeof(data.comm), valp->comm);
+    bpf_probe_read_user_str(&data.name, sizeof(data.name), (void *)valp->fname);
+    data.id = valp->id;
+    data.ts = tsp / 1000;
+    data.uid = bpf_get_current_uid_gid();
+    data.flags = valp->flags; // EXTENDED_STRUCT_MEMBER
+    data.ret = PT_REGS_RC(ctx);
+
+    events.perf_submit(ctx, &data, sizeof(data)); // 将数据返回到用户态
+
+    infotmp.delete(&id);
+
+    return 0;
+}
+
+// 为什么和 open 系统调用不一样？
+/*
+ * SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t, mode)
+ */
+int syscall__trace_entry_open(struct pt_regs *ctx, const char __user *filename, int flags)
+{
+    struct val_t val = {};
+    u64 id = bpf_get_current_pid_tgid();
+    u32 pid = id >> 32; // PID is higher part
+    u32 tid = id;       // Cast and get the lower part
+    u32 uid = bpf_get_current_uid_gid();
+
+    PID_TID_FILTER // 这些在 python 源码中会替换掉
+    UID_FILTER
+    FLAGS_FILTER
+
+    if (container_should_be_filtered()) {
+        return 0;
+    }
+
+    if (bpf_get_current_comm(&val.comm, sizeof(val.comm)) == 0) {
+        val.id = id;
+        val.fname = filename;
+        val.flags = flags; // EXTENDED_STRUCT_MEMBER
+        infotmp.update(&id, &val); // 放入到 map 中
+    }
+
+    return 0;
+};
+```
+
+然后调用 `attach_kprobe` 将这些函数 attach 到 `open` 系统调用上，
+
+```python
+# initialize BPF
+b = BPF(text=bpf_text)
+b.attach_kprobe(event=fnname_open, fn_name="syscall__trace_entry_open")
+b.attach_kretprobe(event=fnname_open, fn_name="trace_return")
+```
+
+### ext4slower
 
 ### Reference
 
