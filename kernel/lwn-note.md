@@ -866,3 +866,20 @@ ARM 架构的内核代码存在一个问题，每一代芯片和上一代相差�
 好家伙，说干就干。问题不仅仅是在 ARM 社区内部讨论，linus 提出了意见，很多 maintainer 在将架构无关的代码分离出来。大家的执行力真的高。
 
 ### [ARM kernel consolidation](https://lwn.net/Articles/443510/)
+
+这篇文章介绍了 ARM 内核代码的改进，主要分为如下几个方面：
+
+- Code organization
+
+  这部分由于缺乏对 arm 内核的了解，无法理解；
+
+- Git tree
+
+看了 2.6.0 版本的内核，mach 目录下的代码很简单啊，和最新的内核代码结构上没有太大差别，那么文章中说的代码冗余体现在哪里？
+
+存在两个问题：
+
+- 对 arch/arm 内核代码结构不熟悉；
+- 对 arm 架构没有整体的认识。这个方面可以先从看看 v8 的指令集手册。
+
+### [Reworking the DMA mapping code](https://lwn.net/Articles/467509/)
