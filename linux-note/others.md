@@ -1231,12 +1231,11 @@ A coroutine is similar to a thread (in the sense of multithreading): it is a lin
 
 - **AP=Application Processor=应用芯片**=应用处理器=主 CPU=主控芯片=SoC：用来跑 app 的。往往集成其他硬件功能模块
 
-  - WiFi芯片=802.11 b/g/n 相关芯片
+  - WiFi 芯片=802.11 b/g/n 相关芯片
   - 蓝牙芯片=Bluetooth 4/5
-  - NFC芯片
+  - NFC 芯片
 
-- **AF=Baseband Processor=基带芯片**=射频套件：用来处理手机的(3G/4G/5G的GSM/CDMA/LTE/NR不同网络制式）无线信号。包含：
-
+- **AF=Baseband Processor=基带芯片**=射频套件：用来处理手机的(3G/4G/5G的GSM/CDMA/LTE/NR 不同网络制式）无线信号。包含：
   - **射频=RF=Radio Frequency=无线电频率**
     - 射频发送和接收
     - 频率合成
