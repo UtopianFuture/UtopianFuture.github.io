@@ -9,3 +9,5 @@
 [kernel map](https://makelinux.github.io/kernel/map/)
 
 [蜗窝科技]([蜗窝科技](http://www.wowotech.net/))
+
+[ARM 架构](https://www.zhihu.com/people/zhong-zou-ci-jian-lu/posts)
