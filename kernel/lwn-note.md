@@ -27,7 +27,7 @@
 
 非对齐访问可以看看[这篇](https://www.sunxidong.com/532.html)文章，或者[这篇](https://www.kernel.org/doc/Documentation/unaligned-memory-access.txt#:~:text=Unaligned%20memory%20accesses%20occur%20when,be%20an%20unaligned%20memory%20access.)英文文章，当然这篇 lwn 的文章也介绍了什么是非对齐访问。总的来说，CPU 在硬件设计上只能进行对其访问，但是 x86 内核能够支持非对齐访问，一般的做法是多次读取对齐内存，然后进行数据拼接，从而实现非对齐访问。
 
-而非对齐访问会导致分t锁问题，因为一个原子操作可能会被分成访问多个 cacheline，然后根据 cache 一致性协议，需要在多个 CPU 的 cache 中保持数据的正确性，这会导致不可预料的性能和安全问题。因此嵌入式和高性能设备应该避免使用非对齐访问（平时开发也尽量避免吧，不然要是遇到 bug 都要怀疑人生）。
+而非对齐访问会导致分 t 锁问题，因为一个原子操作可能会被分成访问多个 cacheline，然后根据 cache 一致性协议，需要在多个 CPU 的 cache 中保持数据的正确性，这会导致不可预料的性能和安全问题。因此嵌入式和高性能设备应该避免使用非对齐访问（平时开发也尽量避免吧，不然要是遇到 bug 都要怀疑人生）。
 
 目前 intel 的做法是提供了一个异常标志位 "Alignment Check"(`#AC`)，来表示硬件检测到非对其访问。当发生非对齐访问时，CPU 会锁住整个 memory bus，这样在访问多个 cacheline 时就不会有其他 CPU 的访存操作来影响 cache，这样来解决 cache 一致性问题。但是这样又会导致一系列的问题，比如当一个 guestos 发生非对齐访问时，其他的 guestos 都不能运行。
 
@@ -56,7 +56,7 @@
 
 /linux-5.15/drivers/md/bcache/super.c
 
-```
+```plain
 /*
  * Module hooks
  */
@@ -74,7 +74,7 @@ MODULE_AUTHOR("Kent Overstreet <kent.overstreet@gmail.com>");
 MODULE_LICENSE("GPL");
 ```
 
-### [How likely should likely() be?](https://lwn.net/Articles/70473/)
+### [How likely should likely() be](https://lwn.net/Articles/70473/)
 
 这篇文章主要是介绍 `likely()/unlikely()`。因为分支预测的原因，可以通过这两个“函数”暗示编译器这个条件判断的结果，从而提高性能，但是这两个函数在不同架构上的实现是不一样的，对于那些站在更高角度的 maintainer 来说，这样不是很好，应该用 `probable(condition, percent)` 这样的 macro 来替换。其给出的原因是使用这两个 macro 需要 programmer 去判断条件判断的结果，万一判断错了，带来的代价会很大。
 
@@ -152,7 +152,7 @@ CMA(contiguous memory allocator) 能够为驱动提供大块的、连续的 DMA 
 在云计算环境中，能够通过 "user-aeecss attacks" 和 "physical-access attacks" 来从一个 guest 访问到其他 guest 的内存或者在 host 中访问所有 guest 的内存。该加密技术能够解决这一问题，其实现是一个 AMD Secure Processor，其中包含两个特性：SME(Secure Memory Encryption) 和 SEV(Secure Encrypted Virtualization)，目前将一个单独的 32-bit ARM Cortex A5 集成到 SoC 中。
 
 - SME 比较简单。其在 boot 阶段产生一个随机数来透明的加密在页表中所有被标记为 "encrypted" 的页，OS 或 hypervisor 管理哪些页会被加密，这个标记其实就是一个比特位。该特性是为了防范 "physical-access attacks" 的；
-- SVE 更加复杂。它有多个 encryption keys 去保护所有的 guest 内存不受其他 guest 和 hypervisor 的攻击。在 boot 阶段，hypervisor 会在 guest 和 scure processor 之间创建一个 secure channel，然后为每个 guest 分配一个 ASID，根据 ASID 生成一个ie key，这个 key 就是访问对应 guest 内存的关键。
+- SVE 更加复杂。它有多个 encryption keys 去保护所有的 guest 内存不受其他 guest 和 hypervisor 的攻击。在 boot 阶段，hypervisor 会在 guest 和 scure processor 之间创建一个 secure channel，然后为每个 guest 分配一个 ASID，根据 ASID 生成一个 ie key，这个 key 就是访问对应 guest 内存的关键。
 
 虽然听起来不错，但 hypervisor 肯定还是有办法 hack 到 guest 的内存吧。
 
@@ -666,7 +666,7 @@ text="..." 中的就是要执行的 eBPF 程序，BPF() 和 `trace_print()` 就�
 
 正确执行会产生如下输出：
 
-```
+```plain
 ThreadPoolForeg-1323464 [003] d...1 343831.036264: bpf_trace_printk: Hello, Clone!'
 ThreadPoolSingl-913145  [006] d...1 343835.207102: bpf_trace_printk: Hello, Clone!'
 ThreadPoolForeg-1302374 [004] d...1 343842.572502: bpf_trace_printk: Hello, Clone!'
@@ -814,7 +814,7 @@ if (val) {
 
 首先 sysctl 是配置内核运行时参数的一种机制。sysctl knobs 是什么东西，从文章中的描述，其就是 `/proc/sys` 文件下的各个子文件。那么结合起来看 sysctl knob 其是就是不同方面的可配置参数。
 
-```
+```plain
 guanshun@guanshun-ubuntu /p/sys> ls
 abi/  debug/  dev/  fs/  kernel/  net/  user/  vm/
 ```
@@ -912,3 +912,15 @@ ARM 架构的内核代码存在一个问题，每一代芯片和上一代相差�
 - 能够以单个 CPU 为单位进行调度，而不是整个簇；
 - 甚至只迁移不同的寄存器；
 - 根据 CPU 运行频率决定是否迁移；
+
+### [Supporting multi-platform ARM kernels](https://lwn.net/Articles/496400/)
+
+ARM 架构最大的优势就是多样化，制造商能够围绕 ARM 内核创造各种各样的 SOC。但是这种多样性加上普遍缺乏硬件可发现性（？），使得内核很难支持 ARM 架构。就目前的情况而言，必须为特定的 ARM 系统构建特定的内核。而其他大多数架构只需要编译一个可执行文件就能够在大部分系统上运行。
+
+目前在 arch/arm 目录下，有上百个板级文件（2012 年），还有很多没有贡献到上游社区的。这些代码充斥在/arch/arm/plat-xxx 和/arch/arm/mach-xxx 目录，对内核而言这些 platform 设备、resource、i2c_board_info、spi_board_info 以及各种硬件的 platform_data 绝大多数属于冗余代码。为此，开发者使用了其他体系架构已经使用的 Flattened Device Tree。
+
+“A data structure by which bootloaders pass hardware layout to Linux in a device-independent manner, simplifying hardware probing.”开源文档中对设备树的描述是，一种描述硬件资源的数据结构，它通过 bootloader 将硬件资源传给内核，使得内核和硬件资源描述相对独立(也就是说*.dtb 文件由 Bootloader 读入内存，之后由内核来解析)。
+
+Device Tree 可以描述的信息包括 CPU 的数量和类别、内存基地址和大小、总线和桥、外设连接、中断控制器和中断使用情况、GPIO 控制器和 GPIO 使用情况、Clock 控制器和 Clock 使用情况。
+
+设备树的主要优势：对于同一 SOC 的不同主板，只需更换设备树文件.dtb 即可实现不同主板的无差异支持，而无需更换内核文件。
