@@ -115,7 +115,7 @@
 
     使用这个命令可以屏蔽信号:
 
-    ```
+    ```plain
     handle SIG127 nostop noprint
     ```
 
@@ -134,28 +134,28 @@
       }
     ```
 
-18. 有时候输出信息太长，屏放不下，下面介绍两种将gdb的输出信息存到文件的方法。
+18. 有时候输出信息太长，屏放不下，下面介绍两种将 gdb 的输出信息存到文件的方法。
 
     （1）临时向文件输出些信息
 
-    比如要用info functions输出所有函数，结果往往有一大坨，所以可以将之输出到文件。
+    比如要用 info functions 输出所有函数，结果往往有一大坨，所以可以将之输出到文件。
 
-    ```
+    ```plain
     (gdb) set logging file <file name>
     (gdb) set logging on
     (gdb) info functions
     (gdb) set logging off
     ```
 
-    （2）在整个gdb会话期间都重定向输出
+    （2）在整个 gdb 会话期间都重定向输出
 
-    ```
+    ```plain
     gdb |tee newfile
     ```
 
     例如：
 
-    ```
+    ```plain
     gdb-11.2 --args ./qemu-system-i386 \
     -m 8192 \
     -smp 1 \
@@ -167,13 +167,13 @@
 
 19. 当寄存器等于某个值时停下来：
 
-    ```
+    ```plain
     watch $eax == 0x0000ffaa
     ```
 
 20. 自定义命令
 
-    ```
+    ```plain
     define cb
     c
     bt
@@ -184,25 +184,25 @@
 
 21. 执行 gdb 命令 n 次
 
-    ```
+    ```plain
     python [gdb.execute('next') for x in range(10)]
     ```
 
     但是有些 gdb 在编译的时候没有 `--enable-python`，所以需要重新编译，在[官网](https://ftp.gnu.org/gnu/gdb/)下载源码，
 
-    ```
+    ```plain
     ./configure --enable-languages=c,c++ --prefix=/usr --enable-shared --enable-plugin --program-suffix=-4.8.0 --with-python
     make -jn
     ```
 
     例如我想执行上面的自定义命令 N 多次，
 
-    ```
+    ```plain
     (gdb) python [gdb.execute('cb') for x in range(1000000)]
     ```
 
 22. set scrollbind 可以设置两个 vim 同时滚动，当然这两个窗口都要设置，set noscrollbind 取消同步滚动。
 
-23. md 文件每行最后有 ^M 字符，用 `:e ++ff=dos ` 可以去掉。
+23. md 文件每行最后有 ^M 字符，用 `:e ++ff=dos` 可以去掉。
 
 22. gdb 中 winheight 命令可以调整 不同窗口的大小。

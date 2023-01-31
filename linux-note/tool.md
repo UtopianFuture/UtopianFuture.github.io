@@ -597,7 +597,7 @@ tmux 的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`t
 
 47. vim 删除操作
 
-    ```
+    ```plain
     :%s/r//g                    删除 DOS 方式的回车 ^M
     :%s= *$==                   删除行尾空白
     :%s/^(.*)n1/1$/             删除重复行
@@ -658,7 +658,7 @@ tmux 的配置主要是修改`~/.tmux/tmux.conf`来完成的，修改完后用`t
 
 48. taskset 能够将进程在指定的 CPU 上执行，例如要在所有的 CPU 上运行一个 kernel module，
 
-    ```
+    ```plain
     sudo insmod module-name.ko // 加载 kernel module
     sudo taskset -c 0 echo 1 > /sys/kernel/hamt/hamt_ctl // 注意要在 bash 中执行
     sudo taskset -c 0 cat /sys/kernel/hamt/hamt_ctl

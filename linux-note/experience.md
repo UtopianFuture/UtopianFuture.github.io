@@ -102,19 +102,19 @@ KexAlgorithms +diffie-hellman-group14-sha1
 
 17. 创建新用户后遇到
 
-    ```
+    ```plain
     user not in sudoers
     ```
 
     的问题，使用如下命令查看正常用户所在的 group，
 
-    ```
+    ```plain
     groups xxx
     ```
 
     然后使用
 
-    ```
+    ```plain
     sudo usermod -aG wheel <username>
     ```
 
