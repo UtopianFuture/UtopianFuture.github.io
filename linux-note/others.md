@@ -1244,3 +1244,7 @@ A coroutine is similar to a thread (in the sense of multithreading): it is a lin
   - **基带=Baseband**
     - 信号处理
     - 协议处理
+
+### Trustzone
+
+The CoreLink TZC-400 TrustZone Address Space Controller (TZC-400) is an AMBA compliant System-on-Chip (SoC) peripheral（外围设备）. **It performs security checks on transactions to memory or peripherals**. You can use the TZC-400 to create up to eight separate regions in the address space, each with an individual security level setting. Any transactions must meet the security requirements to gain access to the memory or peripheral. You can program the base address, top address, enable, and security parameters for each region.
