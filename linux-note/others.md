@@ -1248,3 +1248,22 @@ A coroutine is similar to a thread (in the sense of multithreading): it is a lin
 ### Trustzone
 
 The CoreLink TZC-400 TrustZone Address Space Controller (TZC-400) is an AMBA compliant System-on-Chip (SoC) peripheral（外围设备）. **It performs security checks on transactions to memory or peripherals**. You can use the TZC-400 to create up to eight separate regions in the address space, each with an individual security level setting. Any transactions must meet the security requirements to gain access to the memory or peripheral. You can program the base address, top address, enable, and security parameters for each region.
+
+### kallsyms
+
+在 2.6 版的内核中，为了更方便的调试内核代码，开发者考虑将内核代码中所有函数以及所有非栈变量的地址抽取出来，形成是一个简单的数据块(data blob:符号和地址对应)，并将此链接进 vmlinux 中去。
+
+```plain
+00000000000197e0 A cpu_hw_events
+000000000001ab18 A perf_nmi_tstamp
+000000000001b000 A bts_ctx
+000000000001e000 A insn_buffer
+000000000001e008 A p4_running
+000000000001e020 A pt_ctx
+```
+
+不同符号的含义可以使用 nm 命令查看：
+
+```plain
+nm - list symbols from object files
+```
