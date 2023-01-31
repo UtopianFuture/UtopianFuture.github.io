@@ -374,6 +374,134 @@ b.attach_kretprobe(event=fnname_open, fn_name="trace_return")
 
 ### ext4slower
 
+这个工具代码结构相比于 opensnoop 要清晰。其是跟踪 ext4 文件操作延迟的，包括 reads, writes opens 和 syncs。延迟的计算从 VFS 发送这些操作开始到操作结束。
+
+```c
+#include <uapi/linux/ptrace.h>
+#include <linux/fs.h>
+#include <linux/sched.h>
+#include <linux/dcache.h>
+
+// XXX: switch these to char's when supported
+#define TRACE_READ      0
+#define TRACE_WRITE     1
+#define TRACE_OPEN      2
+#define TRACE_FSYNC     3
+
+struct val_t {
+    u64 ts;
+    u64 offset;
+    struct file *fp;
+};
+
+struct data_t {
+    // XXX: switch some to u32's when supported
+    u64 ts_us;
+    u64 type;
+    u32 size;
+    u64 offset;
+    u64 delta_us;
+    u32 pid;
+    char task[TASK_COMM_LEN];
+    char file[DNAME_INLINE_LEN];
+};
+
+// 用来保存数据。比如这里要跟踪 ext4 operations 的执行时间
+// 在操作开始时记录，将信息存入到 BPF_HASH 中
+// 操作结束时再通过 key 获取信息，便于计算时间差
+BPF_HASH(entryinfo, u64, struct val_t);
+// 能够将内核数据传输到用户态
+BPF_PERF_OUTPUT(events);
+
+int trace_read_entry(struct pt_regs *ctx, struct kiocb *iocb)
+{
+    u64 id =  bpf_get_current_pid_tgid(); // bpf 工具，很常用
+    u32 pid = id >> 32; // PID is higher part
+
+    if (FILTER_PID) // python 中会替换掉，很方便
+        return 0;
+
+    // ext4 filter on file->f_op == ext4_file_operations
+    struct file *fp = iocb->ki_filp;
+    if ((u64)fp->f_op != EXT4_FILE_OPERATIONS)
+        return 0;
+
+    // store filep and timestamp by id
+    struct val_t val = {}; //
+    val.ts = bpf_ktime_get_ns();
+    val.fp = fp;
+    val.offset = iocb->ki_pos;
+    if (val.fp)
+        entryinfo.update(&id, &val);
+
+    return 0;
+}
+
+	...
+
+//
+// Output
+//
+
+static int trace_return(struct pt_regs *ctx, int type)
+{
+    struct val_t *valp;
+    u64 id = bpf_get_current_pid_tgid();
+    u32 pid = id >> 32; // PID is higher part
+
+    valp = entryinfo.lookup(&id); // 查询 BPF_HASH
+    if (valp == 0) {
+        // missed tracing issue or filtered
+        return 0;
+    }
+
+    // calculate delta
+    u64 ts = bpf_ktime_get_ns();
+    u64 delta_us = (ts - valp->ts) / 1000;
+    entryinfo.delete(&id);
+    if (FILTER_US)
+        return 0;
+
+    // populate output struct
+    struct data_t data = {};
+    data.type = type;
+    data.size = PT_REGS_RC(ctx);
+    data.delta_us = delta_us;
+    data.pid = pid;
+    data.ts_us = ts / 1000;
+    data.offset = valp->offset;
+    bpf_get_current_comm(&data.task, sizeof(data.task));
+
+    // workaround (rewriter should handle file to d_name in one step):
+    struct dentry *de = NULL;
+    struct qstr qs = {};
+    de = valp->fp->f_path.dentry;
+    qs = de->d_name;
+    if (qs.len == 0)
+        return 0;
+    bpf_probe_read_kernel(&data.file, sizeof(data.file), (void *)qs.name);
+
+    // output
+    events.perf_submit(ctx, &data, sizeof(data));
+
+    return 0;
+}
+
+int trace_read_return(struct pt_regs *ctx)
+{
+    return trace_return(ctx, TRACE_READ);
+}
+
+	...
+```
+
+然后通过 `attach_kprobe` , `attach_kretprobe` 将 `trace_read_entry` 和 `trace_read_return` 分别 attach 到函数的开头和末尾。
+
+```python
+b.attach_kprobe(event="ext4_file_read_iter", fn_name="trace_read_entry")
+b.attach_kretprobe(event="ext4_file_read_iter", fn_name="trace_read_return")
+```
+
 ### Reference
 
 [1] https://www.brendangregg.com/bpf-performance-tools-book.html
