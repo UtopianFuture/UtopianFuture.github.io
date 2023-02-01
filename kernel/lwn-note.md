@@ -967,3 +967,9 @@ A7 收到 "inbound alive" 信号后，进入断电阶段，包括关中断，迁
 文章中提到一点很有意思，两种解决方案，IKS 和 HMP 在相同的内核树下同步进行。不仅如此，还可以在内核命令行上启用或者再运行时通过 sysfs 切换两种方式。
 
 ### [LC-Asia: A big LITTLE MP update](https://lwn.net/Articles/541005/)
+
+OK，LKS 的缺点来了，同一时间只能有一半的 CPU 在工作。
+
+文章重点在与介绍这项工作的难度，该工作目前（2013）还没有完成，所以不能像上文那样分析。不过有[代码](https://git.linaro.org/arm/big.LITTLE/mp.git/log/)可以分析，需要花时间看看。
+
+最后 HMP 调度器被用于Android 5.x 和 Android6.x 中，但并没有被合入内核 mainline 中。详细的介绍可以看[这里](https://android.googlesource.com/kernel/msm/+/android-msm-bullhead-3.10-marshmallow-dr/Documentation/scheduler/sched-hmp.txt)。
