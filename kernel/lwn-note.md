@@ -964,12 +964,26 @@ A7 收到 "inbound alive" 信号后，进入断电阶段，包括关中断，迁
 
 我之前说过，直观而言我觉得 HMP 更有希望，但这个人一番讲解下来，我觉得这种方法挺好啊。其是否有不足？
 
+该算法因为对非 ARM 架构部分代码修改较小，被和入 mainline。而其他算法则没有。
+
 文章中提到一点很有意思，两种解决方案，IKS 和 HMP 在相同的内核树下同步进行。不仅如此，还可以在内核命令行上启用或者再运行时通过 sysfs 切换两种方式。
 
 ### [LC-Asia: A big LITTLE MP update](https://lwn.net/Articles/541005/)
 
-OK，LKS 的缺点来了，同一时间只能有一半的 CPU 在工作。
+OK，LKS 的缺点来了，同一时间只能有一半的 CPU 在工作，即其最大性能对所有大核性能。HMP 最大性能为大核+小核性能。
 
 文章重点在与介绍这项工作的难度，该工作目前（2013）还没有完成，所以不能像上文那样分析。不过有[代码](https://git.linaro.org/arm/big.LITTLE/mp.git/log/)可以分析，需要花时间看看。
 
-最后 HMP 调度器被用于Android 5.x 和 Android6.x 中，但并没有被合入内核 mainline 中。详细的介绍可以看[这里](https://android.googlesource.com/kernel/msm/+/android-msm-bullhead-3.10-marshmallow-dr/Documentation/scheduler/sched-hmp.txt)。
+最后 HMP 调度器被用于 Android 5.x 和 Android6.x 中，但并没有被合入内核 mainline 中。详细的介绍可以看[这里](https://android.googlesource.com/kernel/msm/+/android-msm-bullhead-3.10-marshmallow-dr/Documentation/scheduler/sched-hmp.txt)。
+
+### [Improving memory-management documentation](https://lwn.net/Articles/894374/)
+
+没想到开发者就内存管理的文档维护还会专门用一个 session 讨论。主要问题是开发者发现内存管理部分的资料老旧而杂乱，不利用用户使用。
+
+讨论过程没什么需要看的，但发现一些也许有用的资料。
+
+[*Understanding the Linux Virtual Memory Manager*](https://www.kernel.org/doc/gorman/)
+
+[The Linux kernel user’s and administrator’s guide](https://docs.kernel.org/admin-guide/index.html)
+
+[DRM documentation](https://docs.kernel.org/gpu/index.html) 不错的文档化的例子
