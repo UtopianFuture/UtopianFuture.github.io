@@ -2,6 +2,41 @@
 
 之前分析过键盘敲下一个字符到显示在显示器上的经过，[那篇](./kernel/From-keyboard-to-Display.md)文章也涉及到中断的处理，我本以为中断也就那样，但我还是太天真了，面试过程中很多关于中断的问题答的不好，所以再系统的学习一下。
 
+### 目录
+
+- [数据结构](#数据结构)
+- [中断控制器](#中断控制器)
+  - [中断流程](#中断流程)
+- [hwirq 和 irq 的映射](#hwirq 和 irq 的映射)
+  - [irq_desc](#irq_desc)
+  - [irq_domain](#irq_domain)
+  - [关键函数 __irq_domain_add](#关键函数 __irq_domain_add)
+  - [irq_data](#irq_data)
+  - [irq_chip](#irq_chip)
+  - [irqdata](#irqdata)
+- [注册中断](#注册中断)
+  - [关键函数 request_threaded_irq](#关键函数 request_threaded_irq)
+  - [关键函数 __setup_irq](#关键函数 __setup_irq)
+- [底层中断处理](#底层中断处理)
+- [高层中断处理](#高层中断处理)
+- [软中断和 tasklet](#软中断和 tasklet)
+  - [软中断](#软中断)
+  - [tasklet](#tasklet)
+- [workqueue](#workqueue)
+  - [问题](#问题)
+  - [数据结构](#数据结构)
+    - [work_struct](#work_struct)
+    - [worker](#worker)
+    - [worker_pool](#worker_pool)
+    - [pool_workqueue](#pool_workqueue)
+  - [normal worker_pool](#normal worker_pool)
+  - [__kthread_create_on_node](#__kthread_create_on_node)
+  - [执行场景](#执行场景)
+- [中断案例分析](#中断案例分析)
+- [注意](#注意)
+- [总结](#总结)
+- [Reference](#Reference)
+
 ### 数据结构
 
 还是老规矩，先看看关键的数据结构，
@@ -28,7 +63,7 @@
 
 内核中的中断处理可以分为 4 层，
 
-- 硬件层，如 CPU 和中断控制器的连接。这个作为软件开发者只需要直到怎么读控制器的寄存器就可以吧；
+- 硬件层，如 CPU 和中断控制器的连接。这个作为软件开发者只需要知道怎么读控制器的寄存器就可以吧；
 - 处理器架构管理层，如 CPU 中断异常处理，这个在 x86 中应该是是现在 genex.S 中；
 - 中断控制器管理层，如 IRQ 号的映射，中断控制器的初始化等等；
 - 内核通用中断处理器层，如中断注册和中断处理；
@@ -36,7 +71,7 @@
 中断触发的方式，这个在 QEMU 中体现的很明显。
 
 - 边沿触发（edge-triggered）：当中断源产生一个上升沿或下降沿时，触发一个中断；
-- 电平触发（level0sensitive）：当中断信号先产生一个高电平或低电平时，触发一个中断；
+- 电平触发（level-sensitive）：当中断信号先产生一个高电平或低电平时，触发一个中断；
 
 #### 中断流程
 
@@ -48,7 +83,7 @@ hwirq 是外设发起中断时用的中断号，是 CPU 设计的时候就制定
 
 因为现在的 SoC 内部包含多个中断控制器，并且每个中断控制器管理的中断源很多，为了更好的管理如此复杂的中断设备，内核引入了 `irq_domain` 管理框架。
 
-一个 `irq_domain` 就表示一个中断控制器，每个中断控制器管理多个中断源，其可以按照树或数组的方式管理 `irq_desc`，这个是中断管理的核心，中断处理都是根据 irq 找到对应的 `irq_desc` 之后的事情就好办了。
+**一个 `irq_domain` 就表示一个中断控制器，每个中断控制器管理多个中断源**，其可以按照树或数组的方式管理 `irq_desc`，这个是中断管理的核心，中断处理都是根据 irq 找到对应的 `irq_desc` 之后的事情就好办了。
 
 #### irq_desc
 
@@ -478,7 +513,7 @@ int request_threaded_irq(unsigned int irq, irq_handler_t handler,
 -  `ret_from_fork` 说明 1 号进程是新 fork 出来的进程，没有经过 `schedule` 调度；
 - 外设的初始化都是在 `do_initcalls` 完成的。
 
-```
+```plain
 #0  request_threaded_irq (irq=9, handler=handler@entry=0xffffffff816711a0 <acpi_irq>,
     thread_fn=thread_fn@entry=0x0 <fixed_percpu_data>, irqflags=irqflags@entry=128,
     devname=devname@entry=0xffffffff82610986 "acpi",
@@ -729,11 +764,11 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
 
 中断线程化是内核新增加的特性，这个特性的具体实现应该就是 workqueue。那我们考虑一下为什么需要中断线程化。
 
-在内核中，中断具有最高的优先级，内核会在每一条指令执行完后检查是否有中断发生，如果有，那么内核会进行上下文切换从而执行中断处理函数，等到所有的中断和软中断处理完毕后才会执行进程调度，因此这个过程会导致实时任务得不到及时响应。中断上下文总是抢占进程上下文，中断上下文不仅包括中断处理程序，还包括 softirq, tasklet 等。如果一个高优先级任务和一个中断同时触发，那么内核总是先执行中断处理程序，中断处理程序完成后可能触发软中断，也可能有一些 tasklet 要执行或有新的中断发生，这个高优先级任务的延迟变得不可预测。中断线程化的目的是把中断处理中一些繁重的任务作为内核线程运行，实时进程可以比中断线程拥有更高的优先级。这样高优先级的实时进程就可以优先得到处理。当然，不是所有的中断都可以线程化，如时钟中断。
+在内核中，中断具有最高的优先级，内核会在每一条指令执行完后检查是否有中断发生，如果有，那么内核会进行上下文切换从而执行中断处理函数，等到所有的中断和软中断处理完毕后才会执行进程调度，因此这个过程**会导致实时任务得不到及时响应**。中断上下文总是抢占进程上下文，中断上下文不仅包括中断处理程序，还包括 softirq, tasklet 等。如果一个高优先级任务和一个中断同时触发，那么内核总是先执行中断处理程序，中断处理程序完成后可能触发软中断，也可能有一些 tasklet 要执行或有新的中断发生，这个高优先级任务的延迟变得不可预测。中断线程化的目的是把中断处理中一些繁重的任务作为内核线程运行，实时进程可以比中断线程拥有更高的优先级。这样高优先级的实时进程就可以优先得到处理。当然，不是所有的中断都可以线程化，如时钟中断。
 
 ### 底层中断处理
 
-之前学习的都是 X86 架构的中断，所以对 X86 的汇编比较熟悉，但面试了几场发现现在用的多的是 ARM，所以接着个机会也学学 ARM 架构的硬件中断处理流程和 ARM 指令。当然 X86 的流程也会补充近来。
+之前学习的都是 X86 架构的中断，所以对 X86 的汇编比较熟悉，但面试了几场发现现在用的多的是 ARM，所以借这个机会也学学 ARM 架构的硬件中断处理流程和 ARM 指令。当然 X86 的流程也会补充进来。
 
 ARM64 支持多个异常等级（在 X86 中就是特权级），其中 EL0 是用户模式，EL1 是内核模式，EL2 是虚拟化监管模式，EL3 是安全世界模式（这个是用来干嘛的）。
 
@@ -745,7 +780,7 @@ ARM64 支持多个异常等级（在 X86 中就是特权级），其中 EL0 是�
 
 这是串口中断的过程。
 
-```
+```plain
 #0  serial8250_start_tx (port=0xffffffff836d1c60 <serial8250_ports>) at drivers/tty/serial/8250/8250_port.c:1654
 #1  0xffffffff817440ab in __uart_start (tty=<optimized out>) at drivers/tty/serial/serial_core.c:127
 #2  0xffffffff817453d2 in uart_start (tty=0xffff88810666e800) at drivers/tty/serial/serial_core.c:137
@@ -767,7 +802,7 @@ ARM64 支持多个异常等级（在 X86 中就是特权级），其中 EL0 是�
 
 这只是键盘键入字符到字符显示在显示器上的一部分，下半部分是串口发起中断，
 
-```
+```plain
 serial8250_tx_chars (up=up@entry=0xffffffff836d1c60 <serial8250_ports>) at drivers/tty/serial/8250/8250_port.c:1819
 #1  0xffffffff8174ccf4 in serial8250_handle_irq (port=port@entry=0xffffffff836d1c60 <serial8250_ports>, iir=<optimized out>) at drivers/tty/serial/8250/8250_port.c:1932
 #2  0xffffffff8174ce11 in serial8250_handle_irq (iir=<optimized out>, port=0xffffffff836d1c60 <serial8250_ports>) at drivers/tty/serial/8250/8250_port.c:1905
@@ -794,7 +829,7 @@ serial8250_tx_chars (up=up@entry=0xffffffff836d1c60 <serial8250_ports>) at drive
 
 因为软中断和 tasklet 平时的项目中用不到，所以这里只记录一下它们的原理，不再进一步分析。
 
-中断管理中的上下半部是很重要的设计理念。硬件和汇编代码处理的跳转到中断向量表和中断上下文保存属于上半部，而软中断，tasklet，工作队列属于下半部请求。**中断上半部的设计理念是尽快完成并从硬件中断返回**，因为硬件中断处理程序是在关中断的情况下做的，本地 CPU 不能继续响应中断，若不能及时开中断，其他对时间敏感的中断可能会出问题。
+中断管理中的上下半部是很重要的设计理念。**硬件和汇编代码处理的跳转到中断向量表和中断上下文保存属于上半部**，而软中断，tasklet，工作队列属于下半部请求。**中断上半部的设计理念是尽快完成并从硬件中断返回**，因为硬件中断处理程序是在关中断的情况下做的，本地 CPU 不能继续响应中断，若不能及时开中断，其他对时间敏感的中断可能会出问题。
 
 #### 软中断
 
@@ -854,7 +889,7 @@ DEFINE_PER_CPU(struct task_struct *, ksoftirqd);
 这里总结一下软中断需要注意的地方：
 
 - 软中断的回调函数在开中断的环境下执行，**能够被其他中断抢占，但不能被进程抢占**；
-- 同一类型的软中断可能在多个 CPU 上并行执行。
+- 同一类型的软中断可能在多个 CPU 上并行执行；
 - 软中断是在中断返回前，即退出硬中断上下文时，执行的，所以其还是执行在中断上下文，不能睡眠。
 
 #### tasklet
@@ -879,7 +914,7 @@ struct tasklet_struct
 从上文中分析可以看出，`tasklet` 是软中断的一种类型，那么两者有何区别：
 
 - 软中断类型内核中都是静态分配，不支持动态分配，而 `tasklet` 支持动态和静态分配，也就是驱动程序中能比较方便的进行扩展；
-- 软中断可以在多个 CPU 上并行运行，因此需要考虑可重入问题，而 `tasklet ` 是串行执行，其会绑定在某个 CPU 上运行，运行完后再解绑，不要求重入问题，当然它的性能也就会下降一些。
+- 软中断可以在多个 CPU 上并行运行，因此需要考虑可重入问题，而 `tasklet` 是串行执行，其会绑定在某个 CPU 上运行，运行完后再解绑，不要求重入问题，当然它的性能也就会下降一些。
 
 软中断上下文的优先级高于进程上下文，如果执行软中断和 tasklet 时间很长，那么高优先级的进程就长时间得不到运行，会影响系统的实时性，所以引入了 workqueue。
 
@@ -895,7 +930,7 @@ struct tasklet_struct
 
 workqueue 是内核里面很重要的一个机制，特别是内核驱动，**一般的小型任务 (work) 都不会自己起一个线程来处理，而是扔到 workqueue 中处理**。workqueue 的主要工作就是**用进程上下文来处理内核中大量的小任务**。
 
-其是除了软中断和 tasklet 以外最常用的一种下半部机制。工作队列的基本原理就是将 work（需要推迟执行的函数）交由内核线程来执行，它总是在进程上下文中执行，因此它允许重新调度和睡眠，是异步执行的进程上下文。另外，其还能解决软中断和 tasklet 执行时间过长导致的系统实时性下降等问题。
+其是除了软中断和 tasklet 以外最常用的一种下半部机制。工作队列的基本原理就是将 work（需要推迟执行的函数）交由内核线程来执行，**它总是在进程上下文中执行，因此它允许重新调度和睡眠，是异步执行的进程上下文**。另外，其还能解决软中断和 tasklet 执行时间过长导致的系统实时性下降等问题。
 
 所以 workqueue 的主要设计思想为：
 
@@ -1274,7 +1309,7 @@ void __init workqueue_init(void)
 
 `workqueue` 涉及到一个非常重要的数据结构的初始化，我也是在之后的调试中才发现的。
 
-### __kthread_create_on_node
+#### __kthread_create_on_node
 
 这是它的调用过程。
 

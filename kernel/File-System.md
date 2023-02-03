@@ -6,7 +6,7 @@
 
 - [虚拟文件系统](#虚拟文件系统)
   - [通用文件模型](#通用文件模型)
-- [VFS的数据结构](#VFS的数据结构)
+- [VFS 的数据结构](#VFS的数据结构)
   - [super_block](#super_block)
   - [inode](#inode)
   - [dentry](#dentry)
@@ -20,14 +20,14 @@
   - [文件系统安装](#文件系统安装)
   - [vfsmount](#vfsmount)
   - [安装普通文件系统](#安装普通文件系统)
-    - [关键函数do_mount](#关键函数do_mount)
-    - [关键函数do_new_mount_fc](#关键函数do_new_mount_fc)
-    - [关键函数vfs_create_mount](#关键函数vfs_create_mount)
-    - [关键函数do_add_mount](#关键函数do_add_mount)
+    - [关键函数 do_mount](#关键函数 do_mount)
+    - [关键函数 do_new_mount_fc](#关键函数 do_new_mount_fc)
+    - [关键函数 vfs_create_mount](#关键函数 vfs_create_mount)
+    - [关键函数 do_add_mount](#关键函数 do_add_mount)
 - [路径名查找](#路径名查找)
   - [nameidata](#nameidata)
-  - [关键函数link_path_walk](#关键函数link_path_walk)
-- [VFS系统调用的实现](#VFS系统调用的实现)
+  - [关键函数 link_path_walk](#关键函数 link_path_walk)
+- [VFS 系统调用的实现](#VFS 系统调用的实现)
 
 ### 虚拟文件系统
 
@@ -67,7 +67,7 @@ VFS 为了支持尽可能多的文件系统，引入了一个通用的文件模�
 
 ![process-VFS.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/process-VFS.png?raw=true)
 
-### VFS的数据结构
+### VFS 的数据结构
 
 这节介绍 VFS 相关的数据结构及其关系。这些数据结构都是通过 slub 描述符分配内存空间。我们先看看整体的关系图。
 
@@ -457,7 +457,7 @@ Linux 使用系统的根文件系统（？），其由内核在引导阶段直�
 
 大多数类 Unix 系统中，每个文件系统只能安装一次，例如通过如下指令安装：
 
-```
+```plain
 mount -t ext2 /dev/fd0 /flp // 将存放在 /dev/fd0 软盘上的 ext2 文件系统安装在 /flp 上
 ```
 
@@ -525,7 +525,7 @@ SYSCALL_DEFINE5(mount, char __user *, dev_name, char __user *, dir_name,
 }
 ```
 
-##### 关键函数do_mount
+##### 关键函数 do_mount
 
 ```c
 long do_mount(const char *dev_name, const char __user *dir_name,
@@ -624,7 +624,7 @@ int path_mount(const char *dev_name, struct path *path,
 }
 ```
 
-##### 关键函数do_new_mount_fc
+##### 关键函数 do_new_mount_fc
 
 `do_new_mount` -> `do_new_mount_fc`
 
@@ -664,7 +664,7 @@ static int do_new_mount_fc(struct fs_context *fc, struct path *mountpoint,
 }
 ```
 
-##### 关键函数vfs_create_mount
+##### 关键函数 vfs_create_mount
 
 这个函数主要是配置 vfsmount，并将其插入到链表中。
 
@@ -698,7 +698,7 @@ struct vfsmount *vfs_create_mount(struct fs_context *fc)
 EXPORT_SYMBOL(vfs_create_mount);
 ```
 
-##### 关键函数do_add_mount
+##### 关键函数 do_add_mount
 
 这个函数主要是防止同一个文件系统装载到同一个位置。
 
@@ -728,7 +728,7 @@ static int do_add_mount(struct mount *newmnt, struct mountpoint *mp,
 }
 ```
 
-##### 关键函数attach_recursive_mnt
+##### 关键函数 attach_recursive_mnt
 
 文件系统通过 `attach_recursive_mnt` 添加到父文件系统的**命名空间**（对命名空间不了解）。这部分之后再分析。
 
@@ -877,7 +877,7 @@ struct nameidata {
 } __randomize_layout;
 ```
 
-#### 关键函数link_path_walk
+#### 关键函数 link_path_walk
 
 ```c
 /*

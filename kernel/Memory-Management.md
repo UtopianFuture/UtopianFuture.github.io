@@ -22,29 +22,40 @@
     - [请求页框](#请求页框)
     - [释放页框](#释放页框)
 - [内存区管理](#内存区管理)
-  - [创建slab描述符](#创建slab描述符)
+  - [创建 slab 描述符](#创建 slab 描述符)
     - [kmem_cache](#kmem_cache)
-  - [slab分配器的内存布局](#slab分配器的内存布局)
-  - [配置slab描述符](#配置slab描述符)
-  - [分配slab对象](#分配slab对象)
-  - [释放slab对象](#释放slab对象)
-  - [slab分配器和伙伴系统的接口函数](#slab分配器和伙伴系统的接口函数)
-  - [管理区freelist](#管理区freelist)
+    - [kmem_cache_node](#kmem_cache_node)
+    - [kmem_cache_cpu](#kmem_cache_cpu)
+    - [kmem_cache_create](#kmem_cache_create)
+  - [slab 分配器的内存布局](#slab 分配器的内存布局)
+  - [配置 slab 描述符](#配置 slab 描述符)
+  - [分配 slab 对象](#分配 slab 对象)
+  - [释放 slab 对象](#释放 slab 对象)
+  - [slab 分配器和伙伴系统的接口函数](#slab 分配器和伙伴系统的接口函数)
+  - [管理区 freelist](#管理区 freelist)
   - [kmalloc](#kmalloc)
 - [vmalloc](#vmalloc)
+  - [__vmalloc_node_range](#__vmalloc_node_range)
+  - [分配虚拟内存](#分配虚拟内存)
+  - [分配物理内存](#分配物理内存)
+
 - [进程地址空间](#进程地址空间)
   - [mm_struct](#mm_struct)
   - [VMA](#VMA)
-  - [VMA相关操作](#VMA相关操作)
+  - [VMA 相关操作](#VMA 相关操作)
 - [malloc](#malloc)
-- [mmap](#mmap)
-  - [关键函数do_mmap](#关键函数do_mmap)
-  - [关键函数mmap_region](#关键函数mmap_region)
+  - [brk 系统调用](#brk 系统调用)
+  - [创建 VMA](#创建 VMA)
+  - [分配物理内存](#分配物理内存)
+  - [建立映射关系](#建立映射关系)
 
+- [mmap](#mmap)
+  - [关键函数 do_mmap](#关键函数 do_mmap)
+  - [关键函数 mmap_region](#关键函数 mmap_region)
 - [缺页异常处理](#缺页异常处理)
-  - [关键函数do_user_addr_fault](#关键函数do_user_addr_fault)
+  - [关键函数 do_user_addr_fault](#关键函数 do_user_addr_fault)
   - [关键函数__handle_mm_fault](#关键函数__handle_mm_fault)
-  - [关键函数handle_pte_fault](#关键函数handle_pte_fault)
+  - [关键函数 handle_pte_fault](#关键函数 handle_pte_fault)
   - [匿名页面缺页中断](#匿名页面缺页中断)
   - [文件映射缺页中断](#文件映射缺页中断)
   - [写时复制（COW）](#写时复制（COW）)
@@ -53,22 +64,22 @@
   - [anon_vma_chain](#anon_vma_chain)
   - [父进程产生匿名页面](#父进程产生匿名页面)
   - [根据父进程创建子进程](#根据父进程创建子进程)
-  - [RMA的应用](#RMAP的应用)
+  - [RMA 的应用](#RMAP 的应用)
 - [页面回收](#页面回收)
-  - [LRU链表法](#LRU链表法)
+  - [LRU 链表法](#LRU链表法)
   - [第二次机会法](#第二次机会法)
   - [触发页面回收](#触发页面回收)
-  - [kswapd内核线程](#kswapd内核线程)
-    - [关键函数balance_pgdat](#关键函数balance_pgdat)
-    - [关键函数shrink_node](#关键函数shrink_node)
+  - [kswapd 内核线程](#kswapd 内核线程)
+    - [关键函数 balance_pgdat](#关键函数 balance_pgdat)
+    - [关键函数 shrink_node](#关键函数 shrink_node)
   - [回收页面类型](#回收页面类型)
 - [页面迁移](#页面迁移)
   - [关键函数__unmap_and_move](#关键函数__unmap_and_move)
-  - [关键函数move_to_new_page](#关键函数move_to_new_page)
+  - [关键函数 move_to_new_page](#关键函数 move_to_new_page)
 - [内存规整](#内存规整)
   - [基本原理](#基本原理)
-  - [kcompactd内核线程](#kcompactd内核线程)
-  - [关键函数compact_zone](#关键函数compact_zone)
+  - [kcompactd 内核线程](#kcompactd 内核线程)
+  - [关键函数 compact_zone](#关键函数 compact_zone)
 - [慢路径分配](#慢路径分配)
   - [关键函数__alloc_pages_slowpath](#关键函数__alloc_pages_slowpath)
   - [水位管理和分配优先级](#水位管理和分配优先级)
@@ -272,7 +283,7 @@ struct page {
 } _struct_page_alignment;
 ```
 
-所有的页描述符存放在 `mem_map` 数组中，用 `virt_to_page`  宏产生线性地址对应的 page 地址，用 `pfn_to_page` 宏产生页框号对应的 page 地址。
+所有的页描述符（page 数据结构）存放在 `mem_map` 数组中，用 `virt_to_page`  宏产生线性地址对应的 page 地址，用 `pfn_to_page` 宏产生页框号对应的 page 地址。
 
 ```c
 #define virt_to_page(kaddr)	pfn_to_page(__pa(kaddr) >> PAGE_SHIFT) // _pa() 宏用来将虚拟地址转换为物理地址
@@ -427,9 +438,11 @@ struct free_area {
 
 #### 分区页框分配器
 
-管理区分配器搜索能够满足分配请求的管理区，在每个管理区中，伙伴系统负责分配页框，每 CPU 页框高速缓存用来满足单个页框的分配请求。
+管理区分配器搜索能够满足分配请求的 zone，在每个 zone 中，伙伴系统负责分配页框，每 CPU 页框高速缓存用来满足**单个页框**的分配请求。
 
 ![zone-menagement.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/zone-menagement.png?raw=true)
+
+从图中可以看出，每个 ZONE 都有伙伴系统结构(free_area)。
 
 #### 管理区分配器
 
@@ -439,13 +452,13 @@ struct free_area {
 
 即为了解决外碎片的问题，尽量保证有连续的空闲页框块。
 
-伙伴系统的描述网上有很多，这里不啰嗦，我们直接看代码。伙伴系统分配页框和上文的 `alloc_pages` 分配页框有什么不同？
+伙伴系统的描述网上有很多，这里不啰嗦，我们直接看代码。伙伴系统分配页框和下文的 `alloc_pages` 分配页框有什么不同（没有不同，一个东西）？
 
 > 把所有的空闲页框分组为 11 个块链表，每个块链表分别包含大小为 1、2、4、8、16、32、64、128、256、512 和 1024 个连续页框的页框块。最大可以申请 1024 个连续页框，也即 4MB 大小的连续空间。
 >
 > 假设要申请一个 256 个页框的块，先从 256 个页框的链表中查找空闲块，如果没有，就去 512 个页框的链表中找，找到了即将页框分为两个 256 个页框的块，一个分配给应用，另外一个移到 256 个页框的链表中。如果 512 个页框的链表中仍没有空闲块，继续向 1024 个页框的链表查找，如果仍然没有，则返回错误。
 >
-> 页框块在释放时，会主动将两个连续的页框块合并成一个较大的页框块。
+> 页框块在释放时，会主动将**两个连续的页框块合并成一个较大的页框块**。
 >
 > 伙伴算法具有以下一些缺点：
 >
@@ -590,7 +603,7 @@ EXPORT_SYMBOL(alloc_pages);
 
   - `GFP_KERNEL`，其是最常见的内存分配掩码之一，主要用于分配内核使用的的内存，需要注意的是**分配过程中会引起睡眠**，这在中断上下文以及不能睡眠的内核路径里调用该分配掩码需要特别警惕，因为会引起死锁或者其他系统异常；
   - `GFP_ATOMIC`，这个标志位正好和 `GFP_KERNEL` 相反，它**可以使用在不能睡眠的内存分配路径上**，比如中断处理程序、软中断以及 tasklet 等。`GFP_KERNEL` 可以**让调用者睡眠等待系统页面回收来释放一些内存**，但是 `GFP_ATOMIC` 不可以，所以**有可能会分配失败**；
-  - `GFP_USER`、`GFP_HIGHUSER` 和 `GFP_HIGHUSER_MOVEABLE`，**这三个标志位都是为用户空间进程分配内存的**。不同之处在于，`GFP_HIGHUSER ` 首先使用高端内存，`GFP_HIGHUSER_MOVEABLE` 首先使用高端内存并且分配的内存具有可迁移性；
+  - `GFP_USER`、`GFP_HIGHUSER` 和 `GFP_HIGHUSER_MOVEABLE`，**这三个标志位都是为用户空间进程分配内存的**。不同之处在于，`GFP_HIGHUSER` 首先使用高端内存，`GFP_HIGHUSER_MOVEABLE` 首先使用高端内存并且分配的内存具有可迁移性；
   - `GFP_NOIN`、`GFP_NOFS`，这两个标志位都会产生阻塞，它们用来避免某些其他的操作。
     `GFP_NOIO` 表示分配过程中绝不会启动任何磁盘 I/O 的操作。
     `GFP_NOFS` 表示分配过程中绝不会启动文件系统的相关操作。
@@ -779,7 +792,7 @@ EXPORT_SYMBOL(alloc_pages);
 
    这里有几点需要注意：
 
-- 首选的 zone 是通过 `gfp_mask` 换算的，具体的换算过程是 `gfp_zone` 和 ` first_zones_zonelist` 宏。
+- 首选的 zone 是通过 `gfp_mask` 换算的，具体的换算过程是 `gfp_zone` 和 `first_zones_zonelist` 宏;
 - 大部分情况只需要遍历第一个 zone 就可以成功分配内存。
 - 在分配内存之前需要判断 zone 的水位情况以及是否满足分配连续大内存块的需求，这是 `zone_watermark_fast` -> `zone_watermark_ok` -> `__zone_watermark_ok` 的工作。
 
@@ -795,6 +808,7 @@ EXPORT_SYMBOL(alloc_pages);
    	long free_pages;
 
        // zone->vm_stat[item] 中存放了该 zone 的各种页面统计数据，包括空闲页面数量，不活跃的匿名页面数量等，
+       // vm_stat 在其他关键数据结构中也有，是为了更好的了解内存使用情况，后面会分析
        // 该函数获取空闲页面的数量
    	free_pages = zone_page_state(z, NR_FREE_PAGES);
 
@@ -886,7 +900,7 @@ EXPORT_SYMBOL(alloc_pages);
 
 6. `rmqueue`
 
-   `rmqueue` 函数会从伙伴系统中获取内存。若没有需要大小的内存块，那么从更大的内存块中“切”内存。如程序要需要 `order = 4` 的内存块，但是伙伴系统中 `order = 4` 的内存块已经分配完了，那么从 `order = 5` 的内存块中“切”一块 `order = 4` 的内存块分配给该程序，同时将剩下的部分添加到 `order = 4` 的空闲链表中。
+   `rmqueue` 函数会从伙伴系统中获取内存。若没有需要大小的内存块，那么**从更大的内存块中“切”内存**。如程序要需要 `order=4` 的内存块，但是伙伴系统中 `order=4` 的内存块已经分配完了，那么从 `order=5` 的内存块中“切”一块 `order=4` 的内存块分配给该程序，同时将剩下的部分添加到 `order=4` 的空闲链表中。
 
    ```c
    /*
@@ -1250,13 +1264,11 @@ slab 分配器最终还是使用伙伴系统来分配实际的物理页面，只
 
 简单总结一下各个结构体之间的关系。
 
-首先我们需要了解 slab 描述符，类似于伙伴系统，内核在内存块中按照 2^order 字节（对象大小）来创建多个 slab 描述符，如 16 字节、32 字节、64 字节等，`kmem_cache` 保存了一些必要的信息。**slab 描述符拥有众多的 slab 对象（因为内核中很多数据结构大小一样，所以放在一个 slab 描述符中）**，这些对象按照一定的关系保存在本地对象缓冲池，共享对象缓冲池，slab 节点的 3 个链表中。让人感到迷惑的是这个 slab 链表和 slab 分配器有什么关系？其实每个 slab 分配器就是一个或多个物理页，这些物理页按照一个 slab 的大小可以存储多个 slab 对象，通过也有用于管理的管理区（freelist）和提高缓存效率的着色区（colour）。创建好的 slab 分配器会根据其中空闲对象的数量插入 3 个链表之一。
+首先我们需要了解 slab 描述符，类似于伙伴系统，内核在内存块中按照 2^order 字节（对象大小）来创建多个 slab 描述符，如 16 字节、32 字节、64 字节等，`kmem_cache` 保存了一些必要的信息。**slab 描述符拥有众多的 slab 对象（因为内核中很多数据结构大小一样，所以放在一个 slab 描述符中）**，这些对象按照一定的关系保存在本地对象缓冲池，共享对象缓冲池，slab 节点的 3 个链表中。让人感到迷惑的是这个 slab 链表和 slab 分配器有什么关系？其实每个 slab 分配器就是一个或多个物理页，这些物理页按照一个 slab 的大小可以存储多个 slab 对象，通过也有用于管理的管理区（freelist）和提高缓存效率的着色区（colour）。创建好的 slab 对象会根据其中空闲对象的数量插入 3 个链表之一。
 
-当本地对象缓冲池中空闲对象数量不够，则**从共享对象缓冲池中迁移 batchcount 个空闲对象到本地对象缓冲池**；当本地和共享对象缓冲池都没有空闲对象，那么从 slab 节点的 `slabs_partial` 或 `slabs_free` 链表中迁移空闲对象到本地对象缓冲池；如果以上 3 个地方都没有空闲对象，那么就需要创建新的 slab 分配器，即通过伙伴系统的接口请求物理内存，然后再将新建的 slab 分配器所在的 page 插入到链表中（这种设计太牛了）。
+当本地对象缓冲池中空闲对象数量不够，则**从共享对象缓冲池中迁移 batchcount 个空闲对象到本地对象缓冲池**；当本地和共享对象缓冲池都没有空闲对象，那么从 slab 节点的 `slabs_partial` 或 `slabs_free` 链表中迁移空闲对象到本地对象缓冲池；如果以上 3 个地方都没有空闲对象，那么就需要创建新的 slab 分配器，即通过伙伴系统的接口请求物理内存，然后再将新建的 slab 分配器所在的 page 插入到链表中（这种设计太牛了）。注意是 slab 分配器，不是 slab 描述符，某个大小的 slab 描述符应该只有一个，因为从代码上来看可以直接通过需要需要分配到大小确定对应的 slab 描述符。
 
-
-
-#### 创建slab描述符
+#### 创建 slab 描述符
 
 `kmem_cache` 是 slab 分配器中的核心数据结构，我们将其称为 slab 描述符。
 
@@ -1264,7 +1276,7 @@ slab 分配器最终还是使用伙伴系统来分配实际的物理页面，只
 
 ```c
 struct kmem_cache {
-	struct kmem_cache_cpu __percpu *cpu_slab; // 共享对象缓冲池
+	struct kmem_cache_cpu __percpu *cpu_slab; // 共享对象缓冲池（这应该是本地对象缓冲池）
 	/* Used for retrieving partial slabs, etc. */
 	slab_flags_t flags; // 对象的分配掩码
 	unsigned long min_partial;
@@ -1297,7 +1309,7 @@ struct kmem_cache {
 
 ##### kmem_cache_node
 
-其主要包含 3 个链表（slab 描述符和 slab 节点之间的关系是怎样的，每个 slab 描述符都有一个 slab 节点，节点拥有更多的空闲对象可供分配，但是访问节点中的对象要比访问本地缓冲池慢）。
+其主要包含 3 个链表（slab 描述符和 slab 节点之间的关系是怎样的，每个 slab 描述符都有多个 slab 节点，节点拥有更多的空闲对象可供分配，但是**访问节点中的对象要比访问本地缓冲池慢**）。
 
 ```c
 struct kmem_cache_node {
@@ -1307,7 +1319,7 @@ struct kmem_cache_node {
     // 这里需要理解，slab 分配器其实就是一个或多个 page，上面也分析过，page 结构体中有专门支持 slab 机制的变量
     // 所谓满的、部分满的、空的 slab 分配器，其实就是该 page 中的空闲对象的数量
     // 新创建的 slab 分配器都需要插入这 3 个链表之一
-    // 而这 3 个链表又属于某一个 slab 描述的 slab 节点
+    // 而这 3 个链表又属于某一个 slab 描述符的 slab 节点
     // 所以说一个 slab 描述符有很多的 slab 对象
   	struct list_head slabs_partial;	/* partial list first, better asm code */ // 部分满的 slab 分配器
   	struct list_head slabs_full; // 满的 slab 分配器
@@ -1329,211 +1341,236 @@ struct kmem_cache_node {
   };
 ```
 
-1. `kmem_cache_create`
+##### kmem_cache_cpu
 
-   ` kmem_cache_create` 只是 `kmem_cache_create_usercopy` 的包装，直接看 `kmem_cache_create_usercopy`，
+本地对象缓冲池，这里怎么有个 `struct slab` 结构，之前没注意。
 
-   ```c
-   struct kmem_cache *
-   kmem_cache_create_usercopy(const char *name,
-   		  unsigned int size, unsigned int align,
-   		  slab_flags_t flags,
-   		  unsigned int useroffset, unsigned int usersize,
-   		  void (*ctor)(void *))
-   {
-   	struct kmem_cache *s = NULL;
-   	const char *cache_name;
-   	int err;
+原来是新的 patch，但是从 commit message 上看不出为何这样修改。
 
-   	mutex_lock(&slab_mutex);
+> mm/slub: Convert most struct page to struct slab by spatch
+>
+>  The majority of conversion from struct page to struct slab in SLUB
+>  internals can be delegated to a coccinelle semantic patch. This includes
+>  renaming of variables with 'page' in name to 'slab', and similar.
 
-   	err = kmem_cache_sanity_check(name, size);
-   	if (err) {
-   		goto out_unlock;
-   	}
+```c
+struct kmem_cache_cpu {
+	void **freelist;	/* Pointer to next available object */
+	unsigned long tid;	/* Globally unique transaction id */
+	struct slab *slab;	/* The slab from which we are allocating */
+#ifdef CONFIG_SLUB_CPU_PARTIAL
+	struct slab *partial;	/* Partially allocated frozen slabs */
+#endif
+	local_lock_t lock;	/* Protects the fields above */
+#ifdef CONFIG_SLUB_STATS
+	unsigned stat[NR_SLUB_STAT_ITEMS];
+#endif
+};
+```
 
-   	...
+##### kmem_cache_create
 
-   	if (!usersize)
-           // 遍历 slab_caches 查找是否有现成的 slab 描述符可以用，如果有则将找到的 slab 描述符 refcount++
-   		s = __kmem_cache_alias(name, size, align, flags, ctor);
-   	if (s)
-   		goto out_unlock;
+`kmem_cache_create` 只是 `kmem_cache_create_usercopy` 的包装，直接看 `kmem_cache_create_usercopy`，
 
-   	...
+```c
+struct kmem_cache *
+kmem_cache_create_usercopy(const char *name,
+		  unsigned int size, unsigned int align,
+		  slab_flags_t flags,
+		  unsigned int useroffset, unsigned int usersize,
+		  void (*ctor)(void *))
+{
+	struct kmem_cache *s = NULL;
+	const char *cache_name;
+	int err;
 
-   	s = create_cache(cache_name, size, // 创建 slab 描述符
-   			 calculate_alignment(flags, align, size),
-   			 flags, useroffset, usersize, ctor, NULL);
-   	if (IS_ERR(s)) {
-   		err = PTR_ERR(s);
-   		kfree_const(cache_name);
-   	}
+	mutex_lock(&slab_mutex);
 
-   out_unlock:
-   	mutex_unlock(&slab_mutex)
-   	return s;
-   }
-   ```
+	err = kmem_cache_sanity_check(name, size);
+	if (err) {
+		goto out_unlock;
+	}
 
-   这里有个问题，为什么在 `vmalloc_init` 中会调用该函数，
+	...
 
-   ```c
-   void __init vmalloc_init(void)
-   {
-   	struct vmap_area *va;
-   	struct vm_struct *tmp;
-   	int i;
+	if (!usersize)
+        // 遍历 slab_caches 查找是否有现成的 slab 描述符可以用，如果有则将找到的 slab 描述符 refcount++
+		s = __kmem_cache_alias(name, size, align, flags, ctor);
+	if (s)
+		goto out_unlock;
 
-   	/*
-   	 * Create the cache for vmap_area objects.
-   	 */
-       // 这个变量很熟悉，但忘记是干啥的了，猜测应该是 slab 描述符信息需要
-       // 保存在 vmalloc 区域，这里是初始化该区域
-   	vmap_area_cachep = KMEM_CACHE(vmap_area, SLAB_PANIC);
+	...
 
-   	...
+	s = create_cache(cache_name, size, // 创建 slab 描述符
+			 calculate_alignment(flags, align, size),
+			 flags, useroffset, usersize, ctor, NULL);
+	if (IS_ERR(s)) {
+		err = PTR_ERR(s);
+		kfree_const(cache_name);
+	}
 
-   	/* Import existing vmlist entries. */
-   	for (tmp = vmlist; tmp; tmp = tmp->next) {
-   		va = kmem_cache_zalloc(vmap_area_cachep, GFP_NOWAIT);
-   		if (WARN_ON_ONCE(!va))
-   			continue;
+out_unlock:
+	mutex_unlock(&slab_mutex)
+	return s;
+}
+```
 
-   		va->va_start = (unsigned long)tmp->addr;
-   		va->va_end = va->va_start + tmp->size;
-   		va->vm = tmp;
-   		insert_vmap_area(va, &vmap_area_root, &vmap_area_list);
-   	}
+这里有个问题，为什么在 `vmalloc_init` 中会调用该函数？很简单，`vmap_area` 也是一个对象。
 
-   	/*
-   	 * Now we can initialize a free vmap space.
-   	 */
-   	vmap_init_free_space();
-   	vmap_initialized = true;
-   }
-   ```
+```c
+void __init vmalloc_init(void)
+{
+	struct vmap_area *va;
+	struct vm_struct *tmp;
+	int i;
 
-   ```
-   #0  kmem_cache_create_usercopy (name=name@entry=0xffffffff825bc870 "vmap_area", size=size@entry=64,
-       align=align@entry=8, flags=flags@entry=262144, useroffset=useroffset@entry=0, usersize=usersize@entry=0,
-       ctor=0x0 <fixed_percpu_data>) at mm/slab_common.c:315
-   #1  0xffffffff8128bbd6 in kmem_cache_create (name=name@entry=0xffffffff825bc870 "vmap_area", size=size@entry=64,
-       align=align@entry=8, flags=flags@entry=262144, ctor=ctor@entry=0x0 <fixed_percpu_data>)
-       at mm/slab_common.c:422
-   #2  0xffffffff831f500a in vmalloc_init () at mm/vmalloc.c:2336
-   #3  0xffffffff831ba69c in mm_init () at init/main.c:854
-   #4  start_kernel () at init/main.c:988
-   #5  0xffffffff831b95a0 in x86_64_start_reservations (
-       real_mode_data=real_mode_data@entry=0x2e3a920 <error: Cannot access memory at address 0x2e3a920>)
-       at arch/x86/kernel/head64.c:525
-   #6  0xffffffff831b962d in x86_64_start_kernel (
-       real_mode_data=0x2e3a920 <error: Cannot access memory at address 0x2e3a920>) at arch/x86/kernel/head64.c:506
-   #7  0xffffffff81000107 in secondary_startup_64 () at arch/x86/kernel/head_64.S:283
-   ```
+	/*
+	 * Create the cache for vmap_area objects.
+	 */
+    // 这个变量很熟悉，但忘记是干啥的了，猜测应该是 slab 描述符信息需要
+    // 保存在 vmalloc 区域，这里是初始化该区域
+	vmap_area_cachep = KMEM_CACHE(vmap_area, SLAB_PANIC);
 
-2. `__kmem_cache_create`
+	...
 
-   `create_cache` 只是初步初始化一个 slab 描述符，主要的创建过程在 `__kmem_cache_create` 中。
+	/* Import existing vmlist entries. */
+	for (tmp = vmlist; tmp; tmp = tmp->next) {
+		va = kmem_cache_zalloc(vmap_area_cachep, GFP_NOWAIT);
+		if (WARN_ON_ONCE(!va))
+			continue;
 
-   ```c
-   int __kmem_cache_create(struct kmem_cache *cachep, slab_flags_t flags)
-   {
-   	size_t ralign = BYTES_PER_WORD;
-   	gfp_t gfp;
-   	int err;
-   	unsigned int size = cachep->size;
+		va->va_start = (unsigned long)tmp->addr;
+		va->va_end = va->va_start + tmp->size;
+		va->vm = tmp;
+		insert_vmap_area(va, &vmap_area_root, &vmap_area_list);
+	}
 
-   	...
+	/*
+	 * Now we can initialize a free vmap space.
+	 */
+	vmap_init_free_space();
+	vmap_initialized = true;
+}
+```
 
-   	if (flags & SLAB_RED_ZONE) {
-   		ralign = REDZONE_ALIGN;
-   		/* If redzoning, ensure that the second redzone is suitably
-   		 * aligned, by adjusting the object size accordingly. */
-   		size = ALIGN(size, REDZONE_ALIGN);
-   	}
+```plain
+#0  kmem_cache_create_usercopy (name=name@entry=0xffffffff825bc870 "vmap_area", size=size@entry=64,
+    align=align@entry=8, flags=flags@entry=262144, useroffset=useroffset@entry=0, usersize=usersize@entry=0,
+    ctor=0x0 <fixed_percpu_data>) at mm/slab_common.c:315
+#1  0xffffffff8128bbd6 in kmem_cache_create (name=name@entry=0xffffffff825bc870 "vmap_area", size=size@entry=64,
+    align=align@entry=8, flags=flags@entry=262144, ctor=ctor@entry=0x0 <fixed_percpu_data>)
+    at mm/slab_common.c:422
+#2  0xffffffff831f500a in vmalloc_init () at mm/vmalloc.c:2336
+#3  0xffffffff831ba69c in mm_init () at init/main.c:854
+#4  start_kernel () at init/main.c:988
+#5  0xffffffff831b95a0 in x86_64_start_reservations (
+    real_mode_data=real_mode_data@entry=0x2e3a920 <error: Cannot access memory at address 0x2e3a920>)
+    at arch/x86/kernel/head64.c:525
+#6  0xffffffff831b962d in x86_64_start_kernel (
+    real_mode_data=0x2e3a920 <error: Cannot access memory at address 0x2e3a920>) at arch/x86/kernel/head64.c:506
+#7  0xffffffff81000107 in secondary_startup_64 () at arch/x86/kernel/head_64.S:283
+```
 
-   	/* 3) caller mandated alignment */
-   	if (ralign < cachep->align) {
-   		ralign = cachep->align;
-   	}
-   	/* disable debug if necessary */
-   	if (ralign > __alignof__(unsigned long long))
-   		flags &= ~(SLAB_RED_ZONE | SLAB_STORE_USER);
-   	/*
-   	 * 4) Store it.
-   	 */
-   	cachep->align = ralign;
-   	cachep->colour_off = cache_line_size(); // 着色区的大小为 l1 cache 的行大小
-   	/* Offset must be a multiple of the alignment. */
-   	if (cachep->colour_off < cachep->align)
-   		cachep->colour_off = cachep->align;
+`create_cache` 只是初步初始化一个 slab 描述符，主要的创建过程在 `__kmem_cache_create` 中。
 
-   	if (slab_is_available())
-   		gfp = GFP_KERNEL;
-   	else
-   		gfp = GFP_NOWAIT;
+```c
+int __kmem_cache_create(struct kmem_cache *cachep, slab_flags_t flags)
+{
+	size_t ralign = BYTES_PER_WORD;
+	gfp_t gfp;
+	int err;
+	unsigned int size = cachep->size;
 
-   	...
+	...
 
-   	kasan_cache_create(cachep, &size, &flags);
+	if (flags & SLAB_RED_ZONE) {
+		ralign = REDZONE_ALIGN;
+		/* If redzoning, ensure that the second redzone is suitably
+		 * aligned, by adjusting the object size accordingly. */
+		size = ALIGN(size, REDZONE_ALIGN);
+	}
 
-   	size = ALIGN(size, cachep->align);
-   	/*
-   	 * We should restrict the number of objects in a slab to implement
-   	 * byte sized index. Refer comment on SLAB_OBJ_MIN_SIZE definition.
-   	 */
-   	if (FREELIST_BYTE_INDEX && size < SLAB_OBJ_MIN_SIZE)
-   		size = ALIGN(SLAB_OBJ_MIN_SIZE, cachep->align);
+	/* 3) caller mandated alignment */
+	if (ralign < cachep->align) {
+		ralign = cachep->align;
+	}
+	/* disable debug if necessary */
+	if (ralign > __alignof__(unsigned long long))
+		flags &= ~(SLAB_RED_ZONE | SLAB_STORE_USER);
+	/*
+	 * 4) Store it.
+	 */
+	cachep->align = ralign;
+	cachep->colour_off = cache_line_size(); // 着色区的大小为 l1 cache 的行大小
+	/* Offset must be a multiple of the alignment. */
+	if (cachep->colour_off < cachep->align)
+		cachep->colour_off = cachep->align;
 
-   	...
+	if (slab_is_available())
+		gfp = GFP_KERNEL;
+	else
+		gfp = GFP_NOWAIT;
 
-   	if (set_objfreelist_slab_cache(cachep, size, flags)) { // 设置 slab 管理器的内存布局格式
-   		flags |= CFLGS_OBJFREELIST_SLAB;
-   		goto done;
-   	}
+	...
 
-   	if (set_off_slab_cache(cachep, size, flags)) { // 这里对 3 种布局不做详细分析
-   		flags |= CFLGS_OFF_SLAB;
-   		goto done;
-   	}
+	kasan_cache_create(cachep, &size, &flags);
 
-   	if (set_on_slab_cache(cachep, size, flags)) // 这 3 个函数最终都会调用 calculate_slab_order
-   		goto done;
+	size = ALIGN(size, cachep->align);
+	/*
+	 * We should restrict the number of objects in a slab to implement
+	 * byte sized index. Refer comment on SLAB_OBJ_MIN_SIZE definition.
+	 */
+	if (FREELIST_BYTE_INDEX && size < SLAB_OBJ_MIN_SIZE)
+		size = ALIGN(SLAB_OBJ_MIN_SIZE, cachep->align);
 
-   	return -E2BIG;
+	...
 
-   done:
-   	cachep->freelist_size = cachep->num * sizeof(freelist_idx_t); // freelist 是 slab 分配器的管理区
-   	cachep->flags = flags;
-   	cachep->allocflags = __GFP_COMP;
-   	if (flags & SLAB_CACHE_DMA)
-   		cachep->allocflags |= GFP_DMA;
-   	if (flags & SLAB_CACHE_DMA32)
-   		cachep->allocflags |= GFP_DMA32;`
-   	if (flags & SLAB_RECLAIM_ACCOUNT)
-   		cachep->allocflags |= __GFP_RECLAIMABLE;
-   	cachep->size = size; // 一个 slab 对象的大小
-   	cachep->reciprocal_buffer_size = reciprocal_value(size);
+	if (set_objfreelist_slab_cache(cachep, size, flags)) { // 设置 slab 管理器的内存布局格式
+		flags |= CFLGS_OBJFREELIST_SLAB;
+		goto done;
+	}
 
-   	...
+	if (set_off_slab_cache(cachep, size, flags)) { // 这里对 3 种布局不做详细分析
+		flags |= CFLGS_OFF_SLAB;
+		goto done;
+	}
 
-   	if (OFF_SLAB(cachep)) {
-   		cachep->freelist_cache =
-   			kmalloc_slab(cachep->freelist_size, 0u);
-   	}
+	if (set_on_slab_cache(cachep, size, flags)) // 这 3 个函数最终都会调用 calculate_slab_order
+		goto done;
 
-   	err = setup_cpu_cache(cachep, gfp); // 继续配置 slab，包括 slab 节点，下面介绍
-   	if (err) {
-   		__kmem_cache_release(cachep);
-   		return err;
-   	}
+	return -E2BIG;
 
-   	return 0;
-   }
-   ```
+done:
+	cachep->freelist_size = cachep->num * sizeof(freelist_idx_t); // freelist 是 slab 分配器的管理区
+	cachep->flags = flags;
+	cachep->allocflags = __GFP_COMP;
+	if (flags & SLAB_CACHE_DMA)
+		cachep->allocflags |= GFP_DMA;
+	if (flags & SLAB_CACHE_DMA32)
+		cachep->allocflags |= GFP_DMA32;`
+	if (flags & SLAB_RECLAIM_ACCOUNT)
+		cachep->allocflags |= __GFP_RECLAIMABLE;
+	cachep->size = size; // 一个 slab 对象的大小
+	cachep->reciprocal_buffer_size = reciprocal_value(size);
 
-#### slab分配器的内存布局
+	...
+
+	if (OFF_SLAB(cachep)) {
+		cachep->freelist_cache =
+			kmalloc_slab(cachep->freelist_size, 0u);
+	}
+
+	err = setup_cpu_cache(cachep, gfp); // 继续配置 slab，包括 slab 节点，下面介绍
+	if (err) {
+		__kmem_cache_release(cachep);
+		return err;
+	}
+
+	return 0;
+}
+```
+
+#### slab 分配器的内存布局
 
 slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure：
 
@@ -1561,7 +1598,7 @@ slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure
    		unsigned int num;
    		size_t remainder;
 
-           // 2^gfporder / size，这就解决了第二个问题
+           // 2^gfporder/size，这就解决了第二个问题
    		num = cache_estimate(gfporder, size, flags, &remainder); // 计算该 gfporder 下能容纳多少个 slab 对象
    		if (!num) // 不能容纳对象，显然不行
    			continue;
@@ -1625,7 +1662,7 @@ slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure
 
    上面只是确定了 slab 分配器的内存布局，但是还没有确定内容。
 
-#### 配置slab描述符
+#### 配置 slab 描述符
 
 确定了 slab 分配器的内存布局后，调用 `setup_cpu_cache` 继续配置 slab 描述符。主要是配置如下两个变量（这两个变量有什么用呢？）：
 
@@ -1813,15 +1850,17 @@ slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure
 
 		return ret;
 	}
-   ```
+
 
 至此，slab 描述符完成创建。
 
-#### 分配slab对象
+#### 分配 slab 对象
 
 分配过程对于我这个初学者来说过于复杂，所以先看看图，理理关系，再看具体实现。
 
 ![alloc_slab_obj.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/alloc_slab_obj.png?raw=true)
+
+发现在很多操作前都需要关闭中断，例如这里分配对象前关中断，这应该是有特定的技巧在其中的。比如在中断处理时可能也需要分配 slab 对象，如果不关中断可能导致死锁？
 
 - `kmem_cache_alloc`
   - `slab_alloc`
@@ -2082,7 +2121,7 @@ slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure
 
   着色区让每个 slab 分配器对应不同数量的高速缓存行，着色区的大小为 `colour_next * colour_off`，其中 `colour_next` 是从 0 到这个 slab 描述符中计算出来的 colour 最大值，colour_off 为 L1 高速缓存行大小。这样可以**使不同的 slab 分配器上同一个相对位置 slab 对象的起始地址在高速缓存中相互错开（？）**，有利于提高 cache 的访问效率。这篇文章解释的很[清楚](https://codeantenna.com/a/MTCbuWKjCr)。
 
-#### 释放slab对象
+#### 释放 slab 对象
 
 释放 slab 对象的关键函数是 `___cache_free`，
 
@@ -2114,7 +2153,7 @@ void ___cache_free(struct kmem_cache *cachep, void *objp,
 
 当系统所有空闲对象数目大于系统空闲对象数目阀值并且这个 slab 分配器没有活跃对象时，系统就是销毁这个 slab 分配器，从而回收内存。并且 slab 分配器还注册了一个定时器，定时的扫面所有的 slab 描述符，回收一部分内存，达到条件的 slab 分配器会被销毁（也就是回收一部分物理页）。
 
-#### slab分配器和伙伴系统的接口函数
+#### slab 分配器和伙伴系统的接口函数
 
 slab 分配器创建 slab 对象时会调用伙伴系统的分配物理页面接口函数去分配 `2^cachep->gfporder` 个页面，调用的函数是 `kmem_getpages`。
 
@@ -2142,7 +2181,7 @@ static struct page *kmem_getpages(struct kmem_cache *cachep, gfp_t flags,
 }
 ```
 
-#### 管理区freelist
+#### 管理区 freelist
 
 上文提到管理区可以看作一个 freelist 数组，数组的每个成员大小为 1 字节，每个成员管理一个 slab 对象。这里我们看看 freelist 是怎样管理 slab 分配器中的对象的。
 
@@ -2252,7 +2291,7 @@ static __always_inline unsigned int __kmalloc_index(size_t size,
 
 ### vmalloc
 
-这部分只是大概了解 `vmalloc` 是干什么的和其分配流程，但其详细的实现还不懂。
+这部分只是大概了解 `vmalloc` 是干什么的和分配流程，详细的实现还不懂。
 
 上面介绍了 `kmalloc` 使用 slab 分配器分配小块的、连续的物理内存，因为 slab 分配器在创建的时候也需要使用伙伴系统分配物理内存页面的接口，所以 **slab 分配器建立在一个物理地址连续的大块内存之上**（理解这点很重要）。那如果在内核中不需要连续的物理地址，而**仅仅需要内核空间的虚拟地址是连续的内存块**该如何处理？这就是 `vmalloc` 的工作。
 
@@ -2279,6 +2318,7 @@ struct vm_struct {
 
 // vm_struct 和 vmap_area 分别用来干嘛
 // 从代码来看 vmap_area 就是表示一块 vmalloc 的起始和结束地址，以及所有块组成的链表和红黑树
+// 而 vm_struct 则更详细的记录了 page 信息
 struct vmap_area {
 	unsigned long va_start;
 	unsigned long va_end;
@@ -2312,105 +2352,107 @@ void *__vmalloc_node(unsigned long size, unsigned long align,
 
 `vmalloc` 分配的空间在[内存分布](# 内存分布)小节中的图中有清晰的说明（不同架构的内存布局是不一样的，因为这篇文章的时间跨度较大，参考多本书籍，所以混合了 arm 内核、Loongarch 内核和 x86 内核的源码，这是个问题，之后要想想怎么解决。在 64 位 x86 内核中，该区域为 `0xffffc90000000000 ~ 0xffffe8ffffffffff`）。
 
-1. vmalloc 的核心功能都是在 `__vmalloc_node_range` 函数中实现的。分配内存套路都是一样的，先分配虚拟地址，再根据需要决定是否要分配物理地址，最后建立映射。
+#### __vmalloc_node_range
 
-   ```c
-   void *__vmalloc_node_range(unsigned long size, unsigned long align,
-   			unsigned long start, unsigned long end, gfp_t gfp_mask,
-   			pgprot_t prot, unsigned long vm_flags, int node,
-   			const void *caller)
-   {
-   	struct vm_struct *area;
-   	void *addr;
-   	unsigned long real_size = size;
-   	unsigned long real_align = align;
-   	unsigned int shift = PAGE_SHIFT;
+vmalloc 的核心功能都是在 `__vmalloc_node_range` 函数中实现的。分配内存套路都是一样的，先分配虚拟地址，再根据需要决定是否要分配物理内存，最后建立映射。
 
-   	...
+```c
+void *__vmalloc_node_range(unsigned long size, unsigned long align,
+			unsigned long start, unsigned long end, gfp_t gfp_mask,
+			pgprot_t prot, unsigned long vm_flags, int node,
+			const void *caller)
+{
+	struct vm_struct *area;
+	void *addr;
+	unsigned long real_size = size;
+	unsigned long real_align = align;
+	unsigned int shift = PAGE_SHIFT;
 
-   again:
-   	area = __get_vm_area_node(real_size, align, shift, VM_ALLOC | // 分配一块连续的虚拟内存空间
-   				  VM_UNINITIALIZED | vm_flags, start, end, node,
-   				  gfp_mask, caller);
-   	if (!area) {
-   		warn_alloc(gfp_mask, NULL,
-   			"vmalloc error: size %lu, vm_struct allocation failed",
-   			real_size);
-   		goto fail;
-   	}
+	...
 
-       // 分配物理内存，并和 vm_struct 空间建立映射关系
-   	addr = __vmalloc_area_node(area, gfp_mask, prot, shift, node);
-   	if (!addr)
-   		goto fail;
+again:
+	area = __get_vm_area_node(real_size, align, shift, VM_ALLOC | // 分配一块连续的虚拟内存空间
+				  VM_UNINITIALIZED | vm_flags, start, end, node,
+				  gfp_mask, caller);
+	if (!area) {
+		warn_alloc(gfp_mask, NULL,
+			"vmalloc error: size %lu, vm_struct allocation failed",
+			real_size);
+		goto fail;
+	}
 
-   	/*
-   	 * In this function, newly allocated vm_struct has VM_UNINITIALIZED
-   	 * flag. It means that vm_struct is not fully initialized.
-   	 * Now, it is fully initialized, so remove this flag here.
-   	 */
-   	clear_vm_uninitialized_flag(area);
+    // 分配物理内存，并和 vm_struct 空间建立映射关系
+	addr = __vmalloc_area_node(area, gfp_mask, prot, shift, node);
+	if (!addr)
+		goto fail;
 
-   	size = PAGE_ALIGN(size);
-   	kmemleak_vmalloc(area, size, gfp_mask); // 检查内存泄漏（？）
+	/*
+	 * In this function, newly allocated vm_struct has VM_UNINITIALIZED
+	 * flag. It means that vm_struct is not fully initialized.
+	 * Now, it is fully initialized, so remove this flag here.
+	 */
+	clear_vm_uninitialized_flag(area);
 
-   	return addr;
-   }
-   ```
+	size = PAGE_ALIGN(size);
+	kmemleak_vmalloc(area, size, gfp_mask); // 检查内存泄漏（？）
 
-2. `__get_vm_area_node`
+	return addr;
+}
+```
 
-   ```c
-   static struct vm_struct *__get_vm_area_node(unsigned long size,
-   		unsigned long align, unsigned long shift, unsigned long flags,
-   		unsigned long start, unsigned long end, int node,
-   		gfp_t gfp_mask, const void *caller)
-   {
-   	struct vmap_area *va;
-   	struct vm_struct *area;
-   	unsigned long requested_size = size;
+#### 分配虚拟内存
 
-   	BUG_ON(in_interrupt());
-   	size = ALIGN(size, 1ul << shift);
-   	if (unlikely(!size))
-   		return NULL;
+```c
+static struct vm_struct *__get_vm_area_node(unsigned long size,
+		unsigned long align, unsigned long shift, unsigned long flags,
+		unsigned long start, unsigned long end, int node,
+		gfp_t gfp_mask, const void *caller)
+{
+	struct vmap_area *va;
+	struct vm_struct *area;
+	unsigned long requested_size = size;
 
-   	if (flags & VM_IOREMAP) // 如果是用于 IOREMAP，那么默认按 128 个页面对齐（？）
-   		align = 1ul << clamp_t(int, get_count_order_long(size),
-   				       PAGE_SHIFT, IOREMAP_MAX_ORDER);
+	BUG_ON(in_interrupt());
+	size = ALIGN(size, 1ul << shift);
+	if (unlikely(!size))
+		return NULL;
 
-       // 怎么调用 kmalloc_node 了？
-       // 这是因为需要分配一个新的数据结构，而数据结构往往就是几十个字节
-       // 所以使用 slab 分配器。这种分配方式之后会遇到很多
-   	area = kzalloc_node(sizeof(*area), gfp_mask & GFP_RECLAIM_MASK, node);
-   	if (unlikely(!area))
-   		return NULL;
+	if (flags & VM_IOREMAP) // 如果是用于 IOREMAP，那么默认按 128 个页面对齐（？）
+		align = 1ul << clamp_t(int, get_count_order_long(size),
+				       PAGE_SHIFT, IOREMAP_MAX_ORDER);
 
-   	if (!(flags & VM_NO_GUARD))
-   		size += PAGE_SIZE;
+    // 怎么调用 kmalloc_node 了？
+    // 这是因为需要分配一个新的数据结构，而数据结构往往就是几十个字节
+    // 所以使用 slab 分配器。这种分配方式之后会遇到很多
+	area = kzalloc_node(sizeof(*area), gfp_mask & GFP_RECLAIM_MASK, node);
+	if (unlikely(!area))
+		return NULL;
 
-   	va = alloc_vmap_area(size, align, start, end, node, gfp_mask); // 分配 vmalloc 区域
-   	if (IS_ERR(va)) {
-   		kfree(area);
-   		return NULL;
-   	}
+	if (!(flags & VM_NO_GUARD))
+		size += PAGE_SIZE;
 
-   	kasan_unpoison_vmalloc((void *)va->va_start, requested_size);
+	va = alloc_vmap_area(size, align, start, end, node, gfp_mask); // 分配 vmalloc 区域
+	if (IS_ERR(va)) {
+		kfree(area);
+		return NULL;
+	}
 
-   	setup_vmalloc_vm(area, va, flags, caller); // 构建一个 vm_struct 空间
+	kasan_unpoison_vmalloc((void *)va->va_start, requested_size);
 
-   	return area;
-   }
-   ```
+	setup_vmalloc_vm(area, va, flags, caller); // 构建一个 vm_struct 空间
 
-   - `alloc_vmap_area` 负责分配 vmalloc 区域。其**在 vmalloc 区域中查找一块大小合适的并且没有使用的空间**，这段空间称为缝隙（hole）。
-     - 从 vmalloc 区域的起始位置 `VMALLOC_START` 开始，首先从红黑树 `vmap_area_root` 上查找，这棵树存放着系统正在使用的 vmalloc 区域，遍历左叶子节点寻找区域地址最小的区域。如果区域的开始地址等于 `VMALLOC_START` ，说明这个区域是第一个 vmalloc 区域；如果红黑树没有一个节点，说明整个 vmalloc 区域都是空的。
-     - 从 `VMALLOC_START` 开始查找每个已存在的 vmalloc 区域的缝隙能够容纳目前申请的大小。如果已有的 vmalloc 区域的缝隙不能容纳，那么从最后一块 vmalloc 区域的结束地址开辟一个新的 vmalloc 区域。
-     - 找到新的区域缝隙后，调用 `insert_vmap_area` 将其注册到红黑树。
+	return area;
+}
+```
+
+- `alloc_vmap_area` 负责分配 vmalloc 区域。其**在 vmalloc 区域中查找一块大小合适的并且没有使用的空间**，这段空间称为缝隙（hole）。
+  - 从 vmalloc 区域的起始位置 `VMALLOC_START` 开始，首先从红黑树 `vmap_area_root` 上查找，这棵树存放着系统正在使用的 vmalloc 区域，遍历左叶子节点寻找区域地址最小的区域。如果区域的开始地址等于 `VMALLOC_START` ，说明这个区域是第一个 vmalloc 区域；如果红黑树没有一个节点，说明整个 vmalloc 区域都是空的。
+  - 从 `VMALLOC_START` 开始查找每个已存在的 vmalloc 区域的缝隙能够容纳目前申请的大小。如果已有的 vmalloc 区域的缝隙不能容纳，那么从最后一块 vmalloc 区域的结束地址开辟一个新的 vmalloc 区域。
+  - 找到新的区域缝隙后，调用 `insert_vmap_area` 将其注册到红黑树。
 
 这里有个疑问，为什么 vmalloc 最后申请空间也要调用到 slab 分配器？（上面已经解释了）
 
-```
+```plain
 #0  slab_alloc_node (orig_size=64, addr=18446744071581699837, node=<optimized out>, gfpflags=3264,
     s=0xffff88810004f600) at mm/slub.c:3120
 #1  kmem_cache_alloc_node (s=0xffff88810004f600, gfpflags=gfpflags@entry=3264, node=node@entry=-1)
@@ -2426,77 +2468,77 @@ void *__vmalloc_node(unsigned long size, unsigned long align,
     caller=0xffffffff810a20ad <kernel_clone+157>) at mm/vmalloc.c:3010
 ```
 
-3. `__vmalloc_area_node`
+#### 分配物理地址
 
-   ```c
-   static void *__vmalloc_area_node(struct vm_struct *area, gfp_t gfp_mask,
-   				 pgprot_t prot, unsigned int page_shift,
-   				 int node)
-   {
-   	const gfp_t nested_gfp = (gfp_mask & GFP_RECLAIM_MASK) | __GFP_ZERO;
-   	unsigned long addr = (unsigned long)area->addr;
-   	unsigned long size = get_vm_area_size(area);
-   	unsigned long array_size;
-   	unsigned int nr_small_pages = size >> PAGE_SHIFT;
-   	unsigned int page_order;
+```c
+static void *__vmalloc_area_node(struct vm_struct *area, gfp_t gfp_mask,
+				 pgprot_t prot, unsigned int page_shift,
+				 int node)
+{
+	const gfp_t nested_gfp = (gfp_mask & GFP_RECLAIM_MASK) | __GFP_ZERO;
+	unsigned long addr = (unsigned long)area->addr;
+	unsigned long size = get_vm_area_size(area);
+	unsigned long array_size;
+	unsigned int nr_small_pages = size >> PAGE_SHIFT;
+	unsigned int page_order;
 
-   	array_size = (unsigned long)nr_small_pages * sizeof(struct page *);
-   	gfp_mask |= __GFP_NOWARN;
-   	if (!(gfp_mask & (GFP_DMA | GFP_DMA32))) // 确定使用哪个 ZONE
-   		gfp_mask |= __GFP_HIGHMEM; // 不过在 64 位系统中已经没有 HIGHMEM 了
+	array_size = (unsigned long)nr_small_pages * sizeof(struct page *);
+	gfp_mask |= __GFP_NOWARN;
+	if (!(gfp_mask & (GFP_DMA | GFP_DMA32))) // 确定使用哪个 ZONE
+		gfp_mask |= __GFP_HIGHMEM; // 不过在 64 位系统中已经没有 HIGHMEM 了
 
-   	/* Please note that the recursion is strictly bounded. */
-       // 哈，这个就很好理解了，大于一个 page 的调用伙伴系统，否则调用 slab 分配器
-       // 不过这里只是分配指向所有 page 的指针，真正的物理内存不是在这里分配
-   	if (array_size > PAGE_SIZE) {
-   		area->pages = __vmalloc_node(array_size, 1, nested_gfp, node,
-   					area->caller);
-   	} else {
-   		area->pages = kmalloc_node(array_size, nested_gfp, node);
-   	}
+	/* Please note that the recursion is strictly bounded. */
+    // 哈，这个就很好理解了，大于一个 page 的调用伙伴系统，否则调用 slab 分配器
+    // 不过这里只是分配指向所有 page 的指针，真正的物理内存不是在这里分配
+	if (array_size > PAGE_SIZE) {
+		area->pages = __vmalloc_node(array_size, 1, nested_gfp, node,
+					area->caller);
+	} else {
+		area->pages = kmalloc_node(array_size, nested_gfp, node);
+	}
 
-   	...
+	...
 
-   	set_vm_area_page_order(area, page_shift - PAGE_SHIFT);
-       // 计算需要分配多少个 page
-   	page_order = vm_area_page_order(area);
+	set_vm_area_page_order(area, page_shift - PAGE_SHIFT);
+    // 计算需要分配多少个 page
+	page_order = vm_area_page_order(area);
 
-       // 这里应该是分配物理页面
-   	area->nr_pages = vm_area_alloc_pages(gfp_mask, node,
-   		page_order, nr_small_pages, area->pages);
+    // 这里应该是分配物理页面
+	area->nr_pages = vm_area_alloc_pages(gfp_mask, node,
+		page_order, nr_small_pages, area->pages);
 
-   	atomic_long_add(area->nr_pages, &nr_vmalloc_pages);
+	atomic_long_add(area->nr_pages, &nr_vmalloc_pages);
 
-   	/*
-   	 * If not enough pages were obtained to accomplish an
-   	 * allocation request, free them via __vfree() if any.
-   	 */
-   	if (area->nr_pages != nr_small_pages) {
-   		warn_alloc(gfp_mask, NULL,
-   			"vmalloc error: size %lu, page order %u, failed to allocate pages",
-   			area->nr_pages * PAGE_SIZE, page_order);
-   		goto fail;
-   	}
+	/*
+	 * If not enough pages were obtained to accomplish an
+	 * allocation request, free them via __vfree() if any.
+	 */
+	if (area->nr_pages != nr_small_pages) {
+		warn_alloc(gfp_mask, NULL,
+			"vmalloc error: size %lu, page order %u, failed to allocate pages",
+			area->nr_pages * PAGE_SIZE, page_order);
+		goto fail;
+	}
 
-   	if (vmap_pages_range(addr, addr + size, prot, area->pages,
-   			page_shift) < 0) {
-   		warn_alloc(gfp_mask, NULL,
-   			"vmalloc error: size %lu, failed to map pages",
-   			area->nr_pages * PAGE_SIZE);
-   		goto fail;
-   	}
+	if (vmap_pages_range(addr, addr + size, prot, area->pages,
+			page_shift) < 0) {
+		warn_alloc(gfp_mask, NULL,
+			"vmalloc error: size %lu, failed to map pages",
+			area->nr_pages * PAGE_SIZE);
+		goto fail;
+	}
 
-   	return area->addr;
+	return area->addr;
 
-   fail:
-   	__vfree(area->addr);
-   	return NULL;
-   }
-   ```
+fail:
+	__vfree(area->addr);
+	return NULL;
+}
+```
 
 ### 进程地址空间
 
-还是先看看进程的地址空间布局
+还是先看看进程的地址空间布局。
 
 ![process_address_space.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/process_address_space.png?raw=true)
 
@@ -2553,7 +2595,7 @@ struct mm_struct {
         // 代码段、数据段的起始、结束地址
 		unsigned long start_code, end_code, start_data, end_data;
         // 堆空间的起始地址、当前堆中的 VMA 的结束地址（？）、栈空间的起始地址
-        // 堆空间应该就是 malloc 可用的空间，随着内存的使用逐渐往上增长
+        // 堆空间就是 malloc 可用的空间，随着内存的使用逐渐往上增长
 		unsigned long start_brk, brk, start_stack;
 		unsigned long arg_start, arg_end, env_start, env_end; //（？）
 
@@ -2650,7 +2692,7 @@ struct vm_area_struct {
 
 这里有个问题，X86 CPU 中不是有 cr3 寄存器指向一级页表么，为什么这里还要设置一个 pgd，难道 cr3 中的数据是从这里来的？而且图虽然清晰，但是很多细节还需要仔细分析，如 VMA 和物理页面建立映射关系等等，建立映射关系其实就是分配 page，返回的 page 就是物理地址。
 
-#### VMA相关操作
+#### VMA 相关操作
 
 有个问题，为什么要合并 VMA，合并了那么两个 VMA 的内容进程要怎样区分呢？它们应该是有不同的用途。
 
@@ -2671,326 +2713,330 @@ malloc 函数是标准 C 库封装的一个核心函数，C 标准库最终会�
 
 > 我们习惯使用的是 malloc 函数，而不太熟悉 brk 系统调用，这是因为很少直接使用 brk 系统调用。如果把 malloc 函数想象成零售商，那么 brk 就是代理商，malloc 为用户进程维护一个本地小仓库，当进程需要使用更多内存时，就向这个小仓库要货；当小仓库存量不足时，就通过代理商 brk 向内核批发。
 
-1. brk 系统调用
+#### brk 系统调用
 
-   系统调用的定义是通过 `SYSCALL_DEFINEx` 宏来实现的，其中 `x` 表示参数个数，这个宏的定义如下：
+系统调用的定义是通过 `SYSCALL_DEFINEx` 宏来实现的，其中 `x` 表示参数个数，这个宏的定义如下：
 
-   ```c
-   #define SYSCALL_DEFINE1(name, ...) SYSCALL_DEFINEx(1, _##name, __VA_ARGS__)
-   #define SYSCALL_DEFINE2(name, ...) SYSCALL_DEFINEx(2, _##name, __VA_ARGS__)
-   #define SYSCALL_DEFINE3(name, ...) SYSCALL_DEFINEx(3, _##name, __VA_ARGS__)
-   #define SYSCALL_DEFINE4(name, ...) SYSCALL_DEFINEx(4, _##name, __VA_ARGS__)
-   #define SYSCALL_DEFINE5(name, ...) SYSCALL_DEFINEx(5, _##name, __VA_ARGS__)
-   #define SYSCALL_DEFINE6(name, ...) SYSCALL_DEFINEx(6, _##name, __VA_ARGS__)
+```c
+#define SYSCALL_DEFINE1(name, ...) SYSCALL_DEFINEx(1, _##name, __VA_ARGS__)
+#define SYSCALL_DEFINE2(name, ...) SYSCALL_DEFINEx(2, _##name, __VA_ARGS__)
+#define SYSCALL_DEFINE3(name, ...) SYSCALL_DEFINEx(3, _##name, __VA_ARGS__)
+#define SYSCALL_DEFINE4(name, ...) SYSCALL_DEFINEx(4, _##name, __VA_ARGS__)
+#define SYSCALL_DEFINE5(name, ...) SYSCALL_DEFINEx(5, _##name, __VA_ARGS__)
+#define SYSCALL_DEFINE6(name, ...) SYSCALL_DEFINEx(6, _##name, __VA_ARGS__)
 
-   #define SYSCALL_DEFINE_MAXARGS	6
+#define SYSCALL_DEFINE_MAXARGS	6
 
-   #define SYSCALL_DEFINEx(x, sname, ...)				\
-   	SYSCALL_METADATA(sname, x, __VA_ARGS__)			\
-   	__SYSCALL_DEFINEx(x, sname, __VA_ARGS__)
-   ```
+#define SYSCALL_DEFINEx(x, sname, ...)				\
+	SYSCALL_METADATA(sname, x, __VA_ARGS__)			\
+	__SYSCALL_DEFINEx(x, sname, __VA_ARGS__)
+```
 
-   所有的系统调用展开后的地址都会保存在系统调用表 `sys_call_table` 中。
+所有的系统调用展开后的地址都会保存在系统调用表 `sys_call_table` 中。
 
-   brk 系统调用最后展开成 `__do_sys_brk`，
+brk 系统调用最后展开成 `__do_sys_brk`，
 
-   ```
-   #0  __do_sys_brk (brk=0) at mm/mmap.c:207
-   #1  __se_sys_brk (brk=0) at mm/mmap.c:194
-   #2  __x64_sys_brk (regs=<optimized out>) at mm/mmap.c:194
-   #3  0xffffffff81c0711b in do_syscall_x64 (nr=<optimized out>, regs=0xffffc90000dd7f58)
-       at arch/x86/entry/common.c:50
-   #4  do_syscall_64 (regs=0xffffc90000dd7f58, nr=<optimized out>) at arch/x86/entry/common.c:80
-   #5  0xffffffff81e0007c in entry_SYSCALL_64 () at arch/x86/entry/entry_64.S:113
-   ```
+```plain
+#0  __do_sys_brk (brk=0) at mm/mmap.c:207
+#1  __se_sys_brk (brk=0) at mm/mmap.c:194
+#2  __x64_sys_brk (regs=<optimized out>) at mm/mmap.c:194
+#3  0xffffffff81c0711b in do_syscall_x64 (nr=<optimized out>, regs=0xffffc90000dd7f58)
+    at arch/x86/entry/common.c:50
+#4  do_syscall_64 (regs=0xffffc90000dd7f58, nr=<optimized out>) at arch/x86/entry/common.c:80
+#5  0xffffffff81e0007c in entry_SYSCALL_64 () at arch/x86/entry/entry_64.S:113
+```
 
-   ```c
-   SYSCALL_DEFINE1(brk, unsigned long, brk)
-   {
-   	unsigned long newbrk, oldbrk, origbrk;
-   	struct mm_struct *mm = current->mm;
-   	struct vm_area_struct *next;
-   	unsigned long min_brk;
-   	bool populate;
-   	bool downgraded = false;
-   	LIST_HEAD(uf); // 内部临时用的链表
+```c
+SYSCALL_DEFINE1(brk, unsigned long, brk)
+{
+	unsigned long newbrk, oldbrk, origbrk;
+	struct mm_struct *mm = current->mm;
+	struct vm_area_struct *next;
+	unsigned long min_brk;
+	bool populate;
+	bool downgraded = false;
+	LIST_HEAD(uf); // 内部临时用的链表
 
-   	if (mmap_write_lock_killable(mm))
-   		return -EINTR;
+	if (mmap_write_lock_killable(mm))
+		return -EINTR;
 
-   	origbrk = mm->brk;
+	origbrk = mm->brk;
 
-   	min_brk = mm->start_brk;
+	min_brk = mm->start_brk;
 
-   	if (brk < min_brk) // 出错了
-   		goto out;
+	if (brk < min_brk) // 出错了
+		goto out;
 
-   	newbrk = PAGE_ALIGN(brk); // 结合上面的图就很容易理解，新的 brk 上界
-   	oldbrk = PAGE_ALIGN(mm->brk); // 原来的上界
-   	if (oldbrk == newbrk) { // 新分配的上界和原来的上界一样，直接分配成功
-   		mm->brk = brk;
-   		goto success;
-   	}
+	newbrk = PAGE_ALIGN(brk); // 结合上面的图就很容易理解，新的 brk 上界
+	oldbrk = PAGE_ALIGN(mm->brk); // 原来的上界
+	if (oldbrk == newbrk) { // 新分配的上界和原来的上界一样，直接分配成功
+		mm->brk = brk;
+		goto success;
+	}
 
-   	/*
-   	 * Always allow shrinking brk.
-   	 * __do_munmap() may downgrade mmap_lock to read.
-   	 */
-   	if (brk <= mm->brk) { // 这表示进程请求释放空间，调用 __do_munmap 释放这一部分空间
-   		int ret;
+	/*
+	 * Always allow shrinking brk.
+	 * __do_munmap() may downgrade mmap_lock to read.
+	 */
+	if (brk <= mm->brk) { // 这表示进程请求释放空间，调用 __do_munmap 释放这一部分空间
+		int ret;
 
-   		/*
-   		 * mm->brk must to be protected by write mmap_lock so update it
-   		 * before downgrading mmap_lock. When __do_munmap() fails,
-   		 * mm->brk will be restored from origbrk.
-   		 */
-   		mm->brk = brk;
-   		ret = __do_munmap(mm, newbrk, oldbrk-newbrk, &uf, true);
-   		if (ret < 0) {
-   			mm->brk = origbrk;
-   			goto out;
-   		} else if (ret == 1) {
-   			downgraded = true;
-   		}
-   		goto success;
-   	}
+		/*
+		 * mm->brk must to be protected by write mmap_lock so update it
+		 * before downgrading mmap_lock. When __do_munmap() fails,
+		 * mm->brk will be restored from origbrk.
+		 */
+		mm->brk = brk;
+		ret = __do_munmap(mm, newbrk, oldbrk-newbrk, &uf, true);
+		if (ret < 0) {
+			mm->brk = origbrk;
+			goto out;
+		} else if (ret == 1) {
+			downgraded = true;
+		}
+		goto success;
+	}
 
-   	/* Check against existing mmap mappings. */
-   	next = find_vma(mm, oldbrk);
-       // 以旧边界地址开始的地址空间已经在使用，不需要再寻找（？）
-   	if (next && newbrk + PAGE_SIZE > vm_start_gap(next))
-   		goto out;
+	/* Check against existing mmap mappings. */
+	next = find_vma(mm, oldbrk);
+    // 以旧边界地址开始的地址空间已经在使用，不需要再寻找（？）
+	if (next && newbrk + PAGE_SIZE > vm_start_gap(next))
+		goto out;
 
-   	/* Ok, looks good - let it rip. */
-   	if (do_brk_flags(oldbrk, newbrk-oldbrk, 0, &uf) < 0) // 没有找到一块已经存在的 VMA，继续分配 VMA
-   		goto out;
-   	mm->brk = brk;
+	/* Ok, looks good - let it rip. */
+	if (do_brk_flags(oldbrk, newbrk-oldbrk, 0, &uf) < 0) // 没有找到一块已经存在的 VMA，继续分配 VMA
+		goto out;
+	mm->brk = brk;
 
-   success:
-   	populate = newbrk > oldbrk && (mm->def_flags & VM_LOCKED) != 0; // 判断进程是否使用 mlockall 系统调用
-   	if (downgraded)
-   		mmap_read_unlock(mm);
-   	else
-   		mmap_write_unlock(mm);
-   	userfaultfd_unmap_complete(mm, &uf);
-   	if (populate) // 进程使用 mlockall 系统调用，
-   		mm_populate(oldbrk, newbrk - oldbrk); // 需要马上分配物理内存
-   	return brk;
+success:
+	populate = newbrk > oldbrk && (mm->def_flags & VM_LOCKED) != 0; // 判断进程是否使用 mlockall 系统调用
+	if (downgraded)
+		mmap_read_unlock(mm);
+	else
+		mmap_write_unlock(mm);
+	userfaultfd_unmap_complete(mm, &uf);
+	if (populate) // 进程使用 mlockall 系统调用，
+		mm_populate(oldbrk, newbrk - oldbrk); // 需要马上分配物理内存
+	return brk;
 
-   out:
-   	mmap_write_unlock(mm);
-   	return origbrk;
-   }
-   ```
+out:
+	mmap_write_unlock(mm);
+	return origbrk;
+}
+```
 
-2. `do_brk_flags`
+#### 创建 VMA
 
-   该函数会调用 `vm_area_alloc` 来创建一个新的 VMA。
+该函数会调用 `vm_area_alloc` 来创建一个新的 VMA。
 
-   ```c
-   static int do_brk_flags(unsigned long addr, unsigned long len, unsigned long flags, struct list_head *uf)
-   {
-   	struct mm_struct *mm = current->mm;
-   	struct vm_area_struct *vma, *prev;
-   	struct rb_node **rb_link, *rb_parent;
-   	pgoff_t pgoff = addr >> PAGE_SHIFT;
-   	int error;
-   	unsigned long mapped_addr;
+```c
+static int do_brk_flags(unsigned long addr, unsigned long len, unsigned long flags, struct list_head *uf)
+{
+	struct mm_struct *mm = current->mm;
+	struct vm_area_struct *vma, *prev;
+	struct rb_node **rb_link, *rb_parent;
+	pgoff_t pgoff = addr >> PAGE_SHIFT;
+	int error;
+	unsigned long mapped_addr;
 
-   	/* Until we need other flags, refuse anything except VM_EXEC. */
-   	if ((flags & (~VM_EXEC)) != 0)
-   		return -EINVAL;
-   	flags |= VM_DATA_DEFAULT_FLAGS | VM_ACCOUNT | mm->def_flags;
+	/* Until we need other flags, refuse anything except VM_EXEC. */
+	if ((flags & (~VM_EXEC)) != 0)
+		return -EINVAL;
+	flags |= VM_DATA_DEFAULT_FLAGS | VM_ACCOUNT | mm->def_flags;
 
-   	mapped_addr = get_unmapped_area(NULL, addr, len, 0, MAP_FIXED); // 找到一段未使用的线性地址空间
+	mapped_addr = get_unmapped_area(NULL, addr, len, 0, MAP_FIXED); // 找到一段未使用的线性地址空间
 
-       ...
+    ...
 
-   	/* Clear old maps, set up prev, rb_link, rb_parent, and uf */
-   	if (munmap_vma_range(mm, addr, len, &prev, &rb_link, &rb_parent, uf))
-   		return -ENOMEM;
+	/* Clear old maps, set up prev, rb_link, rb_parent, and uf */
+	if (munmap_vma_range(mm, addr, len, &prev, &rb_link, &rb_parent, uf))
+		return -ENOMEM;
 
-   	/* Check against address space limits *after* clearing old maps... */
-   	if (!may_expand_vm(mm, flags, len >> PAGE_SHIFT))
-   		return -ENOMEM;
+	/* Check against address space limits *after* clearing old maps... */
+	if (!may_expand_vm(mm, flags, len >> PAGE_SHIFT))
+		return -ENOMEM;
 
-   	if (mm->map_count > sysctl_max_map_count)
-   		return -ENOMEM;
+	if (mm->map_count > sysctl_max_map_count)
+		return -ENOMEM;
 
-   	if (security_vm_enough_memory_mm(mm, len >> PAGE_SHIFT))
-   		return -ENOMEM;
+	if (security_vm_enough_memory_mm(mm, len >> PAGE_SHIFT))
+		return -ENOMEM;
 
-   	/* Can we just expand an old private anonymous mapping? */
-   	vma = vma_merge(mm, prev, addr, addr + len, flags, // 尝试合并 VMA
-   			NULL, NULL, pgoff, NULL, NULL_VM_UFFD_CTX);
-   	if (vma)
-   		goto out;
+	/* Can we just expand an old private anonymous mapping? */
+	vma = vma_merge(mm, prev, addr, addr + len, flags, // 尝试合并 VMA
+			NULL, NULL, pgoff, NULL, NULL_VM_UFFD_CTX);
+	if (vma)
+		goto out;
 
-   	/*
-   	 * create a vma struct for an anonymous mapping
-   	 */
-   	vma = vm_area_alloc(mm); // 合并不成功，新建一个 VMA
-   	if (!vma) {
-   		vm_unacct_memory(len >> PAGE_SHIFT);
-   		return -ENOMEM;
-   	}
+	/*
+	 * create a vma struct for an anonymous mapping
+	 */
+	vma = vm_area_alloc(mm); // 合并不成功，新建一个 VMA
+	if (!vma) {
+		vm_unacct_memory(len >> PAGE_SHIFT);
+		return -ENOMEM;
+	}
 
-   	vma_set_anonymous(vma);
-   	vma->vm_start = addr; // 初始化各种信息
-   	vma->vm_end = addr + len;
-   	vma->vm_pgoff = pgoff;
-   	vma->vm_flags = flags;
-   	vma->vm_page_prot = vm_get_page_prot(flags);
-   	vma_link(mm, vma, prev, rb_link, rb_parent);
-   out:
-   	perf_event_mmap(vma); // 更新 mm_struct 信息
-   	mm->total_vm += len >> PAGE_SHIFT;
-   	mm->data_vm += len >> PAGE_SHIFT;
-   	if (flags & VM_LOCKED)
-   		mm->locked_vm += (len >> PAGE_SHIFT);
-   	vma->vm_flags |= VM_SOFTDIRTY;
-   	return 0;
-   }
-   ```
+	vma_set_anonymous(vma);
+	vma->vm_start = addr; // 初始化各种信息
+	vma->vm_end = addr + len;
+	vma->vm_pgoff = pgoff;
+	vma->vm_flags = flags;
+	vma->vm_page_prot = vm_get_page_prot(flags);
+	vma_link(mm, vma, prev, rb_link, rb_parent);
+out:
+	perf_event_mmap(vma); // 更新 mm_struct 信息
+	mm->total_vm += len >> PAGE_SHIFT;
+	mm->data_vm += len >> PAGE_SHIFT;
+	if (flags & VM_LOCKED)
+		mm->locked_vm += (len >> PAGE_SHIFT);
+	vma->vm_flags |= VM_SOFTDIRTY;
+	return 0;
+}
+```
 
-   这个有个疑问，`vm_area_alloc` 创建新的 VMA 为什么还会调用到 slab 分配器？`vm_area_alloc` 本身作为一个结构也需要占用内存，不过它的大小肯定小于 4K，所以使用 slab 来分配。
+这个有个疑问，`vm_area_alloc` 创建新的 VMA 为什么还会调用到 slab 分配器？`vm_area_alloc` 本身作为一个结构也需要占用内存，不过它的大小肯定小于 4K，所以使用 slab 来分配。
 
-   ```
-   #0  slab_alloc_node (orig_size=200, addr=18446744071579497582, node=-1, gfpflags=3264, s=0xffff8881001d5600)  at mm/slub.c:3120
-   #1  slab_alloc (orig_size=200, addr=18446744071579497582, gfpflags=3264, s=0xffff8881001d5600) at mm/slub.c:3214
-   #2  kmem_cache_alloc (s=0xffff8881001d5600, gfpflags=gfpflags@entry=3264) at mm/slub.c:3219
-   #3  0xffffffff8109f46e in vm_area_alloc (mm=mm@entry=0xffff888100292640) at kernel/fork.c:349
-   #4  0xffffffff812ab044 in do_brk_flags (addr=addr@entry=94026372730880, len=len@entry=135168,
-       flags=<optimized out>, flags@entry=0, uf=uf@entry=0xffffc9000056bef0) at mm/mmap.c:3067
-   #5  0xffffffff812ab6cc in __do_sys_brk (brk=94026372866048) at mm/mmap.c:271
-   #6  __se_sys_brk (brk=94026372866048) at mm/mmap.c:194
-   #7  __x64_sys_brk (regs=<optimized out>) at mm/mmap.c:194
-   #8  0xffffffff81c0711b in do_syscall_x64 (nr=<optimized out>, regs=0xffffc9000056bf58)
-       at arch/x86/entry/common.c:50
-   #9  do_syscall_64 (regs=0xffffc9000056bf58, nr=<optimized out>) at arch/x86/entry/common.c:80
-   #10 0xffffffff81e0007c in entry_SYSCALL_64 () at arch/x86/entry/entry_64.S:113
-   ```
+```plain
+#0  slab_alloc_node (orig_size=200, addr=18446744071579497582, node=-1, gfpflags=3264, s=0xffff8881001d5600)  at mm/slub.c:3120
+#1  slab_alloc (orig_size=200, addr=18446744071579497582, gfpflags=3264, s=0xffff8881001d5600) at mm/slub.c:3214
+#2  kmem_cache_alloc (s=0xffff8881001d5600, gfpflags=gfpflags@entry=3264) at mm/slub.c:3219
+#3  0xffffffff8109f46e in vm_area_alloc (mm=mm@entry=0xffff888100292640) at kernel/fork.c:349
+#4  0xffffffff812ab044 in do_brk_flags (addr=addr@entry=94026372730880, len=len@entry=135168,
+    flags=<optimized out>, flags@entry=0, uf=uf@entry=0xffffc9000056bef0) at mm/mmap.c:3067
+#5  0xffffffff812ab6cc in __do_sys_brk (brk=94026372866048) at mm/mmap.c:271
+#6  __se_sys_brk (brk=94026372866048) at mm/mmap.c:194
+#7  __x64_sys_brk (regs=<optimized out>) at mm/mmap.c:194
+#8  0xffffffff81c0711b in do_syscall_x64 (nr=<optimized out>, regs=0xffffc9000056bf58)
+    at arch/x86/entry/common.c:50
+#9  do_syscall_64 (regs=0xffffc9000056bf58, nr=<optimized out>) at arch/x86/entry/common.c:80
+#10 0xffffffff81e0007c in entry_SYSCALL_64 () at arch/x86/entry/entry_64.S:113
+```
 
-3. `mm_populate` 为该进程分配物理内存。通常用户进程很少使用 `VM_LOCKED` 分配掩码（果然很少用，设置断点都跑不到，那就分析代码看怎样建立映射吧），所以 brk 系统调用不会马上为这个进程分配物理内存，而是**一直延迟到用户进程需要访问这些虚拟页面并发生缺页中断时才会分配物理内存，并和虚拟地址建立映射关系**。
+#### 分配物理内存
 
-   ```c
-   int __mm_populate(unsigned long start, unsigned long len, int ignore_errors)
-   {
-   	struct mm_struct *mm = current->mm;
-   	unsigned long end, nstart, nend;
-   	struct vm_area_struct *vma = NULL;
-   	int locked = 0;
-   	long ret = 0;
+`mm_populate` 为该进程分配物理内存。通常用户进程很少使用 `VM_LOCKED` 分配掩码（果然很少用，设置断点都跑不到，那就分析代码看怎样建立映射吧），所以 brk 系统调用不会马上为这个进程分配物理内存，而是**一直延迟到用户进程需要访问这些虚拟页面并发生缺页中断时才会分配物理内存，并和虚拟地址建立映射关系**。
 
-   	end = start + len;
+```c
+int __mm_populate(unsigned long start, unsigned long len, int ignore_errors)
+{
+	struct mm_struct *mm = current->mm;
+	unsigned long end, nstart, nend;
+	struct vm_area_struct *vma = NULL;
+	int locked = 0;
+	long ret = 0;
 
-   	for (nstart = start; nstart < end; nstart = nend) {
-   		/*
-   		 * We want to fault in pages for [nstart; end) address range.
-   		 * Find first corresponding VMA.
-   		 */
-   		if (!locked) {
-   			locked = 1;
-   			mmap_read_lock(mm);
-   			vma = find_vma(mm, nstart); // 找到对应的 VMA
-   		} else if (nstart >= vma->vm_end)
-   			vma = vma->vm_next;
-   		if (!vma || vma->vm_start >= end)
-   			break;
-   		/*
-   		 * Set [nstart; nend) to intersection of desired address
-   		 * range with the first VMA. Also, skip undesirable VMA types.
-   		 */
-   		nend = min(end, vma->vm_end);
-   		if (vma->vm_flags & (VM_IO | VM_PFNMAP))
-   			continue;
-   		if (nstart < vma->vm_start) // 重叠
-   			nstart = vma->vm_start;
-   		/*
-   		 * Now fault in a range of pages. populate_vma_page_range()
-   		 * double checks the vma flags, so that it won't mlock pages
-   		 * if the vma was already munlocked.
-   		 */
-   		ret = populate_vma_page_range(vma, nstart, nend, &locked); // 人为的制造缺页并完成映射
+	end = start + len;
 
-           ...
+	for (nstart = start; nstart < end; nstart = nend) {
+		/*
+		 * We want to fault in pages for [nstart; end) address range.
+		 * Find first corresponding VMA.
+		 */
+		if (!locked) {
+			locked = 1;
+			mmap_read_lock(mm);
+			vma = find_vma(mm, nstart); // 找到对应的 VMA
+		} else if (nstart >= vma->vm_end)
+			vma = vma->vm_next;
+		if (!vma || vma->vm_start >= end)
+			break;
+		/*
+		 * Set [nstart; nend) to intersection of desired address
+		 * range with the first VMA. Also, skip undesirable VMA types.
+		 */
+		nend = min(end, vma->vm_end);
+		if (vma->vm_flags & (VM_IO | VM_PFNMAP))
+			continue;
+		if (nstart < vma->vm_start) // 重叠
+			nstart = vma->vm_start;
+		/*
+		 * Now fault in a range of pages. populate_vma_page_range()
+		 * double checks the vma flags, so that it won't mlock pages
+		 * if the vma was already munlocked.
+		 */
+		ret = populate_vma_page_range(vma, nstart, nend, &locked); // 人为的制造缺页并完成映射
 
-   		nend = nstart + ret * PAGE_SIZE;
-   		ret = 0;
-   	}
-   	if (locked)
-   		mmap_read_unlock(mm);
-   	return ret;	/* 0 or negative error code */
-   }
-   ```
+        ...
 
-4. `populate_vma_page_range` 调用 `__get_user_pages` 来分配物理内存并建立映射关系。
+		nend = nstart + ret * PAGE_SIZE;
+		ret = 0;
+	}
+	if (locked)
+		mmap_read_unlock(mm);
+	return ret;	/* 0 or negative error code */
+}
+```
 
-   `__get_user_pages` 主要用于**锁住内存**，即保证用户空间分配的内存不会被释放。很多驱动程序使用这个接口函数来为用户态程序分配物理内存。
+#### 建立映射关系
 
-   ```c
-   static long __get_user_pages(struct mm_struct *mm,
-   		unsigned long start, unsigned long nr_pages,
-   		unsigned int gup_flags, struct page **pages,
-   		struct vm_area_struct **vmas, int *locked)
-   {
-   	long ret = 0, i = 0;
-   	struct vm_area_struct *vma = NULL;
-   	struct follow_page_context ctx = { NULL };
+`populate_vma_page_range` 调用 `__get_user_pages` 来分配物理内存并建立映射关系。
 
-   	...
+`__get_user_pages` 主要用于**锁住内存**，即保证用户空间分配的内存不会被释放。很多驱动程序使用这个接口函数来为用户态程序分配物理内存。
 
-   	do {
-   		struct page *page;
-   		unsigned int foll_flags = gup_flags;
-   		unsigned int page_increm;
+```c
+static long __get_user_pages(struct mm_struct *mm,
+		unsigned long start, unsigned long nr_pages,
+		unsigned int gup_flags, struct page **pages,
+		struct vm_area_struct **vmas, int *locked)
+{
+	long ret = 0, i = 0;
+	struct vm_area_struct *vma = NULL;
+	struct follow_page_context ctx = { NULL };
 
-   		/* first iteration or cross vma bound */
-   		if (!vma || start >= vma->vm_end) {
-   			vma = find_extend_vma(mm, start); // 查找 VMA
+	...
 
-   			...
-   		}
-   retry:
-   		...
+	do {
+		struct page *page;
+		unsigned int foll_flags = gup_flags;
+		unsigned int page_increm;
 
-   		page = follow_page_mask(vma, start, foll_flags, &ctx); // 判断 VMA 中的虚页是否已经分配了物理内存
-           													   // 其中涉及了页表遍历等操作，之后再分析吧
-   		if (!page) { // 没有分配
-   			ret = faultin_page(vma, start, &foll_flags, locked); // 人为的触发缺页异常，后面详细分析
+		/* first iteration or cross vma bound */
+		if (!vma || start >= vma->vm_end) {
+			vma = find_extend_vma(mm, start); // 查找 VMA
 
-               ...
-   		}
-           ...
+			...
+		}
+retry:
+		...
 
-   		if (pages) {
-   			pages[i] = page;
-   			flush_anon_page(vma, page, start); // 刷新这些页面对应的高速缓存
-   			flush_dcache_page(page);
-   			ctx.page_mask = 0;
-   		}
-   next_page:
-   		if (vmas) {
-   			vmas[i] = vma;
-   			ctx.page_mask = 0;
-   		}
-   		page_increm = 1 + (~(start >> PAGE_SHIFT) & ctx.page_mask);
-   		if (page_increm > nr_pages)
-   			page_increm = nr_pages;
-   		i += page_increm;
-   		start += page_increm * PAGE_SIZE;
-   		nr_pages -= page_increm;
-   	} while (nr_pages);
-   out:
-   	if (ctx.pgmap)
-   		put_dev_pagemap(ctx.pgmap);
-   	return i ? i : ret;
-   }
-   ```
+		page = follow_page_mask(vma, start, foll_flags, &ctx); // 判断 VMA 中的虚页是否已经分配了物理内存
+        													   // 其中涉及了页表遍历等操作，之后再分析吧
+		if (!page) { // 没有分配
+			ret = faultin_page(vma, start, &foll_flags, locked); // 人为的触发缺页异常，后面详细分析
 
-5. `follow_page_mask` 主要用于遍历页表并返回物理页面的 page 数据结构，这个应该比较复杂，但也是核心函数，之后再分析。这里有个问题，就是遍历页表不是由 MMU 做的，为什么这里还要用软件遍历？这里并不是访存，所以不会用到 MMU。
+            ...
+		}
+        ...
 
-简单总结一下 malloc 的操作流程。标准 C 库函数 malloc 最后使用的系统调用是 brk，传入的参数只有 brk 的结束地址，用这个地址和`mm -> brk` 比较，确定是释放内存还是分配内存。而需要分配内存的大小为 `newbrk-oldbrk`，这里 `newbrk` 就是传入的参数，`oldbrk` 是` mm -> brk`。brk 系统调用申请的内存空间貌似都是 `0x21000`。同时根据传入的 brk 在 VMA 的红黑树中寻找是否存在已经分配的内存块，如果有的话那么就不需要从新分配，否则就调用 `do_brk_flags` 分配新的 VMA，然后进行初始化，更新该进程的 `mm`。这样来看就是创建一个 VMA嘛，物理空间都是发生 #PF 才分配的。
+		if (pages) {
+			pages[i] = page;
+			flush_anon_page(vma, page, start); // 刷新这些页面对应的高速缓存
+			flush_dcache_page(page);
+			ctx.page_mask = 0;
+		}
+next_page:
+		if (vmas) {
+			vmas[i] = vma;
+			ctx.page_mask = 0;
+		}
+		page_increm = 1 + (~(start >> PAGE_SHIFT) & ctx.page_mask);
+		if (page_increm > nr_pages)
+			page_increm = nr_pages;
+		i += page_increm;
+		start += page_increm * PAGE_SIZE;
+		nr_pages -= page_increm;
+	} while (nr_pages);
+out:
+	if (ctx.pgmap)
+		put_dev_pagemap(ctx.pgmap);
+	return i ? i : ret;
+}
+```
+
+`follow_page_mask` 主要用于遍历页表并返回物理页面的 page 数据结构，这个应该比较复杂，但也是核心函数，之后再分析。这里有个问题，就是遍历页表不是由 MMU 做的，为什么这里还要用软件遍历？这里并不是访存，所以不会用到 MMU。
+
+简单总结一下 malloc 的操作流程。标准 C 库函数 malloc 最后使用的系统调用是 brk，传入的参数只有 brk 的结束地址，用这个地址和`mm -> brk` 比较，确定是释放内存还是分配内存。而需要分配内存的大小为 `newbrk-oldbrk`，这里 `newbrk` 就是传入的参数，`oldbrk` 是`mm -> brk`。brk 系统调用申请的内存空间貌似都是 `0x21000`。同时根据传入的 brk 在 VMA 的红黑树中寻找是否存在已经分配的内存块，如果有的话那么就不需要从新分配，否则就调用 `do_brk_flags` 分配新的 VMA，然后进行初始化，更新该进程的 `mm`。这样来看就是创建一个 VMA 嘛，物理空间都是发生 #PF 才分配的。
 
 ### mmap
 
@@ -3011,7 +3057,7 @@ mmap 机制在内核中的实现和 brk 类似，但其和缺页中断机制结�
 
 ![mmap-implement.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/mmap-implement.png?raw=true)
 
-在面试的时候被问到这样一个问题：“mmap 映射文件是怎样和磁盘联系”，所有进一步分析一下 mmap 是怎样完成的。
+在面试的时候被问到这样一个问题：“mmap 映射文件是怎样和磁盘联系”，所以进一步分析一下 mmap 是怎样完成的。
 
 应该是版本问题，执行流程和上面的图略有些不一样，`sys_mmap_pgoff` 是系统调用的处理函数，其会调用 `ksys_mmap_pgoff`，
 
@@ -3060,7 +3106,7 @@ unsigned long vm_mmap_pgoff(struct file *file, unsigned long addr,
 	unsigned long populate;
 	LIST_HEAD(uf);
 
-	ret = security_mmap_file(file, prot, flag); // 这个不知道是干啥的
+	ret = security_mmap_file(file, prot, flag); // 这个不知道是干啥的。主要是检查文件权限是否正确等
 	if (!ret) {
 		if (mmap_write_lock_killable(mm))
 			return -EINTR;
@@ -3075,7 +3121,7 @@ unsigned long vm_mmap_pgoff(struct file *file, unsigned long addr,
 }
 ```
 
-#### 关键函数do_mmap
+#### 关键函数 do_mmap
 
 这个函数的核心功能就是找到空闲的虚拟内存地址，并根据不同的文件打开方式设置不同的 vm 标志位 flag！
 
@@ -3232,7 +3278,7 @@ nsigned long do_mmap(struct file *file, unsigned long addr,
 }
 ```
 
-#### 关键函数mmap_region
+#### 关键函数 mmap_region
 
 其核心功能是创建和初始化虚拟内存区域，并加入红黑树节点进行管理，这个看上面的图更容易了解。
 
@@ -3343,19 +3389,19 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 
 ### 缺页异常处理
 
-前面介绍到 malloc 和 mmap 都是只分配了虚拟地址，但是没有分配物理内存，也没有建立虚拟地址和物理地址之间的映射。当进程访问这些还没有建立映射关系的虚拟地址时，CPU 自动触发一个缺页异常。缺页异常的处理是内存管理的重要部分，需要考虑多种情况以及实现细节，包括匿名页面、KSM 页面、页面高速缓存、写时复制（COW）、私有映射和共享映射等等。这里先看看大概的执行流程，然后再详细分析每种情况的实现。
+前面介绍到 malloc 和 mmap 都是只分配了虚拟地址，但是**没有分配物理内存，也没有建立虚拟地址和物理地址之间的映射**。当进程访问这些还没有建立映射关系的虚拟地址时，CPU 自动触发一个缺页异常。缺页异常的处理是内存管理的重要部分，需要考虑多种情况以及实现细节，包括匿名页面、KSM 页面、页面高速缓存、写时复制（COW）、私有映射和共享映射等等。这里先看看大概的执行流程，然后再详细分析每种情况的实现。
 
 ![page_fault](/home/guanshun/gitlab/UFuture.github.io/image/page_fault.png)
 
 从触发缺页异常到 CPU 根据中断号跳转到对应的处理函数这个过程在之前做项目时已经跟踪过，就不再分析，这里主要分析 `handle_mm_fault` 相关的处理函数。
 
 - `DEFINE_IDTENTRY_RAW_ERRORCODE(exc_page_fault)`
-  - `unsigned long address = read_cr2();` 在 X86 架构中，cr2 寄存器保存着访存时引发 #PF 异常的线性地址，cr3 寄存器提供页表的基地址；
+  - `unsigned long address = read_cr2();` 在 X86 架构中，cr2 寄存器保存着访存时引发 #PF 异常的线性地址，cr3 寄存器提供页表的基地址（在 `mm_struct` 中也保存有页表基地址，cr3 寄存器中的值应该是在进程切换时从 `mm_struct` 中写入进去的)；
   - `handle_page_fault`
     - `do_kern_addr_fault` 内核地址空间引发的中断；
     - `do_user_addr_fault` 用户地址空间引发的中断；
 
-#### 关键函数do_user_addr_fault
+#### 关键函数 do_user_addr_fault
 
 该函数的功能是根据发生异常的 addr 找到对应的 VMA，然后判断 VMA 是否有问题，平时编程地址越界之类的错误应该都是在这里定义的。之后对异常处理的结果进行判断，抛出错误。
 
@@ -3493,11 +3539,11 @@ retry_pud:
 
 - 这里 pgd, p4d 等是 5 级页表的名称。五级分页每级命名分别为页全局目录(PGD)、页 4 级目录(P4D)、页上级目录(PUD)、页中间目录(PMD)、页表(PTE)。
 
-#### 关键函数handle_pte_fault
+#### 关键函数 handle_pte_fault
 
 这个函数主要处理各种 VMA，匿名映射，文件映射，VMA 的属性是否可读可写等等。
 
-好多种情况啊！真滴复杂。目前先只分析匿名页面、文件映射和写时复制的缺页中断，其他类型目前的项目有不到，暂时不分析。
+好多种情况啊！真滴复杂。目前先只分析匿名页面、文件映射和写时复制的缺页中断，其他类型目前的项目用不到，暂时不分析。
 
 ```c
 static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
@@ -3535,7 +3581,7 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 			return do_fault(vmf); // 不是匿名映射，是文件映射。后面分析
 	}
 
-	if (!pte_present(vmf->orig_pte)) // present 为 0，说明页面不在内存中，即真正的缺页（？）
+	if (!pte_present(vmf->orig_pte)) // present 为 0，说明页面不在内存中，即真正的缺页，需要从交换区或外存中读取
 		return do_swap_page(vmf); // 请求从交换区读回页面
 
 	if (pte_protnone(vmf->orig_pte) && vma_is_accessible(vmf->vma)) // 页面被设置为 NUMA 调度页面（？）
@@ -3942,7 +3988,7 @@ static vm_fault_t do_fault(struct vm_fault *vmf)
 
 在 2.4 版本的内核中，为了确定某个页面是否被某个进程映射，必须遍历每个进程的页表，因此效率很低，在 2.5 版本的内核中，使用了反向映射（Reverse Mapping）。
 
-RMAP 的主要目的是**从物理页面的 page 数据结构中找到有哪些用户进程的 PTE**，这样就可以快速解除所有的 PTE 并回收这个页面。
+RMAP 的主要目的是**从物理页面的 page 数据结构中找到有哪些用户进程的 PTE**，这样就可以快速解除所有的 PTE 并回收这个页面。为何要设计的这么复杂，能否直接在 page 中加入一个链表，存储所有的 PTE。粗略的看，占用空间太多？
 
 ##### anon_vma
 
@@ -4304,7 +4350,7 @@ static __latent_entropy int dup_mmap(struct mm_struct *mm,
    }
    ```
 
-#### RMAP的应用
+#### RMAP 的应用
 
 RMAP 的典型应用场景如下：
 
@@ -4394,7 +4440,7 @@ static void rmap_walk_anon(struct page *page, struct rmap_walk_control *rwc,
 
 内核中的页交换算法主要使用 LRU 链表算法和第二次机会（second chance）法。
 
-#### LRU链表法
+#### LRU 链表法
 
 #### 第二次机会法
 
@@ -4402,19 +4448,19 @@ static void rmap_walk_anon(struct page *page, struct rmap_walk_control *rwc,
 
 内核中触发页面回收的机制大致有 3 个。
 
-- 直接页面回收机制。在内核态中调用 `__alloc_pages` 分配物理页面时，由于系统内存短缺，不能满足分配需求，此时内核会直接陷入到页面回收机制，尝试回收内存。这种情况下执行页面回收的是请求内存的进程本身，为同步回收，因此调用者进程的执行会被阻塞。
-- 周期性回收内存机制。这是内核线程 kswapd 的工作。当调用 `__alloc_pages` 时发现当前 watermark 不能满足分配请求，那么唤醒 kswapd 线程来异步回收内存。
+- 直接页面回收机制。在内核态中调用 `__alloc_pages` 分配物理页面时，由于系统内存短缺，不能满足分配需求，此时内核会直接陷入到页面回收机制，尝试回收内存。这种情况下执行页面回收的是请求内存的进程本身，为同步回收，因此调用者进程的执行会被阻塞；
+- 周期性回收内存机制。这是内核线程 kswapd 的工作。当调用 `__alloc_pages` 时发现当前 watermark 不能满足分配请求，那么唤醒 kswapd 线程来异步回收内存；
 - slab 收割机（slab shrinker）机制。这是**用来回收 slab 对象的**（slab 对象的回收难道不是 slab 描述符的计数器为 0 则回收么）。当内存短缺时，直接页面回收机制和周期性回收内存机制都会调用 slab shrinker 来回收 slab 对象。
 
 整个回收机制如下图，这些函数每一个展开都无比复杂，
 
 ![page_reclaim](/home/guanshun/gitlab/UFuture.github.io/image/page_reclaim.png)
 
-#### kswapd内核线程
+#### kswapd 内核线程
 
 **内核线程 kswapd 负责在内存不足时回收页面**。kswapd 内核线程在初始化时会为系统中每个内存节点创建一个 "kswapd%d" 的内核线程。从调用栈可以看出 kswapd 是通过 1 号内核线程 `kernel_init` 创建的。
 
-```
+```plain
 #0  kswapd_run (nid=0) at mm/vmscan.c:4435
 #1  0xffffffff831f2e3b in kswapd_init () at mm/vmscan.c:4470
 #2  0xffffffff81003928 in do_one_initcall (fn=0xffffffff831f2df7 <kswapd_init>) at init/main.c:1303
@@ -4538,7 +4584,7 @@ kswapd_try_sleep:
 }
 ```
 
-##### 关键函数balance_pgdat
+##### 关键函数 balance_pgdat
 
 这是一个巨长的函数，涉及了很多东西，我目前无法完全理解，所以只是按照书上总结出一个回收框架。关于这个函数的作用，注释写的很清楚。
 
@@ -4689,7 +4735,7 @@ out:
 }
 ```
 
-##### 关键函数shrink_node
+##### 关键函数 shrink_node
 
 `balance_pgdat` -> `kswapd_shrink_node` -> `shrink_node`
 
@@ -4823,7 +4869,7 @@ static int __unmap_and_move(struct page *page, struct page *newpage,
 }
 ```
 
-#### 关键函数move_to_new_page
+#### 关键函数 move_to_new_page
 
 `move_to_new_page` 用于迁移旧页面到新页面，当然，这个函数还不是最终完成迁移的，不同情况对应不同的迁移函数，不过到这里就打住吧，再深入我怕人没了，之后有能力有需求再分析。
 
@@ -4930,11 +4976,11 @@ out:
 - kcompactd 内核线程。和页面回收 kswapd 内核线程一样，每个内存节点都会创建一个 `kcompactd%d` 内核线程（何时唤醒？）。
 - 直接内存规整。当伙伴系统发现 zone 的 watermask 无法满足页面分配时，会进入慢路径。在慢路径中，除了唤醒 kswapd 内核线程，还会调用 `__alloc_pages_direct_compact` 尝试整理出大块内存。
 
-#### kcompactd内核线程
+#### kcompactd 内核线程
 
 整个过程和 kswapd 内核线程类似，创建、睡眠、唤醒。
 
-```
+```plain
 #0  kcompactd_run (nid=nid@entry=0) at mm/compaction.c:2979
 #1  0xffffffff831f4d5b in kcompactd_init () at mm/compaction.c:3046
 #2  0xffffffff81003928 in do_one_initcall (fn=0xffffffff831f4ce7 <kcompactd_init>) at init/main.c:1303
@@ -5041,7 +5087,7 @@ static int kcompactd(void *p)
 }
 ```
 
-#### 关键函数compact_zone
+#### 关键函数 compact_zone
 
 `compact_zone` 就是完成上面描述的扫描 zone （不过最新的内核不再以 zone 为扫描单元，而是以内存节点）的任务，找出可以迁移的页面和空闲页面，最终整理出大块内存。
 

@@ -79,7 +79,7 @@ struct linux_binfmt {
 
 所有的 `linux_binfmt` 对象都处于一个链表中，可以通过调用 `register_binfmt` 和 `unregister_binfmt` 函数在链表中插入和删除元素。在系统启动期间，为每个编译进内核的可执行文件都执行 `registre_fmt` 函数。当实现了一个新的可执行格式的模块正被装载时，也执行这个函数，当模块被卸载时，执行`unregister_binfmt` 函数。
 
-#### 关键函数do_execveat_common
+#### 关键函数 do_execveat_common
 
 ```c
 /*
@@ -185,9 +185,9 @@ static int do_execveat_common(int fd, struct filename *filename,
 }
 ```
 
-内核中实际执行 `execv` 或 `execve` 系统调用的程序是 `do_execve`，这个函数先打开目标映像文件，读取目标文件的 ELF 头，然后调用另一个函数 `search_binary_handler`，在此函数里面，它会搜索我们上面提到的内核支持的可执行文件类型队列，让各种可执行程序的处理程序前来认领和处理。如果类型匹配，则调用 `load_binary` 函数指针所指向的处理函数来处理目标映像文件。在ELF文件格式中，处理函数是 `load_elf_binary` 函数，下面主要就是分析 `load_elf_binary` 函数的执行过程。
+内核中实际执行 `execv` 或 `execve` 系统调用的程序是 `do_execve`，这个函数先打开目标映像文件，读取目标文件的 ELF 头，然后调用另一个函数 `search_binary_handler`，在此函数里面，它会搜索我们上面提到的内核支持的可执行文件类型队列，让各种可执行程序的处理程序前来认领和处理。如果类型匹配，则调用 `load_binary` 函数指针所指向的处理函数来处理目标映像文件。在 ELF 文件格式中，处理函数是 `load_elf_binary` 函数，下面主要就是分析 `load_elf_binary` 函数的执行过程。
 
-#### 关键函数load_elf_binary
+#### 关键函数 load_elf_binary
 
 ```c
 static int load_elf_binary(struct linux_binprm *bprm)
@@ -647,7 +647,7 @@ static int load_elf_binary(struct linux_binprm *bprm)
 }
 ```
 
-#### 关键函数exec_binprm
+#### 关键函数 exec_binprm
 
 该函数用来执行可执行文件，不过它的主要任务还是调用 `search_binary_handler`。
 

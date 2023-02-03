@@ -14,7 +14,7 @@
 
 内核启动的入口函数不是 `kernel_entry`，而是 `secondary_startup_64`，我一直以为这个辅核的启动过程，这里做个记录。
 
-在 `start_kerenl` 函数中，进行了系统启动过程中几乎所有重要的初始化(有一部分在 boot 中初始化，有一部分在 `start_kernel` 之前的汇编代码进行初始化)，包括内存、页表、必要数据结构、信号、调度器、硬件设备等。而这些初始化是由谁来负责的？就是由`init_task` 进程。`init_task` 是**静态定义的一个进程**，也就是说当内核被放入内存时，它就已经存在，它没有自己的用户空间，一直处于内核空间中运行，并且也只处于内核空间运行（是不是可以理解为是一个 kernel thread）。当它执行到最后，将 `start_kernel`中所有的初始化执行完成后，会在调用 `rest_init` 创建 `kernel_init` 内核线程和一个 `kthreadd` 内核线程，`kernel_init` 内核线程执行到最后会通过 `execve` 系统调用执行转变为我们所熟悉的 **`init` 进程**，而 `kthreadd` 内核线程是内核用于**管理调度其他的内核线程的守护线程**。在最后 `init_task` 将变成一个 idle 进程，用于在 CPU 没有进程运行时运行它，它在此时仅仅用于空转。
+在 `start_kerenl` 函数中，进行了系统启动过程中几乎所有重要的初始化（有一部分在 boot 中初始化，有一部分在 `start_kernel` 之前的汇编代码进行初始化），包括内存、页表、必要数据结构、信号、调度器、硬件设备等。而这些初始化是由谁来负责的？就是由`init_task` 进程。`init_task` 是**静态定义的一个进程**，也就是说当内核被放入内存时，它就已经存在，它没有自己的用户空间，一直处于内核空间中运行，并且也只处于内核空间运行（是不是可以理解为是一个 kernel thread）。当它执行到最后，将 `start_kernel`中所有的初始化执行完成后，会调用 `rest_init` 创建 `kernel_init` 内核线程和一个 `kthreadd` 内核线程，`kernel_init` 内核线程执行到最后会通过 `execve` 系统调用执行转变为我们所熟悉的 **`init` 进程**，而 `kthreadd` 内核线程是内核用于**管理调度其他的内核线程的守护线程**。在最后 `init_task` 将变成一个 idle 进程，用于在 CPU 没有进程运行时运行它，它在此时仅仅用于空转。
 
 `init_task` 在 `sched_init` 完成后化身为 idle 进程，但是它还会继续执行初始化工作，相当于这里只是给 `init_task` 挂个 idle 进程的名号，它其实还是 `init_task` 进程，只有在 `arch_call_rest_init` 中调用 `rest_init` ，`rest_init` 创建 1 号和 2 号进程，然后才化身为真正的 idle 进程，后续的系统启动由 1 号进程接管，1 号进程的执行就是 `kernel_init`。我们先来分析 `sched_init`。
 
@@ -35,12 +35,12 @@ guanshun@guanshun-ubuntu ~> ps -eo pid,ppid,command
 
 ### sched_init
 
-在`start_kernel`中对调度器进行初始化的函数就是 `sched_init`，其主要工作为
+在 `start_kernel` 中对调度器进行初始化的函数就是 `sched_init`，其主要工作为：
 
-- 对相关数据结构分配内存
-- 初始化`root_task_group`
-- 初始化每个 CPU 的 rq 队列(包括其中的 cfs 队列和实时进程队列)
-- 将 `init_task` 进程转变为 idle 进程
+- 对相关数据结构分配内存；
+- 初始化 `root_task_group`；
+- 初始化每个 CPU 的 rq 队列(包括其中的 cfs 队列和实时进程队列)；
+- 将 `init_task` 进程转变为 idle 进程。
 
 ```c
 void __init sched_init(void)
@@ -211,7 +211,7 @@ noinline void __ref rest_init(void)
 
 ### kernel_init
 
-`kernel_init` 的生命周期分为内核态和用户态。在内核态的主要工作是执行 `kernel_init_freeable`，我们之后会分析。然后就是要图找到用户态下的那个 init 程序，原因是 `kernel_init` **要完成从内核态到用户态的转变就必须去运行一个用户态的应用程序**，而内核源代码中的程序都是属于内核态的，所以这个应用程序必须不属于内核源代码，这样才能保证自己是用户态，所以这个应用程序就的是由另外一份文件提供，即根文件系统。
+`kernel_init` 的生命周期分为内核态和用户态。在内核态的主要工作是执行 `kernel_init_freeable`，我们之后会分析。然后就是要找到用户态下的那个 init 程序，原因是 `kernel_init` **要完成从内核态到用户态的转变就必须去运行一个用户态的应用程序**（这种解释我认为有问题，应该是内核要切换到用户态执行，运行一个用户态进程就自动完成了切换过程。所谓内核态和用户态，本质上是访问资源的权限不同，CPU 通过寄存器的位来判断）。
 
 ```c
 static int __ref kernel_init(void *unused)

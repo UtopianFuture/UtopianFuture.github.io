@@ -12,15 +12,15 @@
 - [内存屏障](#内存屏障)
 - [经典自旋锁](#经典自旋锁)
   - [spinlock](#spinlock)
-  - [关键函数spin_lock](#关键函数spin_lock)
-- [MCS锁](#MCS锁)
+  - [关键函数 spin_lock](#关键函数 spin_lock)
+- [MCS 锁](#MCS 锁)
   - [optimistic_spin_node](#optimistic_spin_node)
 - [排队自旋锁](#排队自旋锁)
   - [qspinlock](#qspinlock)
 - [信号量](#信号量)
   - [semaphore](#semaphore)
-  - [关键函数down](#关键函数down)
-  - [关键函数up](#关键函数up)
+  - [关键函数 down](#关键函数 down)
+  - [关键函数 up](#关键函数 up)
 
 - [互斥锁](#互斥锁)
   - [mutex](#mutex)
@@ -55,7 +55,7 @@
 
 实际的项目中，真正的困难是如何发现内核代码存在并发访问的可能并采取保护措施。因此在编写代码时，需要考虑哪些资源位于临界区，应该采取哪些保护措施。任何可能从多个内核代码路径访问的数据都需要保护，保护对象包括静态全局变量、全局变量、共享的数据结构、缓存、链表、红黑树等各种形式锁隐含的数据。因此在编写内核和驱动代码时，需要对数据作如下考虑：
 
-- 除了从当前代码路径外，是否还可能从其他内核代码路径访问这些数据？如中断处理程序、 worker、tasklet、软中断等等，也许写代码的时候在可能出问题的地方加上一段代码，检测所有的访问入口。
+- 除了从当前代码路径外，是否还可能从其他内核代码路径访问这些数据？如中断处理程序、 worker、tasklet、软中断等等，也许写代码的时候在可能出问题的地方加上一段代码，检测所有的访问入口（BPF 在这种地方能派上用场）。
 - 若当前内核代码访问数据时发生被抢占，被调度、执行的进程会不会访问这些数据？
 - 进程会不会进入睡眠状态以等待该数据？
 
@@ -63,7 +63,7 @@
 
 | 锁机制                    | 特点                                                         | 使用规则                                                     |
 | ------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
-| 原子操作 - atomic         | 使用处理器的原子指令，开销小                                 | 临界区中的数据是变量、位（这是什么？）等简单的数据结构       |
+| 原子操作 - atomic         | 使用处理器的原子指令，开销小                                 | 临界区中的数据是变量、位（这是什么？bit）等简单的数据结构    |
 | 内存屏障 - memory         | 使用处理器内存屏障指令或 GCC 的屏障指令                      | 读写指令时序的调整                                           |
 | 自旋锁- spinlock          | 自旋等待                                                     | 中断上下文，短期持有锁，不可递归，临界区不可睡眠，现在的实现是 qspinlock |
 | 信号量 - semaphore        | 可睡眠的锁                                                   | 可长时间持有锁，适合内核和用户空间复杂的同步场景             |
@@ -103,7 +103,7 @@ typedef struct {
 
 - 数据存储屏障（Data Memory Barrier, DMB）指令：确保在执行新的存储器访问前所有的存储器访问都已经完成；
 - 数据同步屏障（Data Synchronization Barrier, DSB）指令：确保在下一个指令执行前所有存储器访问都已经完成；
-- 指令同步屏障（Instruction Synchronization Barrier, ISB）指令：清空流水线，确保在执行新的指令前，之前所有的指令都已完成；
+- 指令同步屏障（Instruction Synchronization Barrier, ISB）指令：**清空流水线**，确保在执行新的指令前，之前所有的指令都已完成；
 
 内核中有如下内存屏障接口，都是经常遇见的：
 
@@ -123,7 +123,7 @@ typedef struct {
 /* The "volatile" is due to gcc bugs */
 #define barrier() __asm__ __volatile__("": : :"memory")
 
-#define mb() 	asm volatile("mfence":::"memory")
+#define mb() 	asm volatile("mfence":::"memory") // 这些都是 x86 指令
 #define rmb()	asm volatile("lfence":::"memory")
 #define wmb()	asm volatile("sfence" ::: "memory")
 
@@ -237,7 +237,7 @@ typedef struct qspinlock {
 } arch_spinlock_t;
 ```
 
-#### 关键函数spin_lock
+#### 关键函数 spin_lock
 
 再看看其是怎么实现的，
 
@@ -322,13 +322,13 @@ static inline void __raw_spin_lock_irq(raw_spinlock_t *lock)
 
 这里有一点需要注意，**`spin_lock_irq` 只会关闭本地中断，其他 CPU 还是可以响应中断**，如果 CPU0 持有该自旋锁，而 CPU1 响应中断且中断处理程序也申请该自旋锁，那么等 CPU0 释放后即可获取。
 
-### MCS锁
+### MCS 锁
 
 在一个锁争用激烈的系统中，**所有等待自旋锁的线程都在同一个共享变量上自旋**，申请和释放锁也都在一个变量上修改，cache 一致性原理导致参与自旋的 CPU 的 cache 行无效，也可能导致 cache 颠簸现象（这种现象是怎样发现的，又是如何确定其和自旋锁有关），导致系统性能降低。
 
-MCS 算法可以解决 cache 颠簸问题，其关键思想是**每个锁的申请者只在本地 CPU 的变量上自旋，而不是全局变量上**，各个 CPU 会等待其他 CPU 将锁传给自己，即每个持有锁的 CPU 在释放锁时会将 next->locked 设为 1。OSQ 锁是 MCS 锁机制的一种实现，而后来内核又引进了基于 MCS 机制的排队自旋锁，后面介绍。我开始以为实现了 qspinlock 后内核应该只会使用 qspinlock，其实不是， osq 也有使用，大部分是在互斥锁中使用。
+MCS 算法可以解决 cache 颠簸问题，其关键思想是**每个锁的申请者只在本地 CPU 的变量上自旋，而不是全局变量上**（那全局变量怎么办？），各个 CPU 会等待其他 CPU 将锁传给自己，即每个持有锁的 CPU 在释放锁时会将 next->locked 设为 1。OSQ 锁是 MCS 锁机制的一种实现，而后来内核又引进了基于 MCS 机制的排队自旋锁，后面介绍。我开始以为实现了 qspinlock 后内核应该只会使用 qspinlock，其实不是， osq 也有使用，大部分是在互斥锁中使用。
 
-```
+```plain
 #0  osq_lock (lock=lock@entry=0xffffffff83014a2c <kernfs_open_file_mutex+12>) at kernel/locking/osq_lock.c:91
 #1  0xffffffff81c157fd in mutex_optimistic_spin (waiter=0x0 <fixed_percpu_data>, ww_ctx=0x0 <fixed_percpu_data>,
     lock=0xffffffff83014a20 <kernfs_open_file_mutex>) at kernel/locking/mutex.c:453
@@ -981,7 +981,7 @@ struct semaphore {
 
 PV 操作对应内核中的 `down()` 和 `up()` 函数。其中 `down()`  还有 `down_interruptible()` 变体，其在争用信号量失败时会让进程进入可中断睡眠状态，而 `down()` 则是进入不可中断睡眠状态。
 
-#### 关键函数down
+#### 关键函数 down
 
 ```c
 int down_interruptible(struct semaphore *sem)
@@ -1046,7 +1046,7 @@ static inline int __sched __down_common(struct semaphore *sem, long state,
 }
 ```
 
-#### 关键函数up
+#### 关键函数 up
 
 然后再看看 `up()`，
 
@@ -1346,7 +1346,7 @@ static noinline void __sched __mutex_unlock_slowpath(struct mutex *lock, unsigne
 
 我们总结一下信号量和互斥锁：
 
-比较信号量的 `down` 函数和互斥锁的 `__mutex_lock_slowpath`，我们发现互斥锁在睡眠前会先尝试自旋等待获取锁，而信号量是直接去睡眠，这就是为什么互斥锁要比信号量高效。
+比较信号量的 `down` 函数和互斥锁的 `__mutex_lock_slowpath`，我们发现**互斥锁在睡眠前会先尝试自旋等待获取锁，而信号量是直接去睡眠**，这就是为什么互斥锁要比信号量高效。
 
 而互斥锁的轻便和高效使得其比信号的使用场景要求更加严格：
 
@@ -1996,7 +1996,7 @@ RCU 全称 Read-Copy-Update，首先我们需要考虑一个问题，前面介�
 
 因为内存屏障、自旋锁、信号量、读写信号量等都需要使用原子操作，而多 CPU 争用共享变量时会让 **cache 一致性协议性能很低**（确实，因为需要不断更新不同 CPU 中 cache 的内容）。以读写信号量为例，除了上述问题，**其只允许多个读者存在，但是读者和写者不能同时存在**。
 
-RCU 的目标是使读者线程没有同步开销，或者同步开销很小，不需要额外的锁，也不需要原子操作和内存屏障即可快速的访问；而将同步任务交给写者线程，写者线程会创建一个副本，在副本中进行修改，之后等待所有读者线程完成后才将旧数据销毁，使指针指向新数据。
+RCU 的目标是**使读者线程没有同步开销，或者同步开销很小，不需要额外的锁，也不需要原子操作和内存屏障即可快速的访问**；而将同步任务交给写者线程，写者线程会创建一个副本，在副本中进行修改，之后等待所有读者线程完成后才将旧数据销毁，使指针指向新数据。
 
 RCU 提供的接口如下：
 
@@ -2015,7 +2015,7 @@ RCU 中有两个重要概念：
 
 ### 问题
 
-- 在[关键函数spin_lock](#关键函数spin_lock) 中涉及到关闭内核抢占，关于内核抢占的东西可以看看[这篇](https://zhuanlan.zhihu.com/p/405965784)文章，讲的很全面。
+- 在[关键函数 spin_lock](#关键函数spin_lock) 中涉及到关闭内核抢占，关于内核抢占的东西可以看看[这篇](https://zhuanlan.zhihu.com/p/405965784)文章，讲的很全面。
 
 ### Reference
 

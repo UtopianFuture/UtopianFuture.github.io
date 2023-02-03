@@ -336,7 +336,7 @@ struct task_struct *__kthread_create_on_node(int (*threadfn)(void *data),
 
 在两个函数（宏）设置断点，看看调用情况即可。
 
-```
+```plain
 guanshun@guanshun-ubuntu ~> ps -eo pid,ppid,command
     PID    PPID COMMAND
       1       0 /sbin/init splash

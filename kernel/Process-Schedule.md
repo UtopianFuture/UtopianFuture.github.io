@@ -15,12 +15,12 @@
     - [fork](#fork)
     - [vfork](#vfork)
     - [clone](#clone)
-    - [关键函数kernel_clone](#关键函数kernel_clone)
-    - [关键函数copy_process](#关键函数copy_process)
-    - [关键函数dup_task_struct](#关键函数dup_task_struct)
-    - [关键函数copy_mm](#关键函数copy_mm)
-    - [关键函数dup_mmap](#关键函数dup_mmap)
-    - [关键函数copy_thread](#关键函数copy_thread)
+    - [关键函数 kernel_clone](#关键函数 kernel_clone)
+    - [关键函数 copy_process](#关键函数 copy_process)
+    - [关键函数 dup_task_struct](#关键函数 dup_task_struct)
+    - [关键函数 copy_mm](#关键函数 copy_mm)
+    - [关键函数 dup_mmap](#关键函数 dup_mmap)
+    - [关键函数 copy_thread](#关键函数 copy_thread)
   - [终止进程](#终止进程)
 - [进程调度](#进程调度)
   - [调度策略](#调度策略)
@@ -33,26 +33,26 @@
     - [cfs_rq](#cfs_rq)
     - [sched_class](#sched_class)
   - [进程创建中的相关初始化](#进程创建中的相关初始化)
-    - [关键函数sched_fork](#关键函数sched_fork)
-    - [关键函数task_fork_fair](#关键函数task_fork_fair)
-    - [关键函数update_curr](#关键函数update_curr)
+    - [关键函数 sched_fork](#关键函数 sched_fork)
+    - [关键函数 task_fork_fair](#关键函数 task_fork_fair)
+    - [关键函数 update_curr](#关键函数 update_curr)
   - [进程加入调度器](#进程加入调度器)
-    - [关键函数wake_up_new_task](#关键函数wake_up_new_task)
-    - [关键函数enqueue_task_fair](#关键函数enqueue_task_fair)
-    - [关键函数enqueue_entity](#关键函数enqueue_entity)
+    - [关键函数 wake_up_new_task](#关键函数 wake_up_new_task)
+    - [关键函数 enqueue_task_fair](#关键函数 enqueue_task_fair)
+    - [关键函数 enqueue_entity](#关键函数 enqueue_entity)
   - [进程调度](#进程调度)
     - [关键函数__schedule](#关键函数__schedule)
-    - [关键函数pick_next_entity](#关键函数pick_next_entity)
+    - [关键函数 pick_next_entity](#关键函数 pick_next_entity)
   - [进程切换](#进程切换)
-    - [关键函数context_switch](#关键函数context_switch)
-    - [关键函数switch_mm](#关键函数switch_mm)
-    - [关键函数switch_to](#关键函数switch_to)
+    - [关键函数 context_switch](#关键函数 context_switch)
+    - [关键函数 switch_mm](#关键函数 switch_mm)
+    - [关键函数 switch_to](#关键函数 switch_to)
     - [关键函数__switch_to](#关键函数__switch_to)
     - [thread_struct](#thread_struct)
 - [负载计算](#负载计算)
   - [量化负载的计算](#量化负载的计算)
   - [实际算力的计算](#实际算力的计算)
-  - [PELT算法](#PELT算法)
+  - [PELT 算法](#PELT 算法)
     - [历史累计衰减时间](#历史累计衰减时间)
     - [负载贡献](#负载贡献)
     - [sched_avg](#sched_avg)
@@ -181,7 +181,7 @@ struct task_struct {
 
 	struct mm_struct		*mm; // 哈哈，这个就很熟悉了
     // 这个和 mm 有什么区别？
-    // 是这样的，对于内核线程来说，没有进程地址空间描述符，但处于进程调度的需要
+    // 是这样的，对于内核线程来说，没有进程地址空间描述符，但出于进程调度的需要
     // 需要借用一个进程的地址空间，所以有了 active_mm
 	struct mm_struct		*active_mm;
 
@@ -199,70 +199,7 @@ struct task_struct {
 	/* JOBCTL_*, siglock protected: */
 	unsigned long			jobctl;
 
-	/* Used for emulating ABI behavior of previous Linux versions: */
-	unsigned int			personality;
-
-	/* Scheduler bits, serialized by scheduler locks: */
-	unsigned			sched_reset_on_fork:1;
-	unsigned			sched_contributes_to_load:1;
-	unsigned			sched_migrated:1;
-#ifdef CONFIG_PSI
-	unsigned			sched_psi_wake_requeue:1;
-#endif
-
-	/* Force alignment to the next boundary: */
-	unsigned			:0;
-
-	/* Unserialized, strictly 'current' */
-
-	/*
-	 * This field must not be in the scheduler word above due to wakelist
-	 * queueing no longer being serialized by p->on_cpu. However:
-	 *
-	 * p->XXX = X;			ttwu()
-	 * schedule()			  if (p->on_rq && ..) // false
-	 *   smp_mb__after_spinlock();	  if (smp_load_acquire(&p->on_cpu) && //true
-	 *   deactivate_task()		      ttwu_queue_wakelist())
-	 *     p->on_rq = 0;			p->sched_remote_wakeup = Y;
-	 *
-	 * guarantees all stores of 'current' are visible before
-	 * ->sched_remote_wakeup gets used, so it can be in this word.
-	 */
-	unsigned			sched_remote_wakeup:1;
-
-	/* Bit to tell LSMs we're in execve(): */
-	unsigned			in_execve:1;
-	unsigned			in_iowait:1;
-#ifndef TIF_RESTORE_SIGMASK
-	unsigned			restore_sigmask:1;
-#endif
-#ifdef CONFIG_MEMCG
-	unsigned			in_user_fault:1;
-#endif
-#ifdef CONFIG_COMPAT_BRK
-	unsigned			brk_randomized:1;
-#endif
-#ifdef CONFIG_CGROUPS
-	/* disallow userland-initiated cgroup migration */
-	unsigned			no_cgroup_migration:1;
-	/* task is frozen/stopped (used by the cgroup freezer) */
-	unsigned			frozen:1;
-#endif
-#ifdef CONFIG_BLK_CGROUP
-	unsigned			use_memdelay:1;
-#endif
-#ifdef CONFIG_PSI
-	/* Stalled due to lack of memory */
-	unsigned			in_memstall:1;
-#endif
-#ifdef CONFIG_PAGE_OWNER
-	/* Used by page_owner=on to detect recursion in page tracking. */
-	unsigned			in_page_owner:1;
-#endif
-#ifdef CONFIG_EVENTFD
-	/* Recursion prevention for eventfd_signal() */
-	unsigned			in_eventfd_signal:1;
-#endif
+    ...
 
 	unsigned long			atomic_flags; /* Flags requiring atomic access. */
 
@@ -453,48 +390,6 @@ struct task_struct {
 	unsigned long			numa_pages_migrated;
 #endif /* CONFIG_NUMA_BALANCING */
 
-	...
-
-	/*
-	 * Time slack values; these are used to round up poll() and
-	 * select() etc timeout values. These are in nanoseconds.
-	 */
-	u64				timer_slack_ns;
-	u64				default_timer_slack_ns;
-
-	...
-
-#ifdef CONFIG_FUNCTION_GRAPH_TRACER
-	/* Index of current stored address in ret_stack: */
-	int				curr_ret_stack;
-	int				curr_ret_depth;
-
-	/* Stack of return addresses for return function tracing: */
-	struct ftrace_ret_stack		*ret_stack;
-
-	/* Timestamp for last schedule: */
-	unsigned long long		ftrace_timestamp;
-
-	/*
-	 * Number of functions that haven't been traced
-	 * because of depth overrun:
-	 */
-	atomic_t			trace_overrun;
-
-	/* Pause tracing: */
-	atomic_t			tracing_graph_pause;
-#endif
-
-    ...
-
-#ifdef CONFIG_VMAP_STACK
-	struct vm_struct		*stack_vm_area;
-#endif
-#ifdef CONFIG_THREAD_INFO_IN_TASK
-	/* A live task holds one reference: */
-	refcount_t			stack_refcount;
-#endif
-
     ...
 
 	/*
@@ -519,10 +414,10 @@ struct task_struct {
 
 内核中对进程生命周期的定义和之前学的经典操作系统的定义略有不同：
 
-- TASK_RUNNING（可运行态或就绪态或正在运行态）：内核对当前正在运行的进程没有给出一个明确的状态。
-- TASK_INTERRUPTIBLE：进程进入睡眠状态来等待某些条件达成或某个资源被释放，一旦条件满足，内核将该状态的进程设置为 TASK_RUNNING 队列。
-- TASK_UNINTERRUPTIBLE：进程在睡眠时不受干扰，对信号不做任何反应（那怎样唤醒它？）。
-- __TASK_STOPPED：进程已停止运行。
+- TASK_RUNNING（可运行态或就绪态或正在运行态）：内核对当前正在运行的进程没有给出一个明确的状态；
+- TASK_INTERRUPTIBLE：进程进入睡眠状态来等待某些条件达成或某个资源被释放，一旦条件满足，内核将该状态的进程设置为 TASK_RUNNING 队列；
+- TASK_UNINTERRUPTIBLE：进程在睡眠时不受干扰，对信号不做任何反应（那怎样唤醒它？）；
+- __TASK_STOPPED：进程已停止运行；
 - EXIT_ZOMBIE：进程已消亡，但对应的 `task_struct` 还没有释放。子进程退出时，父进程可以通过 `wait` 和 `waitpid` 来获取子进程消亡的原因。
 
 #### 进程标识
@@ -572,12 +467,42 @@ asmlinkage __visible void __init start_kernel(void)
 	.cpus_allowed	= CPU_MASK_ALL,					\
 	.nr_cpus_allowed= NR_CPUS,					\
 	.mm		= NULL,						\
-	.active_mm	= &init_mm,					\
+	.active_mm	= &init_mm,					\ // 这个也是静态初始化的
 
 	...
 
 	INIT_NUMA_BALANCING(tsk)					\
 	INIT_KASAN(tsk)							\
+}
+```
+
+```c
+struct mm_struct init_mm = {
+	.mm_mt		= MTREE_INIT_EXT(mm_mt, MM_MT_FLAGS, init_mm.mmap_lock),
+	.pgd		= swapper_pg_dir,
+	.mm_users	= ATOMIC_INIT(2),
+	.mm_count	= ATOMIC_INIT(1),
+	.write_protect_seq = SEQCNT_ZERO(init_mm.write_protect_seq),
+	MMAP_LOCK_INITIALIZER(init_mm)
+	.page_table_lock =  __SPIN_LOCK_UNLOCKED(init_mm.page_table_lock),
+	.arg_lock	=  __SPIN_LOCK_UNLOCKED(init_mm.arg_lock),
+	.mmlist		= LIST_HEAD_INIT(init_mm.mmlist),
+	.user_ns	= &init_user_ns,
+	.cpu_bitmap	= CPU_BITS_NONE,
+#ifdef CONFIG_IOMMU_SVA
+	.pasid		= INVALID_IOASID,
+#endif
+	INIT_MM_CONTEXT(init_mm)
+};
+
+// 在 setup_arch 时调用
+void setup_initial_init_mm(void *start_code, void *end_code,
+			   void *end_data, void *brk)
+{
+	init_mm.start_code = (unsigned long)start_code;
+	init_mm.end_code = (unsigned long)end_code;
+	init_mm.end_data = (unsigned long)end_data;
+	init_mm.brk = (unsigned long)brk;
 }
 ```
 
@@ -684,7 +609,7 @@ SYSCALL_DEFINE5(clone, unsigned long, clone_flags, unsigned long, newsp,
 | CLONE_FS       | 父、子进程共享文件系统信息                                   |
 | CLONE_FILES    | 父、子进程共享打开的文件                                     |
 | CLONE_SIGHAND  | 父、子进程共享信号处理函数以及被阻塞的信号                   |
-| CLONE_VFORK    | 在创建子进程时启用内核的完成量机制，wait_for_completion 会使父进程进入睡眠状态，直到子进程调用execve 或exit 释放内存 |
+| CLONE_VFORK    | 在创建子进程时启用内核的完成量机制，wait_for_completion 会使父进程进入睡眠状态，直到子进程调用 execve 或 exit 释放内存 |
 | CLONE_IO       | 复制 I/O 上下文                                              |
 | CLONE_PTRACE   | 父进程被跟踪、子进程也会被跟踪                               |
 | CLONE_PARENT   | 父、子进程拥有同一个父亲                                     |
@@ -692,7 +617,7 @@ SYSCALL_DEFINE5(clone, unsigned long, clone_flags, unsigned long, newsp,
 | CLONE_NEWNS    | 为子进程创建新的命名空间                                     |
 | CLONE_UNTRACED | 保证没有进程可以跟踪这个新进程                               |
 
-##### 关键函数kernel_clone
+##### 关键函数 kernel_clone
 
 在 5.15 的内核中，这些创建用户态进程和内核线程的接口最后都是调用 `kernel_clone`，只是传入的参数不一样。和书中介绍的不一样，5.15 的内核传入 `kernel_clone` 的参数是 `kernel_clone_args`，而不是之前的多个形参。
 
@@ -773,7 +698,7 @@ pid_t kernel_clone(struct kernel_clone_args *args)
 }
 ```
 
-##### 关键函数copy_process
+##### 关键函数 copy_process
 
 这个函数很长，涉及的东西非常多，所以只关注目前认为更加重要的信息。
 
@@ -1038,7 +963,7 @@ static __latent_entropy struct task_struct *copy_process(
 }
 ```
 
-##### 关键函数dup_task_struct
+##### 关键函数 dup_task_struct
 
 `dup_task_struct` 为新进程分配一个进程描述符和内核栈。
 
@@ -1087,7 +1012,7 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 }
 ```
 
-##### 关键函数copy_mm
+##### 关键函数 copy_mm
 
 这个函数就很好理解了。
 
@@ -1133,7 +1058,7 @@ static int copy_mm(unsigned long clone_flags, struct task_struct *tsk)
 }
 ```
 
-##### 关键函数dup_mm
+##### 关键函数 dup_mm
 
 这个函数涉及到很多内存管理的知识，应该仔细分析，把它搞懂。
 
@@ -1188,7 +1113,7 @@ static struct mm_struct *dup_mm(struct task_struct *tsk,
 }
 ```
 
-##### 关键函数dup_mmap
+##### 关键函数 dup_mmap
 
 这个函数复制父进程的进程地址空间的**页表**到子进程。
 
@@ -1308,7 +1233,7 @@ static __latent_entropy int dup_mmap(struct mm_struct *mm,
 }
 ```
 
-##### 关键函数copy_thread
+##### 关键函数 copy_thread
 
 这里设置些架构相关的寄存器，涉及到 `clone`, `vfork`, `fork` 等系统调用返回用户态的寄存器状态以及返回到哪个处理函数进行系统态 - 用户态的切换，现在知道这个函数是 `ret_from_fork`，当然，这是新建进程开始执行的函数。
 
@@ -1470,7 +1395,7 @@ const int sched_prio_to_weight[40] = {
 
 通过这个表定义的权重值就可以达到 nice 值增减 1，占用 CPU 时间增减 10%，这个可以自行计算。
 
-这里有个问题，为什么有了优先级还要使用 nice 值？仅仅是因为优先级是内核态的变量，而 nice 值可以在用户态访问么？
+这里有个问题，为什么有了优先级还要使用 nice 值？仅仅是因为优先级是内核态的变量，而 nice 值可以在用户态访问么？为了方便计算吧，改变 nice 值可能直接改变进程获取 CPU 资源的比例。
 
 ```c
 const u32 sched_prio_to_wmult[40] = {
@@ -1489,7 +1414,7 @@ const u32 sched_prio_to_wmult[40] = {
 
 根据 nice 值直接得到 `load_weight->inv_weight`。
 
-前面讲到 CFS 跟踪调度实体 `sched_entity` 的虚拟运行时间 `vruntime`，平等对待运行队列中的调度实体，将执行时间少的调度实体排列到红黑树的左边，在下一次任务调度的时候，选择虚拟运行时间少的调度实体来运行。也就是说 `vruntime` 是决定进程调度次序的关键变量，但为何要设计 `vruntime`，而不是直接使用 `runtime`？
+前面讲到 CFS 跟踪调度实体 `sched_entity` 的虚拟运行时间 `vruntime`，平等对待运行队列中的调度实体，将执行时间少的调度实体排列到红黑树的左边，在下一次任务调度的时候，选择虚拟运行时间少的调度实体来运行。也就是说 `vruntime` 是决定进程调度次序的关键变量，但为何要设计 `vruntime`，而不是直接使用 `runtime`？因为还要考虑到进程权重啊！
 
 在 CFS 中有一个计算 `vruntime` 的核心函数 `calc_delta_fair`，其调用 `__calc_delta`，
 
@@ -1530,8 +1455,6 @@ static u64 __calc_delta(u64 delta_exec, unsigned long weight, struct load_weight
 ```
 
 从这个函数的计算公式可以得出，nice 越大，计算出来的 `vruntime` 就越大，而**调度器是选择虚拟运行时间少的调度实体来运行**，所以 nice 值越大，优先级越低。随着 `vruntime` 的增长，优先级低的进程也有机会被调度。
-
-还是不理解为什么要引入 `vruntime`。
 
 #### 相关数据结构
 
@@ -1610,7 +1533,7 @@ struct rq {
 
 	struct cfs_rq		cfs; // CFS 就绪队列
 	struct rt_rq		rt; // 实时进程的就绪队列
-	struct dl_rq		dl; // 时是进程的就绪队列，deadline 也是实时进程
+	struct dl_rq		dl; // 实时进程的就绪队列，deadline 也是实时进程
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	/* list of leaf cfs_rq on this CPU: */
@@ -1652,7 +1575,8 @@ struct rq {
 	unsigned char		nohz_idle_balance;
 	unsigned char		idle_balance;
 
-    // 若一个进程的实际算理大于 CPU 额定算力的 80%，那么这个进程称为不合适的进程（？）
+    // 若一个进程的实际算力大于 CPU 额定算力的 80%，那么这个进程称为不合适的进程（？）
+    // 在 ARM 大小核中就存在这种情况
 	unsigned long		misfit_task_load;
 
 	/* For active balancing */
@@ -1870,7 +1794,7 @@ static __latent_entropy struct task_struct *copy_process(
 
 下面分析一下 `sched_fork` 是怎样初始化调度器的。
 
-##### 关键函数sched_fork
+##### 关键函数 sched_fork
 
 ```c
 /*
@@ -1899,7 +1823,7 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 
 	...
 
-	if (dl_prio(p->prio)) // deadline 进程为什么出错？
+	if (dl_prio(p->prio)) // deadline 进程为什么出错？deadline 进程不允许 fork deadline 类的子进程
 		return -EAGAIN;
 	else if (rt_prio(p->prio))
 		p->sched_class = &rt_sched_class; // 实时进程
@@ -1942,7 +1866,7 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 }
 ```
 
-##### 关键函数task_fork_fair
+##### 关键函数 task_fork_fair
 
 ```c
 static void task_fork_fair(struct task_struct *p)
@@ -1977,7 +1901,7 @@ static void task_fork_fair(struct task_struct *p)
 }
 ```
 
-##### 关键函数update_curr
+##### 关键函数 update_curr
 
 该函数传入的参数为当前进程所在的 CFS 就绪队列，其用于更新进程的 `vruntime`。
 
@@ -2010,7 +1934,7 @@ static void update_curr(struct cfs_rq *cfs_rq)
 }
 ```
 
-##### 关键函数place_entity
+##### 关键函数 place_entity
 
 根据情况对进程虚拟时间进行一些惩罚
 
@@ -2039,7 +1963,7 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
 
 上面两个函数都是确定子进程的 `vruntime` 的。
 
-##### 关键函数sched_slice
+##### 关键函数 sched_slice
 
 `sched_vslice` -> `sched_slice`
 
@@ -2126,7 +2050,7 @@ static u64 __sched_period(unsigned long nr_running)
 #12 0xffffffff81000107 in secondary_startup_64 () at arch/x86/kernel/head_64.S:283
 ```
 
-在[关键函数kernel_clone](#关键函数kernel_clone) 中我们知道进程创建完后需要将其加入到就绪队列接受调度、运行，这里我们进一步分析 `wake_up_new_task`。
+在[关键函数 kernel_clone](#关键函数kernel_clone) 中我们知道进程创建完后需要将其加入到就绪队列接受调度、运行，这里我们进一步分析 `wake_up_new_task`。
 
 ```c
 pid_t kernel_clone(struct kernel_clone_args *args)
@@ -2145,7 +2069,7 @@ pid_t kernel_clone(struct kernel_clone_args *args)
 }
 ```
 
-##### 关键函数wake_up_new_task
+##### 关键函数 wake_up_new_task
 
 ```c
 void wake_up_new_task(struct task_struct *p)
@@ -2197,7 +2121,7 @@ void wake_up_new_task(struct task_struct *p)
 }
 ```
 
-##### 关键函数enqueue_task_fair
+##### 关键函数 enqueue_task_fair
 
 `activate_task` -> `enqueue_task`
 
@@ -2257,7 +2181,7 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 }
 ```
 
-##### 关键函数enqueue_entity
+##### 关键函数 enqueue_entity
 
 ```c
 static void
@@ -2462,7 +2386,7 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 }
 ```
 
-##### 关键函数pick_next_entity
+##### 关键函数 pick_next_entity
 
 `pick_next_task_fair` 是 CFS 的选择函数，不同的调度类的选择函数不同，选择策略应该也不同。其会调用 `pick_next_entity`。CFS 选择红黑树中最左侧的调度实体。
 
@@ -2521,7 +2445,7 @@ pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr)
 
 进程上下文包括执行该进程有关的各种寄存器、内核栈、`task_struct` 等数据结构，进程切换的核心函数是 `context_switch`。
 
-##### 关键函数context_switch
+##### 关键函数 context_switch
 
 ```c
 /*
@@ -2606,7 +2530,7 @@ context_switch(struct rq *rq, struct task_struct *prev,
 
 一个特殊情况是新建进程，第一次执行的切入点在 `copy_thread` 中指定的 `ret_from_fork` 中，因此，当 `switch_to` 切换到新建进程中时，新进程从 `ret_from_fork` 开始执行。
 
-##### 关键函数switch_mm
+##### 关键函数 switch_mm
 
 `switch_mm` 切换进程的地址空间，也就是切换 next 进程的页表到硬件页表中。这里还进行复杂的 tlb flush 操作，需要搞清楚。
 
@@ -2738,7 +2662,7 @@ void switch_mm_irqs_off(struct mm_struct *prev, struct mm_struct *next,
 }
 ```
 
-##### 关键函数switch_to
+##### 关键函数 switch_to
 
 `switch_to` 切换到 next 进程的内核态和硬件上下文。
 
@@ -2979,7 +2903,7 @@ struct thread_struct {
 };
 ```
 
-##### 关键函数finish_task_switch
+##### 关键函数 finish_task_switch
 
 这个函数是**在 next 进程上下文中为 prev 进程收尾的**，大概了解以下它做了哪些工作。
 
@@ -3085,7 +3009,7 @@ CPU 的最大量化计算能力称为额定算力，而一个进程或就绪队�
 
 内核中的绿色节能调度器会使用实际算力来进行进程的迁移调度。
 
-#### PELT算法
+#### PELT 算法
 
 ##### [历史累计衰减时间](#http://www.wowotech.net/process_management/PELT.html)
 
@@ -3314,7 +3238,7 @@ struct sched_avg {
   - 正在运行时间，running；
   - 等待时间，runable，包括正在运行的时间和等待时间；
 
-### SMP负载均衡
+### SMP 负载均衡
 
 这两部分对现在的我来说都过于深入，与其花时间学习这些现在不太可能用到的东西不如先把上面这些基础的知识搞懂。所以这两部分暂时不分析，之后有需要再看。下一步把内存管理和进程调度没有搞懂的地方用 gdb + qemu 深入分析，然后再看看文件系统。
 
@@ -3404,13 +3328,13 @@ struct sched_avg {
 
 2. 为什么要根据 vruntime 决定调度顺序？
 
-3. 在[关键函数context_switch](#关键函数context_switch)中使用 last 参数来达到在 next 进程中能够处理 prev 进程的遗留问题，但是，last 是一个指针，在进程页表都切换了的情况下，prev 能正确指向 prev 的 `task_struct` 么？
+3. 在[关键函数 context_switch](#关键函数context_switch)中使用 last 参数来达到在 next 进程中能够处理 prev 进程的遗留问题，但是，last 是一个指针，在进程页表都切换了的情况下，prev 能正确指向 prev 的 `task_struct` 么？
 
 4. `thread_struct` 数据结构保存进程在上下文切换时的硬件上下文，但怎么和我想象的内容不太一样，很多寄存器没有保存，只保存了 sp 和一些段寄存器，在 X86 中其他的寄存器值都保存在栈里么？还是说就只需要保存这些？
 
-   其实这些信息的保存在[关键函数copy_thread](#关键函数copy_thread)中已经保存了。
+   其实这些信息的保存在[关键函数 copy_thread](#关键函数copy_thread)中已经保存了。
 
-5. [关键函数copy_thread](#关键函数copy_thread)进程创建过程还涉及到很多模块的初始化不懂，之后需要不断深入理解。
+5. [关键函数 copy_thread](#关键函数copy_thread)进程创建过程还涉及到很多模块的初始化不懂，之后需要不断深入理解。
 
 ### Reference
 

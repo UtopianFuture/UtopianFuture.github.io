@@ -17,7 +17,7 @@
 
 主核的执行入口（PC 寄存器的初始值）是编译内核时决定的，运行时由 BIOS 或者 BootLoader 传递给内核。内核的初始入口是`kernel_entry`。LA 的 `kernel_entry` 和 mips 的类似，进行.bss 段的清 0（包括之后加载用户态进程也需要清 0，[为什么要清 0？](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/linux-note/others.md#bss-%E6%AE%B5%E6%B8%85-0)），保存 a0~a3 等操作。之后就进入到第二入口 `start_kernel`。
 
-通过 gdb 单步调试看 LA 内核是怎样初始化的。但是遇到一个问题，内核使用`-O2`优化项，在单步调试时很多值都是`optimized out`，同时设置断点也不会顺序执行，是跳着执行的，给阅读代码带来困难。后来请教师兄，这是正常的，`start_kernel` 部分的代码可以直接看源码，不用单步调试。
+通过 gdb 单步调试看 LA 内核是怎样初始化的。但是遇到一个问题，内核使用 `-O2` 优化项，在单步调试时很多值都是 `optimized out`，同时设置断点也不会顺序执行，是跳着执行的，给阅读代码带来困难。后来请教师兄，这是正常的，`start_kernel` 部分的代码可以直接看源码，不用单步调试。
 
 ### start_kernel
 
@@ -114,7 +114,7 @@ start_kernel
 | -- proc_root_init();
 | -- nsfs_init();
 | -- cpuset_init();
-| -- cgroup_init(); // Control Group，内核控制资源分配到俄机制
+| -- cgroup_init(); // Control Group，内核控制资源分配的机制，可以和 namespace 配合使用
 | -- taskstats_init_early();
 | -- delayacct_init();
 | -- check_bugs();
@@ -125,7 +125,7 @@ start_kernel
 | -- 	efi_free_boot_services();
 | -- }
 
-| -- rest_init(); // 第三阶段，通过 kernel_thread 创建1号进程 kernel_init 和2号进程 kthreadd
+| -- rest_init(); // 第三阶段，通过 kernel_thread 创建 1 号进程 kernel_init 和 2 号进程 kthreadd
 \
 ```
 
@@ -135,58 +135,59 @@ start_kernel
 
 ```c
 setup_arch
-| -- cpu_probe; // 探测cpu类型，写入cputype中
+| -- cpu_probe; // 探测 cpu 类型，写入 cputype 中
 |
-| -- plat_early_init; // 解析bios传入的参数
+| -- plat_early_init; // 解析 bios 传入的参数
 |	| -- fw_init_cmdline; // 获取参数
 |	| -- prom_init_env; // 根据参数设置环境变量
-|	| -- memblock_and_maxpfn_init // 挂载memblock
-|		| -- memblock_add;		// loongson_mem_map和boot_mem_map是什么关系
+|	| -- memblock_and_maxpfn_init // 挂载 memblock
+|		| -- memblock_add;		// loongson_mem_map 和 boot_mem_map 是什么关系
 |
-| -- init_initrd; // 主要是检查initrd_start和initrd_end是否正确，将其映射到虚拟地址
+| -- init_initrd; // 主要是检查 initrd_start 和 initrd_end 是否正确，将其映射到虚拟地址
 |
-| -- prom_init; // 初始化io空间的基址、ACPI表、loongarch使用的numa存储等
-|	| -- set_io_port_base; // 设置IO空间的基址
-|	| -- if(efi_bp){} // efi_bp是在prom_init_env中用bios传递的_fw_envp赋值的，之后进行ACPI初始化，主要是初始化各种表
-|	| -- acpi_table_upgrade; // 通过CPIO获取或bios收集的数据，对各个表进行初始化
+| -- prom_init; // 初始化 io 空间的基址、ACPI 表、loongarch 使用的 numa 存储等
+|	| -- set_io_port_base; // 设置 IO 空间的基址
+|	| -- if(efi_bp){} // efi_bp 是在 prom_init_env 中用 bios 传递的_fw_envp 赋值的
+|					  // 之后进行 ACPI 初始化，主要是初始化各种表
+|	| -- acpi_table_upgrade; // 通过 CPIO 获取或 bios 收集的数据，对各个表进行初始化
 |	| -- acpi_boot_table_init;
 |		| -- acpi_initialize_tables; // Initialize the table manager, get the RSDP and RSDT/XSDT.
-|	| -- acpi_boot_init; // 主要是解析MADT
+|	| -- acpi_boot_init; // 主要是解析 MADT
 |	| -- prom_init_numa_memory;
-|		| -- numa_mem_init; // 初始化numa
-|			| -- numa_default_distance; // 初始化numa节点的距离矩阵
-|			| -- init_node_memblock; // 逐个分析内存分布图并将结果通过add_mem_region保存到loongson_mem_map中
-|	| -- loongson_acpi_init; // ACPI初始化始终是个大问题，需要进一步了解ACPI才能看懂
+|		| -- numa_mem_init; // 初始化 numa
+|			| -- numa_default_distance; // 初始化 numa 节点的距离矩阵
+|			| -- init_node_memblock; // 逐个分析内存分布图并将结果通过 add_mem_region 保存到 loongson_mem_map 中
+|	| -- loongson_acpi_init; // ACPI 初始化始终是个大问题，需要进一步了解 ACPI 才能看懂
 |
-| -- cpu_report; // 打印一些初始化后CPU的信息
+| -- cpu_report; // 打印一些初始化后 CPU 的信息
 |
-| -- arch_mem_init; // 主要是初始化设备树和bootmem
+| -- arch_mem_init; // 主要是初始化设备树和 bootmem
 |	| -- plat_mem_setup; // detects the memory configuration and
 |						   // will record detected memory areas using add_memory_region.
-|			| -- early_init_dt_scan_memory; // 早期读取bios传入的信息，最终通过memblock_add挂载
+|			| -- early_init_dt_scan_memory; // 早期读取 bios 传入的信息，最终通过 memblock_add 挂载
 |	| -- early_init_dt_scan; // 早期初始化设备树
-|	| -- dt_bootmem_init; // 建立boot_mem_map内存映射图，boot_mem_map主要给BootMem内存分配器用，只包含系统内存
-|							// 这里不是初始化bootmem的地方，而只是确定其上下界，
-|							// 然后通过memblock_add_range（核心函数）将其挂载
-|	| -- device_tree_init; // 用bios传递的信息初始化设备树节点
+|	| -- dt_bootmem_init; // 建立 boot_mem_map 内存映射图，boot_mem_map 主要给 BootMem 内存分配器用，只包含系统内存
+|							// 这里不是初始化 bootmem 的地方，而只是确定其上下界，
+|							// 然后通过 memblock_add_range（核心函数）将其挂载
+|	| -- device_tree_init; // 用 bios 传递的信息初始化设备树节点
 |		| -- unflatten_and_copy_device_tree;
-|			| -- early_init_dt_alloc_memory_arch; // 先在初始化好的bootmem中分配物理空间
+|			| -- early_init_dt_alloc_memory_arch; // 先在初始化好的 bootmem 中分配物理空间
 |			| -- unflatten_device_tree; // create tree of device_nodes from flat blob
 |
 |	| -- sparse_init; // 初始化稀疏型内存模型
 |
-|	| -- plat_swiotlb_setup; // swiotlb为软件中转站，用于让任意设备能够对任意内存地址发起DMA访问
+|	| -- plat_swiotlb_setup; // swiotlb 为软件中转站，用于让任意设备能够对任意内存地址发起 DMA 访问
 | 							   // 要保证弱寻址能力的设备能够访问，所有尽早初始化
 |
-|	| -- resource_init; // 在已经初始化的bootmem中为code, date, bss段分配空间
+|	| -- resource_init; // 在已经初始化的 bootmem 中为 code, date, bss 段分配空间
 |
-|	| -- plat_smp_setup; // smp是多对称处理器，这里先配置主核，主要是主核编号，核间中断等
+|	| -- plat_smp_setup; // smp 是多对称处理器，这里先配置主核，主要是主核编号，核间中断等
 |
-|	| -- prefill_possible_map; // 建立合理的逻辑CPU的possible值，possible和present的区别是CPU物理热拔插，
-|								 // 如果物理上移除一个CPU，present就会减1，默认两者像等
+|	| -- prefill_possible_map; // 建立合理的逻辑 CPU 的 possible 值，possible 和 present 的区别是 CPU 物理热拔插，
+|								 // 如果物理上移除一个 CPU，present 就会减 1，默认两者像等
 |
-|	| -- cpu_cache_init; // 三级cache初始化，主要是ways, sets, size
-|		| -- setup_protection_map; // 建立进程VMA权限到页表权限的映射表（为什么是16个页表？）
+|	| -- cpu_cache_init; // 三级 cache 初始化，主要是 ways, sets, size
+|		| -- setup_protection_map; // 建立进程 VMA 权限到页表权限的映射表（为什么是 16 个页表？）
 |
 |	| -- paging_init; // 初始化各个内存页面管理区。设置不同的页面管理区是为访问能力有限的设备服务
 |		| -- free_area_init_nodes; // Initialise all pg_data_t and zone data, the start_pfn, end_pfn.
