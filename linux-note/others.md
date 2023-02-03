@@ -1267,3 +1267,27 @@ The CoreLink TZC-400 TrustZone Address Space Controller (TZC-400) is an AMBA com
 ```plain
 nm - list symbols from object files
 ```
+
+### [Page cache](https://blog.51cto.com/ultrasql/1627647)
+
+Page cache 也叫页缓冲或文件缓冲，由几个磁盘块构成，大小通常为 4k，在 64 位系统上为 8k，构成的几个磁盘块在物理磁盘上不一定连续，文件的组织单位为一页， 也就是一个 page cache 大小，文件读取是由外存上不连续的几个磁盘块，到 buffer cache，然后组成 page cache，然后供给应用程序。
+
+Page cache 在 linux 读写文件时，它用于缓存文件的逻辑内容，从而加快对磁盘上映像和数据的访问。具体说是加速对文件内容的访问，buffer cache 缓存文件的具体内容——物理磁盘上的磁盘块，这是加速对磁盘的访问。
+
+### Buffer cache
+
+Buffer cache 也叫块缓冲，是对物理磁盘上的一个磁盘块进行的缓冲，其大小为通常为 1k，磁盘块也是磁盘的组织单位。设立 buffer cache 的目的是为在程序多次访问同一磁盘块时，减少访问时间。系统将磁盘块首先读入 buffer cache，如果 cache 空间不够时，会通过一定的策略将一些过时或多次未被访问的 buffer cache 清空。程序在下一次访问磁盘时首先查看是否在 buffer cache 找到所需块，命中可减少访问磁盘时间。不命中时需重新读入 buffer cache。对 buffer cache 的写分为两种，一是直接写，这是程序在写 buffer cache 后也写磁盘，要读时从 buffer cache 上读，二是后台写，程序在写完 buffer cache 后并不立即写磁盘，因为有可能程序在很短时间内又需要写文件，如果直接写，就需多次写磁盘了。这样效率很低，而是过一段时间后由后台写，减少了多次访磁盘的时间。
+
+Buffer cache 是由物理内存分配，Linux 系统为提高内存使用率，会将空闲内存全分给 buffer cache ，当其他程序需要更多内存时，系统会减少 cache 大小。
+
+### Page cache 和 Buffer cache 的区别
+
+磁盘的操作有逻辑级（文件系统）和物理级（磁盘块），这两种 Cache 就是分别缓存逻辑和物理级数据的。
+
+假设我们通过文件系统操作文件，那么文件将被缓存到 Page Cache，如果需要刷新文件的时候，Page Cache 将交给 Buffer Cache 去完成，因为 Buffer Cache 就是缓存磁盘块的。
+
+也就是说，直接去操作文件，那就是 Page Cache 区缓存，用 dd 等命令直接操作磁盘块，就是 Buffer Cache 缓存的东西。
+
+Page cache 实际上是针对文件系统的，是文件的缓存，在文件层面上的数据会缓存到 page cache。文件的逻辑层需要映射到实际的物理磁盘，这种映射关系由文件系统来完成。当 page cache 的数据需要刷新时，page cache 中的数据交给 buffer cache，但是这种处理在 2.6 版本的内核之后就变的很简单了，没有真正意义上的 cache 操作。
+
+简单说来，page cache 用来缓存文件数据，buffer cache 用来缓存磁盘数据。在有文件系统的情况下，对文件操作，那么数据会缓存到 page cache，如果直接采用 dd 等工具对磁盘进行读写，那么数据会缓存到 buffer cache。
