@@ -993,3 +993,18 @@ OK，LKS 的缺点来了，同一时间只能有一半的 CPU 在工作，即其
 发生 OOM 时，内核提供的 log 信息不包括 slab 描述符管理的内存信息？Overstreet 开发的新的 [report system](https://lwn.net/Articles/892611/) 不但能够给出 10 个使用最多内存的 slab 信息，还能够包括每个 slab shrinker 受到的请求以及释放的内存。
 
 其余部分则是内核开发者讨论目前的 OOM log 系统存在的问题，还没有处理过 OOM，这些经验对我来说暂时无用。
+
+### [How to cope with hardware-poisoned page-cache pages](https://lwn.net/Articles/893565/)
+
+Hardware poisoning 是一种在运行的系统中发现和处理内存错误的机制。当特定区域的内存不再正确（如何判断不再正确？），这个区域就"poisoning"，后续访存都会出错。这种机制下一篇文章再详细分析。
+
+开发者在这个 session 上讨论如何解决 [page cache](.) 中毒的问题。如果中毒的 page cache 没有修改过，那么直接丢弃该 page，从外存再读取就行。但是如果该 page cache 是"dirty"，那么很麻烦。目前的处理方法是直接丢弃该 page，所有的数据都丢失了。只有进行将这些受影响的 page 映射到自己的内存空间时才会发现这个问题。这种问题会导致用户的数据丢失，持续的访问这些 page 将产生错误数据，并且用户不知道这是错误的。这种问题很难解决（数据丢失了应该就无法找回吧，困难应该是指难以发现这一 bug）。
+
+为了解决这种问题，该开发者认为内核不应该丢弃出错的 page，文件系统也应该通知这些问题而不是将这些 page 写回外存。有两种做法：
+
+- 在每条访存 page cache 的路径上加上一个检查 hardware-poison flag 的操作，但是这样需要改动大量代码；
+- 在查找该 page 时直接返回 NULL，让用户或开发者能够快速发现这一问题。
+
+文章剩余部分是各位开发者讨论解决方法是否合适，涉及的东西很多，这里不再记录。
+
+### [HWPOISON](https://lwn.net/Articles/348886/)
