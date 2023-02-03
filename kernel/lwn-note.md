@@ -987,3 +987,9 @@ OK，LKS 的缺点来了，同一时间只能有一半的 CPU 在工作，即其
 [The Linux kernel user’s and administrator’s guide](https://docs.kernel.org/admin-guide/index.html)
 
 [DRM documentation](https://docs.kernel.org/gpu/index.html) 不错的文档化的例子
+
+### [Better tools for out-of-memory debugging](https://lwn.net/Articles/894546/)
+
+发生 OOM 时，内核提供的 log 信息不包括 slab 描述符管理的内存信息？Overstreet 开发的新的 [report system](https://lwn.net/Articles/892611/) 不但能够给出 10 个使用最多内存的 slab 信息，还能够包括每个 slab shrinker 受到的请求以及释放的内存。
+
+其余部分则是内核开发者讨论目前的 OOM log 系统存在的问题，还没有处理过 OOM，这些经验对我来说暂时无用。
