@@ -1008,3 +1008,55 @@ Hardware poisoning 是一种在运行的系统中发现和处理内存错误的�
 文章剩余部分是各位开发者讨论解决方法是否合适，涉及的东西很多，这里不再记录。
 
 ### [HWPOISON](https://lwn.net/Articles/348886/)
+
+随着内存容量、密度的增加，内存出错的概率逐渐增大。hardware poison 就是能够发现和恢复这种内存错误的机制。
+
+这个 patch 居然是由吴峰光博士提交的，:+1::+1::+1:
+
+内存错误可以分为"soft errors"和"hard errors"。”soft errors" 就是由于各种射线和随机错误导致的 SRAM 或 DRAM 存储单元中的比特状态改变。而 "hard errors" 就是由于硬件损耗导致存储失效。这个了解过 SSD 很容易理解，闪存颗粒是有使用寿命的。"hard errors" 由硬件的控制器探测并维护信息的正确性，如使用 ECC 等方式。如果是大量的信息出错了，那么就会发生 kernel panic。
+
+开发者认为直接 kernel panic 优点反应过度。如果错误内存没有影响到现有进程，那么忽略或隔离这些错误时更好的选择（但这样就会导致上一篇文章遇到的问题，很难解决 bug）。hardware poison 延迟解决这一问题，允许使用更加温和的方式恢复或隔离这部分内存，而不是直接 system crash。但是 hardware poison 需要硬件和内核的支持。
+
+这里只讨论内核是如何支持的。硬件在将内存信息转移到 system cache 或 system bus 的时候发现未被纠正的错误（这就是硬件支持。硬件并不会立刻检查这些内存信息，而是将 hardware poison 位置上，等之后用到这些 page 由软件进行检查），会运行一个进程通过 ECC 来检查一个或多个 page。所以 poison machine check 可能发现在数据异常很长时间之后。
+
+hardware poison 机制负责找到包含中毒数据的 page 并尝试隔离它们，防止未来继续使用它们。而根据页面类型和不同的内核配置，其会有多种操作。其在 `struct page` 中使用一个标志位来表示该页是否 poison。
+
+```c
+struct page {
+	unsigned long flags;		/* Atomic flags, some possibly
+					 * updated asynchronously */
+	union {
+
+        ...
+		struct {	/* Second tail page of hugetlb page */
+			unsigned long _hugetlb_pad_1;	/* compound_head */
+			void *hugetlb_subpool;
+			void *hugetlb_cgroup;
+			void *hugetlb_cgroup_rsvd;
+			void *hugetlb_hwpoison;
+			/* No more space on 32-bit: use third tail if more */
+		};
+
+        ...
+    }
+}
+```
+
+其会忽视如下几种页面：
+
+- 已经 poison 的；
+- outside of kernel control（内核中还有这种页面么）；
+- 保留的内核页面；
+- refcount=0 的页面。
+
+除了以上几种页面之外，hardware poison 会采取 recover, delay 和 failure 操作（这个几个操作都会将 hwpoison 位置上）：
+
+- recover: 上一篇文章描述过；
+- delay: 内核推迟处理该页，包括 slab allocator 和 buddy allocator 等分配器不到万不得已不会处理该页；
+- failure: could, but does not support handling the page(?)；
+
+还有很多地方不清晰，工作中遇到再详细了解。
+
+An HWPOISON patch git repository is available at
+
+​	git://git.kernel.org/pub/scm/linux/kernel/git/ak/linux-mce-2.6.git hwpoison
