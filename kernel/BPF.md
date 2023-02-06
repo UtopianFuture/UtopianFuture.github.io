@@ -12,6 +12,10 @@
 
 ### execsnoop
 
+execsnoop 会以行输出创建的每个新进程，用于检查生命周期比较短的进程。这些进程会消耗 CPU 资源，但不会出现在大多数以周期性采集正在运行的进程快照的监控工具中。
+
+该工具会跟踪 `exec` 系统调用，而不是 `fork`，因此它能够跟踪大部分新创建的进程，但不是所有的进程（它无法跟踪一个应用启动的工作进程，因为此时没有用到 `exec`）。
+
 首要要学习很多 python 的东西，不然代码看不懂。
 
 在 python 中经常见到如下代码，
@@ -219,6 +223,8 @@ int do_ret_sys_execve(struct pt_regs *ctx)
 
 ### opensnoop
 
+通过打开的文件可以了解到一个应用是如何工作的，确定其数据文件，配置文件和 log 文件等。有时候应用会因为要读取一个不存在的文件而导致异常，可以通过 opensnoop 命令快速定位问题。
+
 从图中来看，execsnoop 和 opensnoop 都是跟踪系统调用的，为什么 BPF 程序完全不一样呢？
 
 其是并没有不一样，只是将程序分开来写，
@@ -374,6 +380,8 @@ b.attach_kretprobe(event=fnname_open, fn_name="trace_return")
 
 ### ext4slower
 
+对于识别或排除性能问题非常有用：通过文件系统显示独立的慢速磁盘 I/O。由于磁盘处理 I/O 是异步的，因此很难将该层的延迟与应用程序的延迟联系起来。使用本工具，可以在 VFS -> 文件系统接口层面进行跟踪，将更接近应用的问题所在。
+
 这个工具代码结构相比于 opensnoop 要清晰。其是跟踪 ext4 文件操作延迟的，包括 reads, writes opens 和 syncs。延迟的计算从 VFS 发送这些操作开始到操作结束。
 
 ```c
@@ -501,6 +509,125 @@ int trace_read_return(struct pt_regs *ctx)
 b.attach_kprobe(event="ext4_file_read_iter", fn_name="trace_read_entry")
 b.attach_kretprobe(event="ext4_file_read_iter", fn_name="trace_read_return")
 ```
+
+### biolatency
+
+这个工具可以用来分析 I/O 请求的延时，并以条形图的方式打印出来，
+
+```
+    usecs               : count     distribution
+        0 -> 1          : 0        |                                        |
+        2 -> 3          : 0        |                                        |
+        4 -> 7          : 0        |                                        |
+        8 -> 15         : 0        |                                        |
+       16 -> 31         : 72       |*********                               |
+       32 -> 63         : 201      |***************************             |
+       64 -> 127        : 154      |*********************                   |
+      128 -> 255        : 292      |****************************************|
+      256 -> 511        : 46       |******                                  |
+      512 -> 1023       : 6        |                                        |
+     1024 -> 2047       : 19       |**                                      |
+     2048 -> 4095       : 0        |                                        |
+     4096 -> 8191       : 53       |*******                                 |
+```
+
+从图中可以看出，延迟为 128us-255us 的 I/O 请求有 292 次。
+
+直观的考虑一下，要实现这样一个工具，我们需要截获每个 I/O 请求发起与完成的时刻。那么应该按照前几个工具的写法，用 `attach_kprobe` 和 `attach_kretprobe` 将 BPF 程序 attach 到读写函数上。而 BPF 程序需要用一个 `BPF_HASH` 记录时间戳，用 `BPF_PERF_OUTPUT` 记录其他信息并传输到用户态。
+
+我们来看看 BPF 程序，
+
+```c
+#include <uapi/linux/ptrace.h>
+#include <linux/blk-mq.h>
+
+typedef struct disk_key {
+    char disk[DISK_NAME_LEN];
+    u64 slot;
+} disk_key_t;
+
+typedef struct flag_key {
+    u64 flags;
+    u64 slot;
+} flag_key_t;
+
+typedef struct ext_val {
+    u64 total;
+    u64 count;
+} ext_val_t;
+
+BPF_HASH(start, struct request *);
+BPF_HISTOGRAM(dist);
+
+// time block I/O
+int trace_req_start(struct pt_regs *ctx, struct request *req)
+{
+
+
+    u64 ts = bpf_ktime_get_ns();
+    start.update(&req, &ts);
+    return 0;
+}
+
+// output
+int trace_req_done(struct pt_regs *ctx, struct request *req)
+{
+    u64 *tsp, delta;
+
+    // fetch timestamp and calculate delta
+    tsp = start.lookup(&req);
+    if (tsp == 0) {
+        return 0;   // missed issue
+    }
+    delta = bpf_ktime_get_ns() - *tsp; // 计算差值
+
+    delta /= 1000;
+
+    // store as histogram
+    dist.atomic_increment(bpf_log2l(delta)); // 逐次累加
+
+    start.delete(&req);
+    return 0;
+}
+```
+
+果然如此。再来看看 attach 到哪个函数，
+
+```python
+b.attach_kprobe(event="blk_account_io_start", fn_name="trace_req_start")
+b.attach_kprobe(event="blk_account_io_done", fn_name="trace_req_done")
+```
+
+没有 `attach_kretprobe`，从代码上看是因为 I/O 请求结束的处理函数为 `blk_account_io_done`，
+
+```c
+static void __blk_account_io_done(struct request *req, u64 now)
+{
+	const int sgrp = op_stat_group(req_op(req));
+
+	part_stat_lock();
+	update_io_ticks(req->part, jiffies, true);
+	part_stat_inc(req->part, ios[sgrp]);
+	part_stat_add(req->part, nsecs[sgrp], now - req->start_time_ns);
+	part_stat_unlock();
+}
+
+static inline void blk_account_io_done(struct request *req, u64 now)
+{
+	/*
+	 * Account IO completion.  flush_rq isn't accounted as a
+	 * normal IO on queueing nor completion.  Accounting the
+	 * containing request is enough.
+	 */
+	if (blk_do_io_stat(req) && req->part &&
+	    !(req->rq_flags & RQF_FLUSH_SEQ))
+		__blk_account_io_done(req, now);
+}
+```
+
+用户态 python 可能会复杂一点，因为要记录每个 I/O 请求的延迟并做成条形图输出。
+
+### biosnoop
 
 ### Reference
 
