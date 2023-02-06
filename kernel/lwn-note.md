@@ -1060,3 +1060,91 @@ struct page {
 An HWPOISON patch git repository is available at
 
 ​	git://git.kernel.org/pub/scm/linux/kernel/git/ak/linux-mce-2.6.git hwpoison
+
+### [How many page flags do we really have](https://lwn.net/Articles/335768/)
+
+这篇文章主要在讨论  page flags 的使用，在 `struct page` 中有 flags 字段，
+
+```c
+struct page {
+	unsigned long flags;		/* Atomic flags, some possibly
+
+	...
+
+};
+```
+
+在页结构体众多成员中，flags 字段在任何用途下都标示了对应页的属性。除此之外内核中还对这个字段做了非常巧（变）妙（态）的布局。
+
+内核中有两个头文件和 flags 的定义有着密切的联系
+
+```plain
+* include/linux/page-flags-layout.h
+* include/linux/page-flags.h
+```
+
+前者定义了该字段的布局（之后再分析），后者则定义了该字段具体的意义和相关操作的宏定义。
+
+FLAGS 是一个按照比特位来定义的属性集合，比如我们可以看一下定义从而大致了解一下这个 FLAGS 中都有哪些内容。
+
+```c
+enum pageflags {
+	PG_locked,		/* Page is locked. Don't touch. */
+	PG_referenced,
+	PG_uptodate,
+	PG_dirty,
+	PG_lru,
+	PG_active,
+	PG_workingset,
+	PG_waiters,		/* Page has waiters, check its waitqueue. Must be bit #7 and in the same byte as "PG_locked" */
+	PG_error,
+	PG_slab,
+	PG_owner_priv_1,	/* Owner use. If pagecache, fs may use*/
+	PG_arch_1,
+	PG_reserved,
+	PG_private,		/* If pagecache, has fs-private data */
+	PG_private_2,		/* If pagecache, has fs aux data */
+	PG_writeback,		/* Page is under writeback */
+	PG_head,		/* A head page */
+	PG_mappedtodisk,	/* Has blocks allocated on-disk */
+	PG_reclaim,		/* To be reclaimed asap */
+	PG_swapbacked,		/* Page is backed by RAM/swap */
+	PG_unevictable,		/* Page is "unevictable"  */
+#ifdef CONFIG_MMU
+	PG_mlocked,		/* Page is vma mlocked */
+#endif
+#ifdef CONFIG_ARCH_USES_PG_UNCACHED
+	PG_uncached,		/* Page has been mapped as uncached */
+#endif
+#ifdef CONFIG_MEMORY_FAILURE
+	PG_hwpoison,		/* hardware poisoned page. Don't touch */
+#endif
+#if defined(CONFIG_PAGE_IDLE_FLAG) && defined(CONFIG_64BIT)
+	PG_young,
+	PG_idle,
+#endif
+#ifdef CONFIG_ARCH_USES_PG_ARCH_X
+	PG_arch_2,
+	PG_arch_3,
+#endif
+#ifdef CONFIG_KASAN_HW_TAGS
+	PG_skip_kasan_poison,
+#endif
+	__NR_PAGEFLAGS,
+
+	...
+
+};
+```
+
+整个 FLAGS 的长度为__NR_PAGEFLAGS，并且内核定义又了 NR_PAGEFLAGS。这两者的值一致。
+
+从代码来看，现在使用了 29 位，对于 32 位系统，`unsigned long` 是 32 位的，那么 flags 位就有点不够用了。
+
+之后可以用三个宏分别用来判断、设置、清楚页结构体中相应的属性，
+
+```plain
+* PageXXX()
+* SetPageXXX()
+* ClearPage()
+```
