@@ -1291,3 +1291,23 @@ Buffer cache 是由物理内存分配，Linux 系统为提高内存使用率，�
 Page cache 实际上是针对文件系统的，是文件的缓存，在文件层面上的数据会缓存到 page cache。文件的逻辑层需要映射到实际的物理磁盘，这种映射关系由文件系统来完成。当 page cache 的数据需要刷新时，page cache 中的数据交给 buffer cache，但是这种处理在 2.6 版本的内核之后就变的很简单了，没有真正意义上的 cache 操作。
 
 简单说来，page cache 用来缓存文件数据，buffer cache 用来缓存磁盘数据。在有文件系统的情况下，对文件操作，那么数据会缓存到 page cache，如果直接采用 dd 等工具对磁盘进行读写，那么数据会缓存到 buffer cache。
+
+### [mlockall](https://eric-lo.gitbook.io/memory-mapped-io/pin-the-page)
+
+`int mlockall(int flags);`
+
+flags 可取两个值：
+
+- MCL_CURRENT: 表示对所有已经映射到进程地址空间的页上锁；
+- MCL_FUTURE:  表示对所有将来映射到进程地空间的页都上锁。
+
+函数将调用进程的全部虚拟地址空间加锁。防止出现内存交换，将该进程的地址空间交换到外存上。包括： 代码段，数据段，栈段，共享库，共享内存，user space kernel data, memory-mapped file。
+
+此函数有两个重要的应用：
+
+- real-time algorithms：对时间要非常高；
+- high-security data processing: 如果数据被交换到外存上，可能会泄密。
+
+通过 mlockall 锁定大量的内存对整个系统而言是危险的。不加选择的内存加锁可能会使系统死机，因为其余进程被迫争夺更少的资源，并且会更快地被交换进出物理内存（这被称之为 thrashing）。如果锁定了太多的内存，系统将整体缺乏必需的内存空间并开始杀死进程(OOM)。
+
+而这种方式就叫做 pining pages。
