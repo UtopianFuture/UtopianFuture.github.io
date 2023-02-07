@@ -703,6 +703,70 @@ int trace_req_completion(struct pt_regs *ctx, struct request * req){
 
 ### cachestat
 
+这个工具的 BPF 代码很简单，
+
+```c
+#include <uapi/linux/ptrace.h>
+
+struct key_t {
+    u64 ip;
+};
+
+BPF_HASH(counts, struct key_t) // the key is struct key_t, the value defaults to u64
+
+int do_count(struct pt_regs * ctx){
+    struct key_t key = {};
+
+    key.ip = PT_REGS_IP(ctx);
+    counts.atomic_increment(key);
+    return 0;
+}
+```
+
+但是这里 attach 到多个内核函数上，对于这些与 cache 有关的函数还不了解，
+
+```python
+b.attach_kprobe(event="add_to_page_cache_lru", fn_name="do_count")
+b.attach_kprobe(event="mark_page_accessed", fn_name="do_count")
+b.attach_kprobe(event="folio_account_dirtied", fn_name="do_count")
+b.attach_kprobe(event="account_page_dirtied", fn_name="do_count")
+b.attach_kprobe(event="mark_buffer_dirty", fn_name="do_count")
+```
+
+之后在这里作统计，
+
+```python
+    for k, v in sorted(counts.items(), key=lambda counts: counts[1].value):
+        func = b.ksym(k.ip)
+        # partial string matches in case of .isra (necessary?)
+        if func.find(b"mark_page_accessed") == 0:
+            mpa = max(0, v.value)
+        if func.find(b"mark_buffer_dirty") == 0:
+            mbd = max(0, v.value)
+        if func.find(b"add_to_page_cache_lru") == 0:
+            apcl = max(0, v.value)
+        if func.find(b"account_page_dirtied") == 0:
+            apd = max(0, v.value)
+```
+
+还有一个点，
+
+```python
+mem = get_meminfo() // 通过 get_meminfo 得到内存信息
+    cached = int(mem["Cached"]) / 1024
+    buff = int(mem["Buffers"]) / 1024
+```
+
+这是用 chatGPT 得到的信息，
+
+> get_meminfo is a function (or method) used to retrieve information about the memory usage of a system in the Linux operating system. The information provided by get_meminfo typically includes the total amount of physical memory, the amount of memory that is available, the amount of memory that is in use, the amount of memory that is free, the amount of memory that is used for buffers and cache, etc.
+>
+> The information provided by get_meminfo is stored in the /proc/meminfo file in the Linux file system. The function reads the data from this file and returns it in a structured format, such as a dictionary, for further processing.
+>
+> The exact implementation of get_meminfo may vary depending on the programming language and system it is used in, but it is generally used to retrieve information about the system's memory usage for performance analysis, capacity planning, and other purposes.
+
+果然很厉害！！
+
 ### Reference
 
 [1] https://www.brendangregg.com/bpf-performance-tools-book.html
