@@ -1148,3 +1148,17 @@ enum pageflags {
 * SetPageXXX()
 * ClearPage()
 ```
+
+### [Page pinning and filesystems](https://lwn.net/Articles/894390/)
+
+这篇文章讨论的是 [pinning page](../linux-note/others.md#mlockall) 的问题。pinning pages 不在文件系统的管理范围内么？当这些 pages 中的内容被修改了，但是文件系统没有被通知，那么会导致意料之外的情况。
+
+解决问题的方法是是 pinning pages 对于文件系统而言是可见的。因此增加了 [`pin_user_pages`](https://docs.kernel.org/core-api/pin_user_pages.html?highlight=page_maybe_dma_pinned) 接口（详细的描述也是[内核文档化](#Improving memory-management documentation)工作的一部分），该接口能够将 pages 标识为 pinned。
+
+但是还存在一个小问题：`struct page` 中没有空闲的位来表示该 page 被 pinned 多少次（为什么需要记录这个？）。
+
+最后还有一个关键的问题：如何通知文件系统 pinned pages 被修改了。John Hubbard 的提议是增加一个 API 允许内核在 pinning pages 向一个文件借用一块区域（？还能这样操作）。这是一种能够将文件系统和内存管理代码联系起来的方法。
+
+之后是各位开发者讨论如何解决通知文件系统这一个问题。
+
+看来内核开发的基本流程就是在项目开发过程中遇到问题，有代表性的就拿出来和大家讨论。
