@@ -514,7 +514,7 @@ b.attach_kretprobe(event="ext4_file_read_iter", fn_name="trace_read_return")
 
 这个工具可以用来分析 I/O 请求的延时，并以条形图的方式打印出来，
 
-```
+```plain
     usecs               : count     distribution
         0 -> 1          : 0        |                                        |
         2 -> 3          : 0        |                                        |
@@ -628,6 +628,80 @@ static inline void blk_account_io_done(struct request *req, u64 now)
 用户态 python 可能会复杂一点，因为要记录每个 I/O 请求的延迟并做成条形图输出。
 
 ### biosnoop
+
+写这个基础的 BPF 程序不难，但是我无法考虑到诸多情况，对比一下，这个我按照自己的想法写的，
+
+```c
+#include <uapi/linux/ptrace.h>
+#include <linux/blk-mq.h>
+
+struct val_t {
+    u64 time;
+    u64 pid;
+    char name[TASK_COMM_LEN];
+};
+
+struct data_t {
+    u32 pid;
+    u64 delta;
+    u64 sector;
+    u64 len;
+    u64 ts;
+    char disk_name[DISK_NAME_LEN];
+    char name[TASK_COMM_LEN];
+};
+
+BPF_HASH(start, struct request *, struct val_t);
+BPF_HASH(data, struct request *, struct data_t);
+BPF_PERF_OUTPUT(events);
+
+int trace_req_start(struct pt_regs * ctx, struct request * req){
+    struct val_t val = {};
+
+    if (bpf_get_current_comm(&val.name, sizeof(val.name)) == 0){
+        val.time = bpf_ktime_get_ns();
+        val.pid = bpf_get_current_pid_tgid();
+        start.update(&req, &val);
+    }
+
+    return 0;
+}
+
+int trace_req_completion(struct pt_regs *ctx, struct request * req){
+    struct val_t *valp;
+    struct data_t datap = {};
+    struct gendisk *rq_disk;
+    u64 ts;
+
+    valp = start.lookup(&req);
+    if(valp == 0){
+        return 0;
+    }
+
+    ts = bpf_ktime_get_ns();
+    datap.delta = ts - valp->time;
+    datap.ts = ts / 1000;
+    datap.len = req->__data_len;
+    datap.pid = valp->pid;
+    datap.sector = req->__sector;
+    rq_disk = req->rq_disk;
+    bpf_probe_read_kernel(&datap.name, sizeof(datap.name), valp->name);
+    bpf_probe_read_kernel(&datap.disk_name, sizeof(datap.name), rq_disk->disk_name);
+
+    events.perf_submit(ctx, &datap, sizeof(datap));
+    start.delete(&req);
+
+    return 0;
+}
+```
+
+也能跑，但是不支持 type, -D 等选项，还需要努力。
+
+另一个是不知道将 BPF 程序 attach 到哪个内核函数上，这个在之后的生产环境中能解决。
+
+使用时可以结合 biolatency，首先使用 `biolatency -D` 找出延迟大的磁盘，然后使用 biosnoop 找出导致延迟的进程。
+
+### cachestat
 
 ### Reference
 
