@@ -1162,3 +1162,84 @@ enum pageflags {
 之后是各位开发者讨论如何解决通知文件系统这一个问题。
 
 看来内核开发的基本流程就是在项目开发过程中遇到问题，有代表性的就拿出来和大家讨论。
+
+### [Clarifying memory management with page folios](https://lwn.net/Articles/849538/0)
+
+首先明确一下 folios 的思想，以往的内存管理主要是集中在 page 层面，例如伙伴系统，以 2^0、2^1 等为单位管理内存；slab 描述符在 page 内以细粒度的方式管理内存，而 folios 则是管理一系列页（compound pages）的方式。
+
+在 folios 提出之前就有管理多个页的需求，那时是通过 `struct page` 将多个页链接起来，分为 head page 和 tail page。但是这个方法有个问题，当函数传递一个指向 tail page 的 page 指针时，它是想操作这个 tail page 还是操作 compound pages？
+
+而 folios 则很好的解决了这个问题，传递 `struct folios` 指针的函数一定是操作 compound pages，而传递 `struct page` 指针的，只会在该 page 上操作。
+
+而最初的 `struct folio` 也很简单，
+
+```c
+struct folio {
+    struct page page;
+};
+```
+
+最新版的内核已经复杂很多了，
+
+```c
+struct folio {
+	/* private: don't document the anon union */
+	union {
+		struct {
+	/* public: */
+			unsigned long flags;
+			union {
+				struct list_head lru;
+	/* private: avoid cluttering the output */
+				struct {
+					void *__filler;
+	/* public: */
+					unsigned int mlock_count;
+	/* private: */
+				};
+	/* public: */
+			};
+			struct address_space *mapping;
+			pgoff_t index;
+			void *private;
+			atomic_t _mapcount;
+			atomic_t _refcount;
+#ifdef CONFIG_MEMCG
+			unsigned long memcg_data;
+#endif
+	/* private: the union with struct page is transitional */
+		};
+		struct page page;
+	};
+	union {
+		struct {
+			unsigned long _flags_1;
+			unsigned long _head_1;
+			unsigned char _folio_dtor;
+			unsigned char _folio_order;
+			atomic_t _compound_mapcount;
+			atomic_t _subpages_mapcount;
+			atomic_t _pincount;
+#ifdef CONFIG_64BIT
+			unsigned int _folio_nr_pages;
+#endif
+		};
+		struct page __page_1;
+	};
+	union {
+		struct {
+			unsigned long _flags_2;
+			unsigned long _head_2;
+			void *_hugetlb_subpool;
+			void *_hugetlb_cgroup;
+			void *_hugetlb_cgroup_rsvd;
+			void *_hugetlb_hwpoison;
+		};
+		struct page __page_2;
+	};
+};
+```
+
+但本质上还是几个 `struct page`。
+
+### [A memory-folio update](https://lwn.net/Articles/893512/)
