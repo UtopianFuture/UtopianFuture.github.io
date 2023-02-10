@@ -1247,3 +1247,23 @@ struct folio {
 除了上篇文章描述的解决 page 指针指向一个 page 还是 compound pages 的问题，引入 folio 还有一个重要的原因，
 
 > The kernel really needs to manage memory in larger chunks than 4KB base pages. There are millions of those pages even on a typical laptop; that is a lot of pages to manage and a pain to deal with in general, causing the waste of a lot of time and energy. Better interfaces are needed to facilitate management of larger units
+
+### [Ways to reclaim unused page-table pages](https://lwn.net/Articles/893726/)
+
+如何回收 page table pages？就我所知，所有的页描述符（page 数据结构）存放在 `mem_map` 数组中，用 `virt_to_page`  宏产生线性地址对应的 page 地址，用 `pfn_to_page` 宏产生页框号对应的 page 地址。page table pages 应该是放在外存中，当发生 page fault 时存储到内存。
+
+回收页面的机制我知道有三种：
+
+- 直接页面回收机制。在内核态中调用 `__alloc_pages` 分配物理页面时，由于系统内存短缺，不能满足分配需求，此时内核会直接陷入到页面回收机制，尝试回收内存。这种情况下执行页面回收的是请求内存的进程本身，为同步回收，因此调用者进程的执行会被阻塞；
+- 周期性回收内存机制。这是内核线程 kswapd 的工作。当调用 `__alloc_pages` 时发现当前 watermark 不能满足分配请求，那么唤醒 kswapd 线程来异步回收内存；
+- slab 收割机（slab shrinker）机制。这是**用来回收 slab 对象的**（slab 对象的回收难道不是 slab 描述符的计数器为 0 则回收么）。当内存短缺时，直接页面回收机制和周期性回收内存机制都会调用 slab shrinker 来回收 slab 对象。
+
+page table pages 是不可交换、不可移动的。
+
+一种回收的方法是在每个 page table page 中增加一个 count(pte_ref)。当 count=0 时就回收该 page。
+
+另一种做法是回收指向系统零页（系统零页是内核用来初始化匿名映射的）的 page table。这些映射都是 COW 的，所以回收不会出错，但是可能会有性能损失（重新映射与修改映射的区别么）。
+
+还有就是回收低级的（4 级页表）page table pages 是划算的，高级 page table pages 回收起来收益不高。
+
+对于 empty page table pages 来说，回收很简单，但是对于包含零页映射的 page table pages 来说，有些麻烦。内核能够通过扫描来发现这些 page table pages，但是扫描也有代价，所以扫描的时机是需要精确把握的，这个还需要实验。
