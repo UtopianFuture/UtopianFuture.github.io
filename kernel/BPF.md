@@ -4,13 +4,15 @@
 
 很多中文翻译的书没必要看，越看越迷糊，直接看这个[网站](https://ebpf.io/what-is-ebpf/)，eBPF 的前应后果一清二楚。
 
+### bcc
+
 网上关于 eBPF 的资料很多，头昏眼花，无从下手，推荐 [Brendan Gregg](https://www.brendangregg.com/blog/2019-01-01/learn-ebpf-tracing.html)，他的博客写了从入门到高级应该怎么学。这里先搞懂 bcc 中 11 个 BPF 程序。
 
 所有的 bpf 工具如下图所示，
 
 ![bpf tool](https://www.brendangregg.com/Perf/bcc_tracing_tools.png)
 
-### execsnoop
+#### execsnoop
 
 execsnoop 会以行输出创建的每个新进程，用于检查生命周期比较短的进程。这些进程会消耗 CPU 资源，但不会出现在大多数以周期性采集正在运行的进程快照的监控工具中。
 
@@ -221,7 +223,7 @@ int do_ret_sys_execve(struct pt_regs *ctx)
 
 就目前看到的，BPF 确实能够帮助分析内核，所以最终目标就是学会根据自己的需求编写 BPF 程序。
 
-### opensnoop
+#### opensnoop
 
 通过打开的文件可以了解到一个应用是如何工作的，确定其数据文件，配置文件和 log 文件等。有时候应用会因为要读取一个不存在的文件而导致异常，可以通过 opensnoop 命令快速定位问题。
 
@@ -378,7 +380,7 @@ b.attach_kprobe(event=fnname_open, fn_name="syscall__trace_entry_open")
 b.attach_kretprobe(event=fnname_open, fn_name="trace_return")
 ```
 
-### ext4slower
+#### ext4slower
 
 对于识别或排除性能问题非常有用：通过文件系统显示独立的慢速磁盘 I/O。由于磁盘处理 I/O 是异步的，因此很难将该层的延迟与应用程序的延迟联系起来。使用本工具，可以在 VFS -> 文件系统接口层面进行跟踪，将更接近应用的问题所在。
 
@@ -510,7 +512,7 @@ b.attach_kprobe(event="ext4_file_read_iter", fn_name="trace_read_entry")
 b.attach_kretprobe(event="ext4_file_read_iter", fn_name="trace_read_return")
 ```
 
-### biolatency
+#### biolatency
 
 这个工具可以用来分析 I/O 请求的延时，并以条形图的方式打印出来，
 
@@ -627,7 +629,7 @@ static inline void blk_account_io_done(struct request *req, u64 now)
 
 用户态 python 可能会复杂一点，因为要记录每个 I/O 请求的延迟并做成条形图输出。
 
-### biosnoop
+#### biosnoop
 
 写这个基础的 BPF 程序不难，但是我无法考虑到诸多情况，对比一下，这个我按照自己的想法写的，
 
@@ -701,7 +703,7 @@ int trace_req_completion(struct pt_regs *ctx, struct request * req){
 
 使用时可以结合 biolatency，首先使用 `biolatency -D` 找出延迟大的磁盘，然后使用 biosnoop 找出导致延迟的进程。
 
-### cachestat
+#### cachestat
 
 这个工具的 BPF 代码很简单，
 
@@ -766,6 +768,153 @@ mem = get_meminfo() // 通过 get_meminfo 得到内存信息
 > The exact implementation of get_meminfo may vary depending on the programming language and system it is used in, but it is generally used to retrieve information about the system's memory usage for performance analysis, capacity planning, and other purposes.
 
 果然很厉害！！
+
+#### tcpconnect
+
+这个工具中使用了 python 元组，
+
+```python
+struct_init = {'ipv4':
+        {'count':
+               """
+               struct ipv4_flow_key_t flow_key = {};
+               flow_key.saddr = skp->__sk_common.skc_rcv_saddr;
+               flow_key.daddr = skp->__sk_common.skc_daddr;
+               flow_key.dport = ntohs(dport);
+               ipv4_count.increment(flow_key);""",
+          'trace':
+               """
+               struct ipv4_data_t data4 = {.pid = pid, .ip = ipver};
+               data4.uid = bpf_get_current_uid_gid();
+               data4.ts_us = bpf_ktime_get_ns() / 1000;
+               data4.saddr = skp->__sk_common.skc_rcv_saddr;
+               data4.daddr = skp->__sk_common.skc_daddr;
+               data4.lport = lport;
+               data4.dport = ntohs(dport);
+               bpf_get_current_comm(&data4.task, sizeof(data4.task));
+               ipv4_events.perf_submit(ctx, &data4, sizeof(data4));"""
+               },
+
+               ...
+
+               }
+```
+
+类似于数组，使用起来很方便，
+
+```python
+bpf_text = bpf_text.replace("IPV4_CODE", struct_init['ipv4']['count'])
+```
+
+剩余的几个示例格式都是类似的，就不一一分析。还有一些练习题，在 docs/tutorial_bcc_python_developer.md 中，之后也会 coding。
+
+### bpftrace
+
+按照 Brendan Gregg 的说法，接下来应该看看 [bpftrace](https://github.com/UtopianFuture/bpftrace) 是怎样使用的。我的理解是 bcc 和 bpftrace 都是基于内核 BPF 模块的项目，思想也是一样的，将用户态的进程通过 LLVM 编译，经过 verification 验证，attach 到对应的内核函数上。问题的关键是 attach 到哪个函数上？
+
+bpftrace 的文档很详细，跟着 docs/tutorial_one_liners.md 中的案例走一遍就行。
+
+总的来看，原理是一样的，只是 bpftrace 更加简洁。下面以一些例子来分析，
+
+#### Syscall Counts By Process
+
+```python
+bpftrace -e 'tracepoint:raw_syscalls:sys_enter { @[comm] = count(); }'
+```
+
+这个 -e 参数就是让 bpftrace 执行后面的 program，`tracepoint:raw_syscalls:sys_enter` 是一个 tracepoint，类似的点还有很多，可以用 `bpftrace -l` 查看。
+
+#### Timing read()s
+
+而 `@` 就表示 map。bpftrace 在接收到终止信号时会自动将所有的 map 信息打印出来。来看一个更复杂的，
+
+```python
+bpftrace -e 'kprobe:vfs_read { @start[tid] = nsecs; } kretprobe:vfs_read /@start[tid]/ { @ns[comm] = hist(nsecs - @start[tid]); delete(@start[tid]); }'
+```
+
+`kprobe:vfs_read { @start[tid] = nsecs; }` 表示 attach 到 `vfs_read` 上，创建一个名为 start 的 map，key 是 tid，value 是 nsecs。`kretprobe:vfs_read /@start[tid]/ { @ns[comm] = hist(nsecs - @start[tid]); delete(@start[tid]); }` 则是将程序 attach 到 `vfs_read` 执行结束的位置。`@start[tid]` 是上面创建的全局 map，`@ns[comm]` 是另一个 map，`[comm]` 就是 key，在这里是不同进程的 id，value 则是 `nsecs - @start[tid]`。最后以 hist 即直方图的格式输出。
+
+最后的输出是这样的，
+
+```plain
+@ns[v2ray]:
+[256, 512)             1 |                                                    |
+[512, 1K)              0 |                                                    |
+[1K, 2K)               0 |                                                    |
+[2K, 4K)             164 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@|
+[4K, 8K)              40 |@@@@@@@@@@@@                                        |
+[8K, 16K)             71 |@@@@@@@@@@@@@@@@@@@@@@                              |
+[16K, 32K)            28 |@@@@@@@@                                            |
+[32K, 64K)            60 |@@@@@@@@@@@@@@@@@@@                                 |
+[64K, 128K)            1 |                                                    |
+```
+
+最左边的单位应该是 ns，但看着好像 bytes。中间的是处于该延迟范围内的次数。
+
+但是还有问题，开发者不能控制输出哪个 map 么？
+
+#### Count Process-Level Events
+
+`bpftrace -e 'tracepoint:sched:sched* { @[probe] = count(); } interval:s:5 { exit(); }'`，这个命令很简洁，但是对于观察内核运行状况蛮有用的，
+
+```plain
+@[tracepoint:sched:sched_process_exit]: 1
+@[tracepoint:sched:sched_process_free]: 1
+@[tracepoint:sched:sched_migrate_task]: 75
+@[tracepoint:sched:sched_wake_idle_without_ipi]: 1368
+@[tracepoint:sched:sched_stat_runtime]: 5935
+@[tracepoint:sched:sched_wakeup]: 6173
+@[tracepoint:sched:sched_waking]: 6244
+@[tracepoint:sched:sched_switch]: 11953
+```
+
+可以直观的看出在 5s 内，内核发生了多少次进程调度。
+
+#### Profile On-CPU Kernel Stacks
+
+`bpftrace -e 'profile:hz:99 { @[kstack] = count(); }'`，以 99HZ 的频率跟踪 kernel stack 并打印次数（kernel stack 也有执行次数？应该是每个路径的执行次数）。
+
+```c
+@[
+    cpuidle_enter_state+217
+    cpuidle_enter+46
+    call_cpuidle+35
+    do_idle+500
+    cpu_startup_entry+32
+    start_secondary+298
+    secondary_startup_64_no_verify+194
+]: 827
+```
+
+也就是说在这段时间内 `cpuidle_enter_state` 执行了 827 次。
+
+profile 还可以以其他标准分析内核，
+
+```plain
+profile:hz:rate
+profile:s:rate
+profile:ms:rate
+profile:us:rate
+```
+
+#### Kernel Struct Tracing
+
+甚至还可以跟踪数据结构的调用情况，:owl:
+
+```plain
+# cat path.bt
+#include <linux/path.h>
+#include <linux/dcache.h>
+
+kprobe:vfs_open
+{
+	printf("open path: %s\n", str(((struct path *)arg0)->dentry->d_name.name));
+}
+
+# bpftrace path.bt
+```
+
+我觉得还是 bcc 好用，虽然要编写 c 和 python 代码，但是操作空间更大一点。
 
 ### Reference
 
