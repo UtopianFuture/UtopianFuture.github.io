@@ -38,7 +38,6 @@
   - [__vmalloc_node_range](#__vmalloc_node_range)
   - [分配虚拟内存](#分配虚拟内存)
   - [分配物理内存](#分配物理内存)
-
 - [进程地址空间](#进程地址空间)
   - [mm_struct](#mm_struct)
   - [VMA](#VMA)
@@ -48,7 +47,6 @@
   - [创建 VMA](#创建 VMA)
   - [分配物理内存](#分配物理内存)
   - [建立映射关系](#建立映射关系)
-
 - [mmap](#mmap)
   - [关键函数 do_mmap](#关键函数 do_mmap)
   - [关键函数 mmap_region](#关键函数 mmap_region)
@@ -66,6 +64,8 @@
   - [根据父进程创建子进程](#根据父进程创建子进程)
   - [RMA 的应用](#RMAP 的应用)
 - [页面回收](#页面回收)
+  - [整机层面](#整机层面)
+  - [memory cgroup](#memory cgroup)
   - [LRU 链表法](#LRU链表法)
   - [第二次机会法](#第二次机会法)
   - [触发页面回收](#触发页面回收)
@@ -73,6 +73,7 @@
     - [关键函数 balance_pgdat](#关键函数 balance_pgdat)
     - [关键函数 shrink_node](#关键函数 shrink_node)
   - [回收页面类型](#回收页面类型)
+
 - [页面迁移](#页面迁移)
   - [关键函数__unmap_and_move](#关键函数__unmap_and_move)
   - [关键函数 move_to_new_page](#关键函数 move_to_new_page)
@@ -83,6 +84,14 @@
 - [慢路径分配](#慢路径分配)
   - [关键函数__alloc_pages_slowpath](#关键函数__alloc_pages_slowpath)
   - [水位管理和分配优先级](#水位管理和分配优先级)
+- [其他内存管理知识](#其他内存管理知识)
+  - [Huge page](#Huge page)
+    - [静态大页](#静态大页)
+    - [透明大页](#透明大页)
+
+  - [mmap_lock 锁](#mmap_lock 锁)
+  - [跨 numa 内存访问](#跨 numa 内存访问)
+
 - [疑问](#疑问)
 
 
@@ -4438,7 +4447,23 @@ static void rmap_walk_anon(struct page *page, struct rmap_walk_control *rwc,
 
 好吧，这块真看不懂，关键函数一个套一个，战略搁置！！！
 
-内核中的页交换算法主要使用 LRU 链表算法和第二次机会（second chance）法。
+在内核中，内存回收分为两个层面[^5]：整机和 memory cgroup（control group 的子系统）[^6]。
+
+#### 整机层面
+
+设置了三条 watermark：min、low、high。当系统 free 内存降到 low 水线以下时，系统会唤醒 kswapd 线程进行异步内存回收，一直回收到 high 水线为止，这种情况不会阻塞正在进行内存分配的进程；但如果 free 内存降到了 min 水线以下，就需要阻塞内存分配进程进行回收，不然就有 OOM 的风险，这种情况下被阻塞进程的内存分配延迟就会提高，从而感受到卡顿。如[图](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/zone_wmark.png?raw=true)所示。
+
+#### memory cgroup
+
+关于 memory cgroup 的使用之后需要详细的分析，这里先做个简单的记录。其有如下功能：
+
+1. Isolate an application or a group of applications. Memory-hungry applications can be isolated and limited to a smaller amount of memory.
+2. Create a cgroup with a limited amount of memory. This can be used as a good alternative to booting with mem=XXXX.
+
+3. Virtualization solutions can control the amount of memory they want to assign to a virtual machine instance.
+4. A CD/DVD burner could control the amount of memory used by the rest of the system to ensure that burning does not fail due to lack of available memory.
+
+内核中的页交换算法主要使用 LRU 链表算法和第二次机会法。
 
 #### LRU 链表法
 
@@ -5373,6 +5398,18 @@ got_pg:
 
 ![zone_wmark.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/zone_wmark.png?raw=true)
 
+### 其他内存管理知识
+
+#### Huge page
+
+##### 静态大页
+
+##### 透明大页
+
+#### mmap_lock 锁
+
+#### 跨 numa 内存访问
+
 ### 疑问
 
 1. `vm_area_alloc` 创建新的 VMA 为什么还会调用到 slab 分配器？
@@ -5400,6 +5437,9 @@ got_pg:
 [3] https://zhuanlan.zhihu.com/p/65298260
 
 [4] https://biscuitos.github.io/blog/MMU-Linux4x-VMALLOC/
+
+[^5]: https://mp.weixin.qq.com/s/S0sc2aysc6aZ5kZCcpMVTw
+[^6]:https://blog.csdn.net/tanzhe2017/article/details/81001507
 
 ### 些许感想
 
