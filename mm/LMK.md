@@ -2,11 +2,11 @@
 
 LMK 由于功能和 OOM killer 重叠，4.2 版本之后已经被移出内核了，现在用的是 lmkd，即运行在用户态的守护进程。
 
-Android 底层还是基于 Linux，在 Linux 中低内存是会有 oom killer 去杀掉一些进程去释放内存，而 Android 中的 lowmemorykiller 就是在此基础上做了一些调整来的。因为手机上的内存毕竟比较有限，而 Android 中 APP 在不使用之后并不是马上被杀掉，虽然上层 ActivityManagerService 中也有很多关于进程的调度以及杀进程的手段，但是毕竟还需要考虑手机剩余内存的实际情况，
+Android 底层还是基于 Linux，在 Linux 中低内存是会有 oom killer 去杀掉一些进程去释放内存，而 Android 中的 lowmemorykiller 就是在此基础上做了一些调整来的。因为手机上的内存毕竟比较有限，而 Android 中 APP 在不使用之后并不是马上被杀掉，虽然上层 ActivityManagerService 中也有很多关于进程的调度以及杀进程的手段，但是毕竟还需要考虑手机剩余内存的实际情况。
 
-lowmemorykiller 的作用就是当内存比较紧张的时候去及时杀掉一些 ActivityManagerService 还没来得及杀掉但是对用户来说不那么重要的进程，回收一些内存，保证手机的正常运行。 而 OOM 只能够保证系统的正常运行，但是有时候会很卡，这对于手机用户体验很不好。
+lmkd 的作用就是当内存比较紧张的时候去及时杀掉一些 ActivityManagerService 还没来得及杀掉但是对用户来说不那么重要的进程，回收一些内存，保证手机的正常运行。 而 OOM 只能够保证系统的正常运行，但是有时候会很卡，这对于手机用户体验很不好。
 
-lmkd 需要内核驱动 Lowmemorykiller 的支持才能运行。
+lmkd 需要内核驱动 Lowmemorykiller 的支持才能运行。这里先分析 lmkd，后面再对比分析 lowmemorykiller。
 
 ### 整体结构
 
@@ -32,9 +32,9 @@ lowmemkiller 中会涉及到几个重要的概念：
 
 对每个进程来说：
 
-/proc/pid/oom_adj：代表**当前进程的优先级**，这个优先级是 kernel 中的优先级，这个优先级与上层的优先级之间有一个换算。
+`/proc/pid/oom_adj`：代表**当前进程的优先级**，这个优先级是 kernel 中的优先级，这个优先级与上层的优先级之间有一个换算。
 
-/proc/pid/oom_score_adj：上层优先级，跟 ProcessList 中的优先级对应。
+`/proc/pid/oom_score_adj`：上层优先级，跟 ProcessList 中的优先级对应。
 
 ### 数据结构
 
@@ -86,8 +86,6 @@ struct zoneinfo {
   int64_t total_active_file;
 };
 ```
-
-
 
 ### 代码分析
 
@@ -848,11 +846,209 @@ mi->field.nr_file_pages =
   mi->field.easy_available = mi->field.nr_free_pages + mi->field.inactive_file;
 ```
 
+总结起来就是根据内存压力计算 `min_score_adj`，这个参数就是选择进程的标准。
+
+### lowmemorykiller
+
+前面分析的时候提到过，如果开启了 `use_inkernel_interface`，那么就是内核的 lowmemorykiller 来杀死进程。接下来我们分析 lowmemorykiller。
+
+lowmemorykiller 中是**通过 linux 的 shrinker 实现的**，这个是 linux 的内存回收机制的一种，由内核线程 kswapd 负责监控，在 lowmemorykiller 初始化的时候注册 register_shrinker。
+
+```c
+static int __init lowmem_init(void)
+{
+	register_shrinker(&lowmem_shrinker);
+	lmk_event_init();
+	return 0;
+}
+
+static struct shrinker lowmem_shrinker = {
+	.scan_objects = lowmem_scan,
+	.count_objects = lowmem_count,
+	.seeks = DEFAULT_SEEKS * 16
+};
+```
+
+这里有两个重要的数组，
+
+```c
+static u32 lowmem_debug_level = 1;
+static short lowmem_adj[6] = {
+	0,
+	1,
+	6,
+	12,
+};
+
+static int lowmem_adj_size = 4;
+static int lowmem_minfree[6] = {
+	3 * 512,	/* 6MB */
+	2 * 1024,	/* 8MB */
+	4 * 1024,	/* 16MB */
+	16 * 1024,	/* 64MB */
+};
+
+static int lowmem_minfree_size = 4;
+```
+
+`lowmem_adj` 和 `lowmem_minfree` 也就是 lmkd 中用到的 `INKERNEL_ADJ_PATH` 和 `INKERNEL_MINFREE_PATH`。
+
+从上面的初始化函数知道，最重要的就是 `lowmem_scan` 和 `lowmem_count`。
+
+#### lowmem_scan
+
+```c
+static unsigned long lowmem_scan(struct shrinker *s, struct shrink_control *sc)
+{
+	struct task_struct *tsk;
+	struct task_struct *selected = NULL;
+	unsigned long rem = 0;
+	int tasksize;
+	int i;
+	short min_score_adj = OOM_SCORE_ADJ_MAX + 1;
+	int minfree = 0;
+	int selected_tasksize = 0;
+	short selected_oom_score_adj;
+	int array_size = ARRAY_SIZE(lowmem_adj);
+	int other_free = global_page_state(NR_FREE_PAGES) - totalreserve_pages;
+	int other_file = global_node_page_state(NR_FILE_PAGES) - // 同样是读取系统内存信息，和 lmkd 一样
+				global_node_page_state(NR_SHMEM) -
+				global_node_page_state(NR_UNEVICTABLE) -
+				total_swapcache_pages();
+
+	if (lowmem_adj_size < array_size)
+		array_size = lowmem_adj_size;
+	if (lowmem_minfree_size < array_size)
+		array_size = lowmem_minfree_size;
+	for (i = 0; i < array_size; i++) {
+		minfree = lowmem_minfree[i];
+		if (other_free < minfree && other_file < minfree) { // 根据内存情况，确定 min_score_adj
+			min_score_adj = lowmem_adj[i];
+			break;
+		}
+	}
+
+	lowmem_print(3, "lowmem_scan %lu, %x, ofree %d %d, ma %hd\n",
+		     sc->nr_to_scan, sc->gfp_mask, other_free,
+		     other_file, min_score_adj);
+
+	if (min_score_adj == OOM_SCORE_ADJ_MAX + 1) { // 内存充裕，可以不用杀
+		lowmem_print(5, "lowmem_scan %lu, %x, return 0\n",
+			     sc->nr_to_scan, sc->gfp_mask);
+		return 0;
+	}
+
+	selected_oom_score_adj = min_score_adj;
+
+	rcu_read_lock();
+	for_each_process(tsk) { // 遍历所有进程
+		struct task_struct *p;
+		short oom_score_adj;
+
+		if (tsk->flags & PF_KTHREAD)
+			continue;
+
+		p = find_lock_task_mm(tsk);
+		if (!p)
+			continue;
+
+		if (task_lmk_waiting(p) &&
+		    time_before_eq(jiffies, lowmem_deathpending_timeout)) {
+			task_unlock(p);
+			rcu_read_unlock();
+			return 0;
+		}
+        // 按照解释，oom_score_adj 是用户态对应的优先级，[-1000, 1000]
+        // 但是 min_score_adj 是根据 lowmem_adj 来的啊，其值为[0,1,6,12]
+        // 有转换函数 lowmem_oom_adj_to_oom_score_adj
+		oom_score_adj = p->signal->oom_score_adj;
+		if (oom_score_adj < min_score_adj) {
+			task_unlock(p);
+			continue;
+		}
+		tasksize = get_mm_rss(p->mm);
+		task_unlock(p);
+		if (tasksize <= 0)
+			continue;
+		if (selected) {
+			if (oom_score_adj < selected_oom_score_adj)
+				continue;
+			if (oom_score_adj == selected_oom_score_adj &&
+			    tasksize <= selected_tasksize)
+				continue;
+		}
+		selected = p;
+		selected_tasksize = tasksize;
+		selected_oom_score_adj = oom_score_adj;
+		lowmem_print(2, "select '%s' (%d), adj %hd, size %d, to kill\n",
+			     p->comm, p->pid, oom_score_adj, tasksize);
+	}
+	if (selected) {
+		long cache_size = other_file * (long)(PAGE_SIZE / 1024);
+		long cache_limit = minfree * (long)(PAGE_SIZE / 1024);
+		long free = other_free * (long)(PAGE_SIZE / 1024);
+
+		task_lock(selected);
+		send_sig(SIGKILL, selected, 0); // 这里杀死进程，发送 SIGKILL 信号
+		if (selected->mm)
+			task_set_lmk_waiting(selected);
+		task_unlock(selected);
+		trace_lowmemory_kill(selected, cache_size, cache_limit, free);
+		lowmem_print(1, "Killing '%s' (%d) (tgid %d), adj %hd,\n"
+				 "   to free %ldkB on behalf of '%s' (%d) because\n"
+				 "   cache %ldkB is below limit %ldkB for oom_score_adj %hd\n"
+				 "   Free memory is %ldkB above reserved\n",
+			     selected->comm, selected->pid, selected->tgid,
+			     selected_oom_score_adj,
+			     selected_tasksize * (long)(PAGE_SIZE / 1024),
+			     current->comm, current->pid,
+			     cache_size, cache_limit,
+			     min_score_adj,
+			     free);
+		lowmem_deathpending_timeout = jiffies + HZ;
+		rem += selected_tasksize;
+		get_task_struct(selected);
+	}
+
+	lowmem_print(4, "lowmem_scan %lu, %x, return %lu\n",
+		     sc->nr_to_scan, sc->gfp_mask, rem);
+	rcu_read_unlock();
+
+	if (selected) {
+		handle_lmk_event(selected, selected_tasksize, min_score_adj);
+		put_task_struct(selected);
+	}
+	return rem;
+}
+```
+
+#### lowmem_count
+
+这个很简单，就是读取系统内存信息。
+
+```c
+static unsigned long lowmem_count(struct shrinker *s,
+				  struct shrink_control *sc)
+{
+	return global_node_page_state(NR_ACTIVE_ANON) +
+		global_node_page_state(NR_ACTIVE_FILE) +
+		global_node_page_state(NR_INACTIVE_ANON) +
+		global_node_page_state(NR_INACTIVE_FILE);
+}
+```
+
+由于 Android 中的进程启动的很频繁，四大组件（？）都会涉及到进程启动，进程启动之后做完要做的事情之后就会很快被 AMS 把优先级降低。面对低内存的情况以及用户开启太多优先级很高的 APP，AMS 这边就有一些无力了。为了保证手机正常运行必须进行进程清理，内存回收。根据当前手机剩余内存的状态，在 minfree 中找到当前等级，再根据这个等级去 adj 中找到这个等级应该杀掉的进程的优先级，然后去杀进程，直到释放足够的内存。目前大多都使用 kernel 中的 lowmemorykiller，但是上层用户的 APP 的优先级的调整还是 AMS 来完成的，lmkd 在中间充当了一个桥梁的角色，通过把上层的更新之后的 adj 写入到文件节点，提供 lowmemorykiller 杀进程的依据。
+
 ### 一些想法
 
 - epoll 是很常用的一个机制，有简单了解过，但还不够。
 - 搞懂 lmkd 的关键在于明白 `minfree`, `oom_adj_score`, `oomadj`, `min_oomadj`, `max_oomadj` 这些变量分别代表什么意思。
 - 例外还可以借此机会搞明白 `struct zoneinfo`, `struct meminfo_field`, `struct meminfo`, `struct vmstat`, `struct watermark_info` 这些内存管理中关键的结构体是怎样使用的。
+- slab shrinker 在分析[内存管理](../kernel/Memory-Management.md)的文章中提到过，但是不清楚其实现。这个 shrinker 和 slab shrinker 有什么关系？
+
+### 注意
+
+自己目前对这些机制仅限于知道原理，但是对于它们的实现不懂，包括很多关键的数据结构，所以这篇文章基本上都是参考以下几篇文章。之后再不断补充。
 
 ### Reference
 
