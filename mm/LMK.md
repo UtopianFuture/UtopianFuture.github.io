@@ -36,6 +36,59 @@ lowmemkiller 中会涉及到几个重要的概念：
 
 /proc/pid/oom_score_adj：上层优先级，跟 ProcessList 中的优先级对应。
 
+### 数据结构
+
+#### meminfo
+
+lmkd 中的 `struct meminfo` 和内核 `/proc/meminfo` 并不是完全一样的，而是经过转换的。
+
+```cpp
+union meminfo {
+  struct {
+    int64_t nr_total_pages;
+    int64_t nr_free_pages;
+    int64_t cached;
+    int64_t swap_cached;
+    int64_t buffers;
+    int64_t shmem;
+    int64_t unevictable;
+    int64_t mlocked;
+    int64_t total_swap;
+    int64_t free_swap;
+    int64_t active_anon;
+    int64_t inactive_anon;
+    int64_t active_file;
+    int64_t inactive_file;
+    int64_t sreclaimable;
+    int64_t sunreclaimable;
+    int64_t kernel_stack;
+    int64_t page_tables;
+    int64_t ion_heap;
+    int64_t ion_heap_pool;
+    int64_t cma_free;
+    /* fields below are calculated rather than read from the file */
+    int64_t nr_file_pages;
+    int64_t total_gpu_kb;
+    int64_t easy_available;
+  } field;
+  int64_t arr[MI_FIELD_COUNT];
+};
+```
+
+#### zoneinfo
+
+```cpp
+struct zoneinfo {
+  int node_count;
+  struct zoneinfo_node nodes[MAX_NR_NODES];
+  int64_t totalreserve_pages;
+  int64_t total_inactive_file;
+  int64_t total_active_file;
+};
+```
+
+
+
 ### 代码分析
 
 以前看惯了内核代码，拿到这个代码，居然可以从 main 函数开始分析，心情大好:laughing:。
@@ -561,7 +614,7 @@ static void cmd_procremove(LMKD_CTRL_PACKET packet, struct ucred *cred) {
 
 #### 杀死进程
 
-前面和 socket lmkd 相关的内容主要用于设置 lmk 参数和进程 oomadj。当系统的物理内存不足时，将会触发 mp 事件，这个时候 lmkd 就需要通过杀死一些进程来释放内存页了。主要的函数为 `init_monitors` -> `init_mp_common` -> `mp_event_common`。
+前面和 socket lmkd 相关的内容主要用于设置 lmk 参数和进程 oomadj。**当系统的物理内存不足时，将会触发 mp 事件(memory pressure events)**，这个时候 lmkd 就需要通过杀死一些进程来释放内存页了。主要的函数为 `init_monitors` -> `init_mp_common` -> `mp_event_common`。
 
 ```cpp
 // The implementation of this function relies on memcg statistics that are only
@@ -581,17 +634,9 @@ static void mp_event_common(int data, uint32_t events,
   long other_free = 0, other_file = 0;
   int min_score_adj;
   int minfree = 0;
-  static const std::string mem_usage_path = GetCgroupAttributePath("MemUsage");
-  static struct reread_data mem_usage_file_data = {
-      .filename = mem_usage_path.c_str(),
-      .fd = -1,
-  };
-  static const std::string memsw_usage_path =
-      GetCgroupAttributePath("MemAndSwapUsage");
-  static struct reread_data memsw_usage_file_data = {
-      .filename = memsw_usage_path.c_str(),
-      .fd = -1,
-  };
+
+  ...
+
   static struct wakeup_info wi;
 
   if (!s_crit_event) {
@@ -613,103 +658,48 @@ static void mp_event_common(int data, uint32_t events,
           TEMP_FAILURE_RETRY(read(mpevfd[lvl], &evcount, sizeof(evcount))) >
               0 &&
           evcount > 0 && lvl > level) {
-        level = static_cast<vmpressure_level>(lvl);
+        level = static_cast<vmpressure_level>(lvl); // 找到最紧急的事件
       }
     }
   }
 
   /* Start polling after initial PSI event */
   if (use_psi_monitors && events) {
-    /* Override polling params only if current event is more critical */
-    if (!poll_params->poll_handler || data > poll_params->poll_handler->data) {
-      poll_params->polling_interval_ms = PSI_POLL_PERIOD_SHORT_MS;
-      poll_params->update = POLLING_START;
-    }
-    /*
-     * Nonzero events indicates handler call due to recieved epoll_event,
-     * rather than due to epoll_event timeout.
-     */
-    if (events) {
-      if (data == VMPRESS_LEVEL_SUPER_CRITICAL) {
-        s_crit_event = true;
-        poll_params->polling_interval_ms = psi_poll_period_scrit_ms;
-        vmstat_parse(&s_crit_base);
-      } else if (s_crit_event) {
-        /* Override the supercritical event only if the system
-         * is not in direct reclaim.
-         */
-        int64_t throttle, sync;
 
-        vmstat_parse(&s_crit_current);
-        throttle = s_crit_current.field.pgscan_direct_throttle -
-                   s_crit_base.field.pgscan_direct_throttle;
-        sync = s_crit_current.field.pgscan_direct -
-               s_crit_base.field.pgscan_direct;
-        if (!throttle && !sync) {
-          s_crit_event = false;
-        }
-        s_crit_base = s_crit_current;
-      }
-    }
+      ... // 处理 psi 事件
   }
 
-  if (clock_gettime(CLOCK_MONOTONIC_COARSE, &curr_tm) != 0) {
-    ALOGE("Failed to get current time");
-    return;
-  }
+  ...
 
-  record_wakeup_time(&curr_tm, events ? Event : Polling, &wi);
-
-  if (kill_timeout_ms && get_time_diff_ms(&last_kill_tm, &curr_tm) <
-                             static_cast<long>(kill_timeout_ms)) {
-    /*
-     * If we're within the no-kill timeout, see if there's pending reclaim work
-     * from the last killed process. If so, skip killing for now.
-     */
-    if (is_kill_pending()) {
-      kill_skip_count++;
-      wi.skipped_wakeups++;
-      return;
-    }
-    /*
-     * Process is dead, stop waiting. This has no effect if pidfds are supported
-     * and death notification already caused waiting to stop.
-     */
-    stop_wait_for_proc_kill(true);
-  } else {
-    /*
-     * Killing took longer than no-kill timeout. Stop waiting for the last
-     * process to die because we are ready to kill again.
-     */
-    stop_wait_for_proc_kill(false);
-  }
-
-  if (kill_skip_count > 0) {
-    ALOGI("%lu memory pressure events were skipped after a kill!",
-          kill_skip_count);
-    kill_skip_count = 0;
-  }
-
+  // 这些参数解析都是读取内核参数的，
+  // #define ZONEINFO_PATH "/proc/zoneinfo"
+  // #define MEMINFO_PATH "/proc/meminfo"
+  // #define VMSTAT_PATH "/proc/vmstat"
   if (meminfo_parse(&mi) < 0 || zoneinfo_parse(&zi) < 0) {
     ALOGE("Failed to get free memory!");
     return;
   }
 
+  // 同样是从系统属性读取的配置，表示使用当我们准备杀死应用的时候，使用系统剩余的内存和文件缓存阈值作为判断依据
   if (use_minfree_levels) {
     int i;
 
-    other_free = mi.field.nr_free_pages - zi.totalreserve_pages;
+    other_free = mi.field.nr_free_pages - zi.totalreserve_pages; // 系统可用的内存页数量
     if (mi.field.nr_file_pages >
         (mi.field.shmem + mi.field.unevictable + mi.field.swap_cached)) {
-      other_file = (mi.field.nr_file_pages - mi.field.shmem -
-                    mi.field.unevictable - mi.field.swap_cached);
+      other_file = (mi.field.nr_file_pages - mi.field.shmem - // shmem 表示 tmpfs 使用的内存大小
+                    mi.field.unevictable - mi.field.swap_cached); // unevictable 表示不能 swap out 的页面
     } else {
       other_file = 0;
     }
 
+    // 有了 other_free 和 other_file 后
+    // 根据 lowmem_minfree 的值来确定 min_score_adj
+    // min_score_adj 表示可以回收的最低的 oomadj 值（oomadj 越大，优先级越低，越容易被杀死）
+    // oomadj 小于 min_score_adj 的进程在这次回收过程中不会被杀死
     min_score_adj = OOM_SCORE_ADJ_MAX + 1;
     for (i = 0; i < lowmem_targets_size; i++) {
-      minfree = lowmem_minfree[i];
+      minfree = lowmem_minfree[i]; // 在 cmd_target 中初始化的
       if (other_free < minfree && other_file < minfree) {
         min_score_adj = lowmem_adj[i];
         // Adaptive LMK
@@ -722,39 +712,17 @@ static void mp_event_common(int data, uint32_t events,
     }
 
     if (min_score_adj == OOM_SCORE_ADJ_MAX + 1) {
-      if (debug_process_killing && lowmem_targets_size) {
-        ALOGI("Ignore %s memory pressure event "
-              "(free memory=%ldkB, cache=%ldkB, limit=%ldkB)",
-              level_name[level], other_free * page_k, other_file * page_k,
-              (long)lowmem_minfree[lowmem_targets_size - 1] * page_k);
-      }
-      return;
+
+      ... // 不用杀进程
     }
 
     goto do_kill;
   }
 
   if (level == VMPRESS_LEVEL_LOW) {
-    record_low_pressure_levels(&mi);
-    if (enable_preferred_apps) {
-      if (get_time_diff_ms(&last_pa_update_tm, &curr_tm) >=
-          pa_update_timeout_ms) {
-        if (!use_perf_api_for_pref_apps) {
-          if (perf_ux_engine_trigger) {
-            perf_ux_engine_trigger(PAPP_OPCODE, preferred_apps);
-          }
-        } else {
-          if (perf_sync_request) {
-            const char *tmp = perf_sync_request(PAPP_PERF_TRIGGER);
-            if (tmp != NULL) {
-              strlcpy(preferred_apps, tmp, strlen(tmp));
-              free((void *)tmp);
-            }
-          }
-        }
-        last_pa_update_tm = curr_tm;
-      }
-    }
+    record_low_pressure_levels(&mi); // 记录目前遇到的最低可用内存页数和遇到的最大可用的内存页数
+
+    ...
   }
 
   if (level_oomadj[level] > OOM_SCORE_ADJ_MAX) {
@@ -762,6 +730,8 @@ static void mp_event_common(int data, uint32_t events,
     return;
   }
 
+  // mem_usage 是所用的内存数，memsw_usage 是内存数加上 swap out 的内存数
+  // 接下来的代码根据这两个数据来计算内存压力
   if ((mem_usage = get_memory_usage(&mem_usage_file_data)) < 0) {
     goto do_kill;
   }
@@ -770,10 +740,14 @@ static void mp_event_common(int data, uint32_t events,
   }
 
   // Calculate percent for swappinness.
+  // swap 用的越多，值越小，压力越大
   mem_pressure = (mem_usage * 100) / memsw_usage;
 
+  // lmkd 在给 mp level 升级的时候需要打开 enable_pressure_upgrade（默认关闭）
+  // 而降级却总是可行的，说明 lmkd 尽力在不杀死应用的情况下满足系统的内存需求
   if (enable_pressure_upgrade && level != VMPRESS_LEVEL_CRITICAL) {
     // We are swapping too much.
+    // swap 用的太多，内存压力大，提高 level，更加激进的杀进程
     if (mem_pressure < upgrade_pressure) {
       level = upgrade_level(level);
       if (debug_process_killing) {
@@ -789,32 +763,34 @@ static void mp_event_common(int data, uint32_t events,
        mi.field.total_swap * swap_free_low_percentage / 100)) {
     // If the pressure is larger than downgrade_pressure lmk will not
     // kill any process, since enough memory is available.
-    if (mem_pressure > downgrade_pressure) {
+    if (mem_pressure > downgrade_pressure) { // 内存够用
       if (debug_process_killing) {
         ALOGI("Ignore %s memory pressure", level_name[level]);
       }
       return;
     } else if (level == VMPRESS_LEVEL_CRITICAL &&
-               mem_pressure > upgrade_pressure) {
+               mem_pressure > upgrade_pressure) { // 为什么 downgrade 和 upgrade 都是 100
       if (debug_process_killing) {
         ALOGI("Downgrade critical memory pressure");
       }
       // Downgrade event, since enough memory available.
+      // 内存足够，将事件降级
       level = downgrade_level(level);
     }
   }
 
 do_kill:
-  if (low_ram_device && per_app_memcg) {
+  if (low_ram_device && per_app_memcg) { // 小内存设备，直接杀进程
     /* For Go devices kill only one task */
-    if (find_and_kill_process(use_minfree_levels ? min_score_adj
-                                                 : level_oomadj[level],
+    // 回收内存使用最多的进程
+    if (find_and_kill_process(use_minfree_levels ? min_score_adj // 前面计算好了
+                                                 : level_oomadj[level], // 返回回收的内存大小
                               NULL, &mi, &wi, &curr_tm, NULL) == 0) {
       if (debug_process_killing) {
         ALOGI("Nothing to kill");
       }
     }
-  } else {
+  } else { // 大内存设备
     int pages_freed;
     static struct timespec last_report_tm;
     static unsigned long report_skip_count = 0;
@@ -843,7 +819,7 @@ do_kill:
       }
     }
 
-    pages_freed =
+    pages_freed = // 流程上和小内存设备没有什么不同，还是计算 min_score_adj，杀进程
         find_and_kill_process(min_score_adj, NULL, &mi, &wi, &curr_tm, NULL);
 
     if (pages_freed == 0) {
@@ -854,25 +830,7 @@ do_kill:
       }
     }
 
-    /* Log whenever we kill or when report rate limit allows */
-    if (use_minfree_levels) {
-      ALOGI("Reclaimed %ldkB, cache(%ldkB) and free(%" PRId64
-            "kB)-reserved(%" PRId64 "kB) "
-            "below min(%ldkB) for oom_score_adj %d",
-            pages_freed * page_k, other_file * page_k,
-            mi.field.nr_free_pages * page_k, zi.totalreserve_pages * page_k,
-            minfree * page_k, min_score_adj);
-    } else {
-      ALOGI("Reclaimed %ldkB at oom_score_adj %d", pages_freed * page_k,
-            min_score_adj);
-    }
-
-    if (report_skip_count > 0) {
-      ALOGI("Suppressed %lu failed kill reports", report_skip_count);
-      report_skip_count = 0;
-    }
-
-    last_report_tm = curr_tm;
+    ...
   }
   if (is_waiting_for_kill()) {
     /* pause polling if we are waiting for process death notification */
@@ -881,7 +839,14 @@ do_kill:
 }
 ```
 
+`struct meminfo` 中的元素都不是 `/proc/meminfo` 中原有的，而是转换后的，例如，
 
+```cpp
+mi->field.nr_file_pages =
+      mi->field.cached + mi->field.swap_cached + mi->field.buffers;
+  mi->field.total_gpu_kb = read_gpu_total_kb();
+  mi->field.easy_available = mi->field.nr_free_pages + mi->field.inactive_file;
+```
 
 ### 一些想法
 
