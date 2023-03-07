@@ -127,3 +127,5 @@ KexAlgorithms +diffie-hellman-group14-sha1
     然后使用 `linux (hd0,msdos0)/vm-xxx root=/dev/sda3` 命令，敲出 `vm` 后使用 `tab` 建补全，同时确定 initrd，`initrd (hd0,msdos0)/init` 同样使用 `tab` 补全。
 
     最后 `boot` 命令重启即可。
+
+19. 使用 emulator 调试 android 时，需要用到 gdbserver，在 adb push 的时候遇到 /system ro 的问题时，需要在 emulator 启动时增加 -writable-system 命令。
