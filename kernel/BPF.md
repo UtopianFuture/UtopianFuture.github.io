@@ -824,7 +824,7 @@ bpftrace -e 'tracepoint:raw_syscalls:sys_enter { @[comm] = count(); }'
 
 这个 -e 参数就是让 bpftrace 执行后面的 program，`tracepoint:raw_syscalls:sys_enter` 是一个 tracepoint，类似的点还有很多，可以用 `bpftrace -l` 查看。
 
-#### Timing read()s
+#### Timing read()
 
 而 `@` 就表示 map。bpftrace 在接收到终止信号时会自动将所有的 map 信息打印出来。来看一个更复杂的，
 

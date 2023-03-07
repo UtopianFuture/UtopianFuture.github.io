@@ -1267,3 +1267,5 @@ page table pages 是不可交换、不可移动的。
 还有就是回收低级的（4 级页表）page table pages 是划算的，高级 page table pages 回收起来收益不高。
 
 对于 empty page table pages 来说，回收很简单，但是对于包含零页映射的 page table pages 来说，有些麻烦。内核能够通过扫描来发现这些 page table pages，但是扫描也有代价，所以扫描的时机是需要精确把握的，这个还需要实验。
+
+### [The ongoing search for mmap_lock scalability](https://lwn.net/Articles/893906/)

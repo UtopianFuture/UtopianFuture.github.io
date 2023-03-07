@@ -1,13 +1,15 @@
 ## ION 内存管理
 
-这里先看 LWN 文章[^1] ，然后进一步分析。
+这里先看 LWN 文章[^1][^3] ，然后进一步分析。
 
 ION 是 PMEM 的继承者，目的主要是通过**在硬件设备和用户空间之间分配和共享内存**，实现设备之间零拷贝[^4]共享内存（概念很简单，但是对这些功能缺乏实际的认识，所以难以理解。**需要搞懂如何做到共享内存**）。
+
+要做到这一点有很多困难。在 SOC 中，有很多不同的设备能够使用 DMA，这些设备有不同的访存能力和权限。例如有设备使用 scatter-gather 技术实现零拷贝；有设备只能访问物理地址连续的内存；有设备能够访问特定的一部分内存等等。如果有一段缓存想和某个设备共享，但是这个缓存位于该设备能够访问的地址之外，那就必须将缓存内容复制到该设备能够访问的地址范围内。那么这样性能就很低了。所以分配一个所有设备都能使用的缓存就显得很重要了。
 
 ION 主要功能：
 
 - 内存管理器：提供通用的内存管理接口，通过 heap 管理各种类型的内存；
-- 共享内存：可提供驱动之间、用户进程之间、内核空间和用户空间之间的共享内存。
+- 共享内存：可提供驱动之间、用户进程之间、内核空间和用户空间之间的共享内存，这个主要是通过为每个 buffer 分配一个 fd，然后共享 fd 来实现的。
 
 ### 基本结构
 
@@ -109,6 +111,30 @@ struct ion_heap_ops {
 ```
 
 之后会分析 heap 的具体实现。
+
+#### ion_handle
+
+在用户态表示一段 buffer。
+
+```c
+/**
+ * ion_handle - a client local reference to a buffer
+ * @ref:		reference count
+ * @client:		back pointer to the client the buffer resides in
+ * @buffer:		pointer to the buffer
+ * @node:		node in the client's handle rbtree
+ * @kmap_cnt:		count of times this client has mapped to kernel
+ * @id:			client-unique id allocated by client->idr
+ */
+struct ion_handle {
+	struct kref ref;
+	struct ion_client *client;
+	struct ion_buffer *buffer;
+	struct rb_node node;
+	unsigned int kmap_cnt;
+	int id; // 这个是该 buffer 的 id，进程间就是通过分享这个 id 来达到共享内存的目的
+};
+```
 
 #### ion_heap
 
@@ -236,7 +262,7 @@ struct ion_allocation_data {
 	size_t align;
 	unsigned int heap_id_mask;
 	unsigned int flags;
-	ion_user_handle_t handle; // 返回参数，表示申请到的 buffer。这个 buffer CPU 不能访问（？）
+	ion_user_handle_t handle; // 返回参数，表示申请到的 buffer。这个 buffer CPU 不能访问（？），这个其时就是一个 id
 };
 
 struct ion_fd_data {
@@ -249,13 +275,13 @@ struct ion_handle_data {
 }
 ```
 
-然后就可以通过 ioctl 分配 buffer。
+然后就可以通过 ioctl 分配 buffer，
 
 ```c
 int ioctl(int client_fd, ION_IOC_ALLOC, struct ion_allocation_data *allocation_data)
 ```
 
-这个 handle 只能被用来获取一个 buffer sharing 的文件描述符（ION_IOC_ALLOC 不是已经分配好了么，为什么还要再使用一次 ioctl？从后面的描述来看，这个 fd 可以用来在各个 client 之间 share），
+这个 handle 是只能被用来获取一个 ion_fd_data 的文件描述符（ION_IOC_ALLOC 不是已经分配好了么，为什么还要再使用一次 ioctl？从后面的描述来看，这个 fd 可以用来在各个 client 之间 share），
 
 ```c
 int ioctl(int client_fd, ION_IOC_SHARE, struct ion_fd_data *fd_data);
@@ -274,6 +300,8 @@ int ioctl(int client_fd, ION_IOC_FREE, struct ion_handle_data *handle_data);
 ```
 
 命令会导致 handle 的引用计数减少 1。当这个引用计数达到 0 的时候，ion_handle 对象会被析构，同时 ION 的索引数据结构被更新。
+
+#### how to use
 
 这里有一个简单的 demo[^2]，
 
@@ -296,10 +324,10 @@ void main()
 	ionAllocData.align = 0;
 	ionAllocData.flags = ION_HEAP_TYPE_SYSTEM;
 
-	int fd=open("/dev/ion",O_RDWR);
+	int fd=open("/dev/ion",O_RDWR); // 这个就是 ION 驱动为该进程创建的 client fd
 	ioctl(fd,ION_IOC_ALLOC, &ionAllocData); // 使用 ION_IOC_ALLOC 分配 buffer
 	fd_data.handle = ionAllocData.handle; // handle 表示分配的 buffer
-	ioctl(fd,ION_IOC_SHARE,&fd_data);
+	ioctl(fd,ION_IOC_SHARE,&fd_data); // 这里才是关键，通过 fd 获取对应的 ion_handle
 
     p=mmap(0,0x1000,PROT_READ|PROT_WRITE,MAP_SHARED,fd_data.fd,0);
 
@@ -337,13 +365,380 @@ int ion_phys(struct ion_client *client, struct ion_handle *handle, ion_phys_addr
 
 在处理 client 的调用之时，ion 始终会对 input file descriptor, client 和 handle arguments 进行确认。例如：当 import 一个 fd 时，ion 会保证这个文件描述符确实是通过 ION_IOC_SHARE 命令创建的。当 `ion_phys` 被调用之时，ION 会验证 buffer handle 是否在 client 允许访问的 handles 列表中，若不是，则返回错误。这些验证机制减少了期望之外的访问与资源泄露。
 
-### Comparing ION and DMABUF
+### ION cache management[^3]
+
+ION 要做的另一项工作是维护 DMA 之间的 cache 一致性（这个应该很复杂）。很多设备会维护它们自己的 cache，当它们私有的 cache 刷新时，ION 需要在其他设备访问这些私有 cache 中的内容（而不是私有 cache，其中的数据应该部分在共享 buffer 中）前维护数据的正确性。
+
+ION 运行使用者控制是否需要维护 cache 一致性。
+
+- 当需要时：ION 延迟分配 mmap 所需的页面，然后使用 page fault 的方式来建立映射（？）。
+- 当不需要时：
+
+### 代码分析
+
+#### ion_device_create
+
+本函数最重要的是分配并初始化了核心 `struct ion_device` 实例，并将其和 MISC 设备结合起来，这样用户空间就可以通过 open()、ioctl() 等系统调用使用它了。
+
+```c
+struct ion_device *ion_device_create(long (*custom_ioctl)
+				     (struct ion_client *client,
+				      unsigned int cmd,
+				      unsigned long arg))
+{
+	struct ion_device *idev;
+	int ret;
+
+	idev = kzalloc(sizeof(struct ion_device), GFP_KERNEL);
+	if (!idev)
+		return ERR_PTR(-ENOMEM);
+
+	idev->dev.minor = MISC_DYNAMIC_MINOR;
+	idev->dev.name = "ion";
+	idev->dev.fops = &ion_fops;
+	idev->dev.parent = NULL;
+	ret = misc_register(&idev->dev);
+
+    ...
+
+debugfs_done:
+
+	idev->custom_ioctl = custom_ioctl;
+	idev->buffers = RB_ROOT;
+	mutex_init(&idev->buffer_lock);
+	init_rwsem(&idev->lock);
+	plist_head_init(&idev->heaps);
+	idev->clients = RB_ROOT;
+	return idev;
+}
+EXPORT_SYMBOL(ion_device_create);
+```
+
+这里 `ion_fops` 中定义怎样访问设备，
+
+```c
+static const struct file_operations ion_fops = {
+	.owner          = THIS_MODULE,
+	.open           = ion_open,
+	.release        = ion_release,
+	.unlocked_ioctl = ion_ioctl,
+	.compat_ioctl   = compat_ion_ioctl,
+};
+```
+
+但是奇怪的是除了一个 dummy 以及很老的 Nvidia Tegra SOC 初始化外没有找到哪里还调用该函数了。
+
+#### ion_open
+
+前面讲到，用户空间要想使用 ION 进行内存分配，首先必须对设备节点 `/dev/ion` 进行 open 系统调用。该函数最重要的作用就是创建了 `struct ion_client` 实例。这样，后续就可以利用 ioctl 系统调用从其中分配内存了。
+
+```c
+static int ion_open(struct inode *inode, struct file *file)
+{
+	struct miscdevice *miscdev = file->private_data;
+	struct ion_device *dev = container_of(miscdev, struct ion_device, dev);
+	struct ion_client *client;
+	char debug_name[64];
+
+	snprintf(debug_name, 64, "%u", task_pid_nr(current->group_leader));
+	client = ion_client_create(dev, debug_name); // 创建 client
+	if (IS_ERR(client))
+		return PTR_ERR(client);
+	file->private_data = client;
+
+	return 0;
+}
+```
+
+#### ion_ioctl
+
+用户通过 ioctl 与 ION 交互。`ion_ioctl` 支持多种命令，
+
+```c
+static long ion_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+	struct ion_client *client = filp->private_data;
+	struct ion_device *dev = client->dev;
+	struct ion_handle *cleanup_handle = NULL;
+	int ret = 0;
+	unsigned int dir;
+
+	union {
+		struct ion_fd_data fd;
+		struct ion_allocation_data allocation;
+		struct ion_handle_data handle;
+		struct ion_custom_data custom;
+	} data;
+
+	dir = ion_ioctl_dir(cmd);
+
+	...
+
+	switch (cmd) {
+	case ION_IOC_ALLOC:
+	{
+		struct ion_handle *handle;
+
+		handle = ion_alloc(client, data.allocation.len,
+						data.allocation.align,
+						data.allocation.heap_id_mask,
+						data.allocation.flags);
+		if (IS_ERR(handle))
+			return PTR_ERR(handle);
+
+		data.allocation.handle = handle->id; // 从这里看，用户态的 handle 其时就是一个 id
+
+		cleanup_handle = handle;
+		break;
+	}
+	case ION_IOC_FREE:
+	{
+		struct ion_handle *handle;
+
+		mutex_lock(&client->lock);
+		handle = ion_handle_get_by_id_nolock(client, data.handle.handle);
+		if (IS_ERR(handle)) {
+			mutex_unlock(&client->lock);
+			return PTR_ERR(handle);
+		}
+		ion_free_nolock(client, handle);
+		ion_handle_put_nolock(handle);
+		mutex_unlock(&client->lock);
+		break;
+	}
+	case ION_IOC_SHARE:
+	case ION_IOC_MAP:
+	{
+		struct ion_handle *handle;
+
+		mutex_lock(&client->lock);
+		handle = ion_handle_get_by_id_nolock(client, data.handle.handle);
+		if (IS_ERR(handle)) {
+			mutex_unlock(&client->lock);
+			return PTR_ERR(handle);
+		}
+		data.fd.fd = ion_share_dma_buf_fd_nolock(client, handle);
+		ion_handle_put_nolock(handle);
+		mutex_unlock(&client->lock);
+		if (data.fd.fd < 0)
+			ret = data.fd.fd;
+		break;
+	}
+	case ION_IOC_IMPORT:
+		...
+	case ION_IOC_SYNC:
+        ...
+	case ION_IOC_CUSTOM:
+        ...
+	default:
+		return -ENOTTY;
+	}
+
+	...
+
+	return ret;
+}
+```
+
+因为上面的 [demo](#how to use) 中用到了 `ION_IOC_ALLOC`，`ION_IOC_FREE`，`ION_IOC_SHARE`，这里就只分析这三个命令。
+
+##### ION_IOC_ALLOC
+
+在用户态可以通过下面的命令申请 buffer，
+
+```c
+int ioctl(int client_fd, ION_IOC_ALLOC, struct ion_allocation_data *allocation_data)
+```
+
+client_fd 是 `ion_open` 中分配的。
+
+```c
+struct ion_handle *ion_alloc(struct ion_client *client, size_t len,
+			     size_t align, unsigned int heap_id_mask,
+			     unsigned int flags)
+{
+	struct ion_handle *handle;
+	struct ion_device *dev = client->dev;
+	struct ion_buffer *buffer = NULL;
+	struct ion_heap *heap;
+	int ret;
+
+    // 目前还不知道如何调试 ION，难道只能用这种方法？
+	pr_debug("%s: len %zu align %zu heap_id_mask %u flags %x\n", __func__,
+		 len, align, heap_id_mask, flags);
+	/*
+	 * traverse the list of heaps available in this system in priority
+	 * order.  If the heap type is supported by the client, and matches the
+	 * request of the caller allocate from it.  Repeat until allocate has
+	 * succeeded or all heaps have been tried
+	 */
+	len = PAGE_ALIGN(len);
+
+	if (!len)
+		return ERR_PTR(-EINVAL);
+
+	down_read(&dev->lock); // 读写锁
+	plist_for_each_entry(heap, &dev->heaps, node) { // 遍历所有类型的 heap
+		/* if the caller didn't specify this heap id */
+		if (!((1 << heap->id) & heap_id_mask)) // 检查该 heap 是否符合条件
+			continue;
+		buffer = ion_buffer_create(heap, dev, len, align, flags); // 这里创建了 buffer 啊
+		if (!IS_ERR(buffer))
+			break;
+	}
+	up_read(&dev->lock);
+
+	...
+
+    // 首先 ion_handle 是用户态表示 buffer 的，这里只是创建一个 handle 示例
+    // 增加计数器，然后将 handle->buffer = buffer
+    // 这个 buffer 就是上面创建的
+	handle = ion_handle_create(client, buffer);
+
+	/*
+	 * ion_buffer_create will create a buffer with a ref_cnt of 1,
+	 * and ion_handle_create will take a second reference, drop one here
+	 */
+	ion_buffer_put(buffer);
+
+	if (IS_ERR(handle))
+		return handle;
+
+	mutex_lock(&client->lock);
+	ret = ion_handle_add(client, handle);
+	mutex_unlock(&client->lock);
+	if (ret) {
+		ion_handle_put(handle);
+		handle = ERR_PTR(ret);
+	}
+
+	return handle;
+}
+```
+
+`ion_buffer_create` 是分配 buffer 的核心函数，
+
+```c
+static struct ion_buffer *ion_buffer_create(struct ion_heap *heap,
+				     struct ion_device *dev,
+				     unsigned long len,
+				     unsigned long align,
+				     unsigned long flags)
+{
+	struct ion_buffer *buffer;
+	struct sg_table *table; // 这两个结构之前分析内核都没有遇到过
+	struct scatterlist *sg;
+	int i, ret;
+
+	buffer = kzalloc(sizeof(struct ion_buffer), GFP_KERNEL);
+
+	buffer->heap = heap;
+	buffer->flags = flags;
+	kref_init(&buffer->ref);
+
+    // 不同的 heap 有不同的 allocate 函数
+    // 下面只分析 ION_HEAP_TYPE_SYSTEM
+    //
+	ret = heap->ops->allocate(heap, buffer, len, align, flags);
+
+	...
+
+	buffer->dev = dev;
+	buffer->size = len;
+
+	table = heap->ops->map_dma(heap, buffer); // 这个函数是干什么的？
+
+    ...
+
+	buffer->sg_table = table;
+    // 前面提到过 ION 在作 mmap 时不会立即分配 page，而是通过 page fault 来分配物理页
+    // 是在这里么
+    // 这里是根据 ION_FLAG_CACHED 和 ION_FLAG_CACHED_NEEDS_SYNC 来决定
+    // 应该是和 cache 一致性有关系
+	if (ion_buffer_fault_user_mappings(buffer)) {
+		int num_pages = PAGE_ALIGN(buffer->size) / PAGE_SIZE;
+		struct scatterlist *sg;
+		int i, j, k = 0;
+
+		buffer->pages = vmalloc(sizeof(struct page *) * num_pages);
+		if (!buffer->pages) {
+			ret = -ENOMEM;
+			goto err;
+		}
+
+		for_each_sg(table->sgl, sg, table->nents, i) {
+			struct page *page = sg_page(sg);
+
+			for (j = 0; j < sg->length / PAGE_SIZE; j++)
+				buffer->pages[k++] = page++;
+		}
+	}
+
+	buffer->dev = dev; // 继续构造 ion_buffer
+	buffer->size = len;
+	INIT_LIST_HEAD(&buffer->vmas);
+	mutex_init(&buffer->lock);
+	/*
+	 * this will set up dma addresses for the sglist -- it is not
+	 * technically correct as per the dma api -- a specific
+	 * device isn't really taking ownership here.  However, in practice on
+	 * our systems the only dma_address space is physical addresses.
+	 * Additionally, we can't afford the overhead of invalidating every
+	 * allocation via dma_map_sg. The implicit contract here is that
+	 * memory coming from the heaps is ready for dma, ie if it has a
+	 * cached mapping that mapping has been invalidated
+	 */
+	for_each_sg(buffer->sg_table->sgl, sg, buffer->sg_table->nents, i) { // 不理解
+		sg_dma_address(sg) = sg_phys(sg);
+		sg_dma_len(sg) = sg->length;
+	}
+	mutex_lock(&dev->buffer_lock);
+	ion_buffer_add(dev, buffer);
+	mutex_unlock(&dev->buffer_lock);
+	return buffer;
+
+	...
+}
+```
+
+ION_HEAP_TYPE_SYSTEM 的处理函数如下，理解这些才是搞懂如何做到共享内存的关键，下面一个个分析。
+
+```c
+static struct ion_heap_ops system_heap_ops = {
+	.allocate = ion_system_heap_allocate,
+	.free = ion_system_heap_free,
+	.map_dma = ion_system_heap_map_dma,
+	.unmap_dma = ion_system_heap_unmap_dma,
+	.map_kernel = ion_heap_map_kernel,
+	.unmap_kernel = ion_heap_unmap_kernel,
+	.map_user = ion_heap_map_user,
+	.shrink = ion_system_heap_shrink,
+};
+```
+
+##### ION_IOC_FREE
+
+这个函数比较简单，重点就是通过 `ion_handle_put` 来对上文提到的 `ion_handle->ref` 减一，当 ref 减到 0 时，就会调用 `ion_handle_destroy` 来销毁 ion_handle 实例。
+
+```c
+static int ion_handle_put_nolock(struct ion_handle *handle)
+{
+	int ret;
+
+	ret = kref_put(&handle->ref, ion_handle_destroy); // destory 函数之后分析
+
+	return ret;
+}
+```
+
+##### ION_IOC_SHARE
 
 ### 一些思考
 
 - DMA 机制我是清楚的，但是内核中使用、实现似乎比我以为的复杂，需要花时间整理一下；
 - 在 lowmemorykiller 和 ion 中都遇到了 shrinker，不太理解这个是做什么的；
-- android 中有一个名为 binder 的核间通讯机制，有时间需要看看。
+- android 中有一个名为 binder 的核间通讯机制，有时间需要看看；
+- 现在还不知道怎么调试，先将原理和代码过一遍；
 
 ### Reference
 
