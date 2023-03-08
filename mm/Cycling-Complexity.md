@@ -3,17 +3,13 @@
 ### 静态检查
 首先要了解什么是静态检查。静态检查又名程序静态分析(Program Static Analysis)是指在不运行代码的方式下，通过词法分析、语法分析、控制流、数据流分析等技术对程序代码进行扫描，验证代码是否满足规范性、安全性、可靠性、可维护性等指标的一种代码分析技术。
 
-[静态分析工具](https://www.jetbrains.com/zh-cn/teamcity/ci-cd-guide/ci-cd-tools/)会扫描代码，查找常见的已知错误和漏洞，例如内存泄漏或缓冲区溢出。 这一分析还可以强制执行编码标准。
+静态分析工具会扫描代码，查找常见的已知错误和漏洞，例如内存泄漏或缓冲区溢出。 这一分析还可以强制执行编码标准。
 
 在优先考虑安全的情况下，专业的静态应用安全测试 (SAST) 工具可以检查已知的安全缺陷。 由于静态分析是在源代码上执行，而不执行程序，它既可以在 CI/CD 管道的最开始运行，也可以在提交变更之前直接从 IDE 运行。
 
-然而，静态分析只能识别违反预编程规则的实例，不能仅通过阅读源代码找出所有缺陷。 也存在误报的风险，因此需要对结果进行解释。
+然而，静态分析只能识别违反预编程规则的实例，不能仅通过阅读源代码找出所有缺陷。 也存在误报的风险，因此需要对结果进行解释。从这个意义上说，静态代码分析是代码审查的有价值补充，因为它突出了已知的问题，并为对整体设计和方法的审查等更有趣的任务腾出了时间。静态代码分析构成自动化检查系列的一部分，可保持代码质量，应与其他形式的动态分析（执行代码以检查已知问题）和自动化测试结合使用。
 
-从这个意义上说，静态代码分析是代码审查的有价值补充，因为它突出了已知的问题，并为对整体设计和方法的审查等更有趣的任务腾出了时间。
-
-静态代码分析构成[自动化检查](https://www.jetbrains.com/zh-cn/teamcity/ci-cd-guide/automated-testing/)系列的一部分，可保持代码质量，应与其他形式的动态分析（执行代码以检查已知问题）和自动化测试结合使用。
-
-下面介绍一些工具
+这里总结了很多工具[^2]，下面挑一些开源的学习一下。
 #### Corax
 问题：
 - 需要构建的环境？C/C++
@@ -124,12 +120,86 @@ MET,FL_FUNC,../memcpy.c,1
 ### 圈复杂度
 
 一种度量程序复杂度的方法，由 Thomas McCabe 于 1976 年定义，用来**衡量一个模块判定结构的复杂程度**，数量上表现为独立路径条数(if else; switch case?)，即合理的预防错误所需测试的最少路径条数，圈复杂度大说明程序代码质量低且难于测试和维护，根据经验，高的圈复杂度和程序出错的可能性有着很大关系。
-#### sourcemonitor
-首先要清楚 [SourceMonitor](https://www.derpaul.net/SourceMonitor/) 是为了检查代码[圈复杂度](http://kaelzhang81.github.io/2017/06/18/%E8%AF%A6%E8%A7%A3%E5%9C%88%E5%A4%8D%E6%9D%82%E5%BA%A6/)的工具。
+
+我们可以采取直接数的方式计算圈复杂度，
+
+```c
+ U32 find (string match){
+         for(auto var : list)
+         {
+             if(var == match && from != INVALID_U32) return INVALID_U32;
+         }
+         //match step1
+         if(session == getName() && key == getKey())
+         {
+             for (auto& kv : Map)
+             {
+                 if (kv.second == last && match == kv.first)
+                 {
+                     return last;
+                 }
+             }
+
+         }
+         //match step2
+         auto var = Map.find(match);
+         if(var != Map.end()&& (from != var->second)) return var->second;
+
+         //match step3
+         for(auto var: Map)
+         {
+             if((var.first, match) && from != var.second)
+             {
+                 return var.second;
+             }
+         }
+         return INVALID_U32;
+ };
+```
+
+其圈复杂度为：V(G) = 1(for) + 2(if) + 2(if) + 1(for) + 2(if) + 2(if) + 1(for) + 2(if) + 1= 14。
+
+常见的判定语句圈复杂度为：while: 2； switch case: case 个数；三元语句：2。
+
+#### sourcemonitor[^3]
+首先要清楚 SourceMonitor 是为了检查代码[圈复杂度](http://kaelzhang81.github.io/2017/06/18/%E8%AF%A6%E8%A7%A3%E5%9C%88%E5%A4%8D%E6%9D%82%E5%BA%A6/)的工具。
+
+这个工具和下面介绍的 Lizard 功能类似，其运行在 windows 平台上（貌似也能运行在 linux 上，但没找到开源代码），能够达到开箱即用。
+
+其能够测试如下信息：
+
+- **总行数(Lines)**：包括空行在内的代码行数；
+
+- **语句数目(Statements)**：在C语言中，语句是以分号结尾的。分支语句if，循环语句for、while，跳转语句goto都被计算在内，预处理语句#include、#define和#undef也被计算在内，对其他的预处理语句则不作计算，在#else和#endif、#elif和#endif之间的语句将被忽略；
+
+- **分支语句比例(Percent Branch Statements)**：该值表示分支语句占语句数目的比例，这里的“分支语句”指的是使程序不顺序执行的语句，包括if、else、for、while和switch；
+
+- **注释比例(Percent Lines with Comments)**：该值指示注释行（包括/*……*/和//……形式的注释）占总行数的比例；
+
+- **函数数目(Functions)**：指示函数的数量；
+
+- **平均每个函数包含的语句数目(Average Statements per Function)**：总的函数语句数目除以函数数目得到该值；
+
+- **函数圈复杂度(Function Complexity)**：圈复杂度指示一个函数可执行路径的数目，以下语句为圈复杂度的值贡献1：if/else/for/while语句，三元运算符语句，if/for/while判断条件中的"&&"或“||”，switch语句，后接break/goto/ return/throw/continue语句的case语句，catch/except语句；
+
+- **函数深度(Block Depth)**：函数深度指示函数中分支嵌套的层数。
+
+我们跑一个简单的项目：
+
+![sourcemonitor](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/sourcemonitor.png?raw=true)
+
+这里可以构建多个 checkpoint，每个 checkpoint 可自由配置检查的文件。还可以进一步检查每个文件中的函数情况，包括 CC，语句数量，分支嵌套次数，引用次数。
+
+| 优点                                    | 缺点                                                   |
+| --------------------------------------- | ------------------------------------------------------ |
+| 开箱即用，使用简单                      | 统计的信息过于简单，有用的只有 CCN，每个函数的嵌套层数 |
+| 检测内核时间：小时级别                  | 难以集成到 CI/CD 中                                    |
+| 可设置多个 checkpoint，自由设置检测文件 | 无法检查语法错误                                       |
+| UI 界面丰富                             |                                                        |
 
 #### [Lizard](https://github.com/terryyin/lizard)
 
-该工具能够检测如下参数：
+该工具运行在 linux 平台上，能够检测如下参数：
 
 - 不包含注释代码行数；
 - CCN 圈复杂度；
@@ -213,3 +283,13 @@ Total nloc   Avg.NLOC  AvgCCN  Avg.token   Fun Cnt  Warning cnt   Fun Rt   nloc 
 ------------------------------------------------------------------------------------------
        551       8.8     1.8       63.7       37            1      0.03    0.40
 ```
+
+#### 总结
+
+这两个工具个人觉得只能作为小组件检测 CC，无法作为静态检查工具（相比于 corax 和 coverity 相比不是一个级别的工具）。
+
+### Reference
+
+[^1]:[圈复杂度](http://kaelzhang81.github.io/2017/06/18/%E8%AF%A6%E8%A7%A3%E5%9C%88%E5%A4%8D%E6%9D%82%E5%BA%A6/)
+[^2]:[静态检查工具总结](https://en.wikipedia.org/wiki/List_of_tools_for_static_code_analysis)
+[^3]:[sourcemonitor](https://www.derpaul.net/SourceMonitor/)
