@@ -21,9 +21,108 @@
 - 探针？探针是 corax 为每个环境创建的配置命令
 - 静态检查怎样做到如此精确？
 
+#### [vera++](https://bitbucket.org/verateam/vera/src/master/)
 
+这是一个代码格式化工具，可以通过配置自己的规则脚本来检查代码格式是否规范，如每行不超过 100 字符、文件命名规范、关键字后根空格等。有需要可以使用。
+
+#### [AdLint](https://adlint.sourceforge.net/pmwiki/upload.d/Main/users_guide_en.html)
+
+用 ruby 编写的开源静态检查器，主要检查 ANSI C89, ISO C90 和 部分 ISO C99 标准，能够在 windows, MAC OS X, linux 等多个平台上运行。
+
+##### 安装
+
+目前只在 Linux 上使用过，先介绍 Linux 上的安装使用。
+
+- 下载 [ruby 环境](http://www.ruby-lang.org/en/downloads/)
+- `sudo gem install adlint`
+- 使用 `adlintize -v` 和 `adlint -v` 检查是否安装成功
+
+##### 使用
+
+- 在项目根目录中运行 `adlintize -o adlint` 命令，在新创建的 `adlint` 目录中会产生如下文件
+  - GNUmakefile — Make file for GNU make describing the analysis procedure
+  - adlint_traits.yml：配置文件，可自由配置，取消某些 warning
+  - adlint_pinit.h：这两个头文件还没搞懂有什么用
+  - adlint_cinit.h：
+  - adlint_all.sh：linux 下的运行脚本
+  - adlint_all.bat：windows 下的运行脚本
+  - adlint_files.txt：需要分析的文件列表
+- 在 linux 下使用 `./adlint_all.sh` 运行即可。其对 adlint_files.txt 中的每个文件都会产生如下几个分析文件：
+  - intro_demo.i：源码预处理文件，目前无需关注；
+  - intro_demo.c.met.csv：所有的分析数据，adlint 对每个文件的每个函数都会给出分析数据，下面介绍；
+  - intro_demo.c.msg.csv：warning, error 信息，每种 warning, error 手册都有详细的解释以及解决方案；
+  - intro_demo.met.csv：交叉模块分析数据（目前还未遇到）；
+  - intro_demo.msg.csv：交叉模块分析 warning, error 信息；
+
+运行一个简单的 [demo](https://github.com/UtopianFuture/timer-interrupt)，
+
+![image-20230308172837311](/home/guanshun/.config/Typora/typora-user-images/image-20230308172837311.png)
+
+从结果来看，`hello_period.c` 这个文件是分析失败的，在 `adlint/hello_period.c.msg.csv` 中可找到失败原因，
+
+```
+E,../hello_period.c,26,53,core,E0008,ERR,X99,Syntax error is found in token `] __attribute__'.
+```
+
+错误编码 `E0008`，在手册中可以找到该编码的[意义](https://adlint.sourceforge.net/pmwiki/upload.d/Main/users_guide_en.html#index-E0008-60)，修改 `adlint/adlint_traits.yml` 后不再报错。
+
+结果分为两部分，先看 warning 部分，
+
+```
+...
+W,../memcpy.c,148,5,c_builtin,W0413,UNC,X99,The body of control statement is unenclosed by curly brace `{}' block.
+W,../memcpy.c,148,7,c_builtin,W0512,UNC,X99,The result of `++' or `--' operator is used in the statement.
+W,../memcpy.c,148,14,c_builtin,W0512,UNC,X99,The result of `++' or `--' operator is used in the statement.
+W,../memcpy.h,4,1,c_builtin,W0071,UNC,X99,"Included ""../irq.h"" is not referenced in the translation unit. It can be removed."
+...
+```
+
+这里给出了 warning 编号，可以对照手册修改。
+
+再来看一下分析结果，
+
+```
+...
+
+MET,FN_STMT,memcpy,"void * memcpy(void *,void const *,size_t)",../memcpy.c,4,7,5
+MET,FN_UNRC,memcpy,"void * memcpy(void *,void const *,size_t)",../memcpy.c,4,7,0
+MET,FN_CSUB,memcpy,"void * memcpy(void *,void const *,size_t)",../memcpy.c,4,7,0
+MET,FN_GOTO,memcpy,"void * memcpy(void *,void const *,size_t)",../memcpy.c,4,7,0
+MET,FN_RETN,memcpy,"void * memcpy(void *,void const *,size_t)",../memcpy.c,4,7,1
+MET,FN_UELS,memcpy,"void * memcpy(void *,void const *,size_t)",../memcpy.c,4,7,0
+MET,FN_NEST,memcpy,"void * memcpy(void *,void const *,size_t)",../memcpy.c,4,7,1
+MET,FN_CYCM,memcpy,"void * memcpy(void *,void const *,size_t)",../memcpy.c,4,7,1
+MET,FL_STMT,../memcpy.c,5
+MET,FL_FUNC,../memcpy.c,1
+```
+
+每个变量含义如下：
+
+```
+     file_metric_name
+       : "FL_STMT"  <- Number of statements
+       | "FL_FUNC"  <- Number of functions
+
+     func_metric_name
+       : "FN_STMT"  <- Number of statements
+       | "FN_UNRC"  <- Number of unreached statements
+       | "FN_LINE"  <- Number of lines
+       | "FN_PARA"  <- Number of parameters
+       | "FN_UNUV"  <- Number of not use /not reuse variables
+       | "FN_CSUB"  <- Location number of call function
+       | "FN_CALL"  <- Location number of called from function
+       | "FN_GOTO"  <- Number of goto statement
+       | "FN_RETN"  <- Number of return point in a function
+       | "FN_UELS"  <- Number of 'if' statement unless 'else'
+       | "FN_NEST"  <- Maximum number of nest of control flow graph
+       | "FN_PATH"  <- Presumed  number of static path
+       | "FN_CYCM"  <- Cyclomatic complexity
+```
+
+总的来说，功能比较多，自由度也很高，但和上面的 corax 和 coverity 相比还有差距，不知道能够用于公司的项目。
 
 ### 圈复杂度
+
 一种度量程序复杂度的方法，由 Thomas McCabe 于 1976 年定义，用来**衡量一个模块判定结构的复杂程度**，数量上表现为独立路径条数(if else; switch case?)，即合理的预防错误所需测试的最少路径条数，圈复杂度大说明程序代码质量低且难于测试和维护，根据经验，高的圈复杂度和程序出错的可能性有着很大关系。
 #### sourcemonitor
 首先要清楚 [SourceMonitor](https://www.derpaul.net/SourceMonitor/) 是为了检查代码[圈复杂度](http://kaelzhang81.github.io/2017/06/18/%E8%AF%A6%E8%A7%A3%E5%9C%88%E5%A4%8D%E6%9D%82%E5%BA%A6/)的工具。
