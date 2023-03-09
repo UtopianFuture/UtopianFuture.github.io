@@ -56,7 +56,7 @@
 
 从结果来看，`hello_period.c` 这个文件是分析失败的，在 `adlint/hello_period.c.msg.csv` 中可找到失败原因，
 
-```
+```plain
 E,../hello_period.c,26,53,core,E0008,ERR,X99,Syntax error is found in token `] __attribute__'.
 ```
 
@@ -64,7 +64,7 @@ E,../hello_period.c,26,53,core,E0008,ERR,X99,Syntax error is found in token `] _
 
 结果分为两部分，先看 warning 部分，
 
-```
+```plain
 ...
 W,../memcpy.c,148,5,c_builtin,W0413,UNC,X99,The body of control statement is unenclosed by curly brace `{}' block.
 W,../memcpy.c,148,7,c_builtin,W0512,UNC,X99,The result of `++' or `--' operator is used in the statement.
@@ -77,7 +77,7 @@ W,../memcpy.h,4,1,c_builtin,W0071,UNC,X99,"Included ""../irq.h"" is not referenc
 
 再来看一下分析结果，
 
-```
+```plain
 ...
 
 MET,FN_STMT,memcpy,"void * memcpy(void *,void const *,size_t)",../memcpy.c,4,7,5
@@ -94,7 +94,7 @@ MET,FL_FUNC,../memcpy.c,1
 
 每个变量含义如下：
 
-```
+```plain
      file_metric_name
        : "FL_STMT"  <- Number of statements
        | "FL_FUNC"  <- Number of functions
@@ -115,7 +115,44 @@ MET,FL_FUNC,../memcpy.c,1
        | "FN_CYCM"  <- Cyclomatic complexity
 ```
 
-总的来说，功能比较多，自由度也很高，但和上面的 corax 和 coverity 相比还有差距，不知道能够用于公司的项目。
+总的来说，功能比较多，自由度也很高，但和上面的 corax 和 coverity 相比还有差距，尤其是只能支持 c 语言，局限性较大，不知道能够用于公司的项目。
+
+#### [cppcheck](https://cppcheck.sourceforge.io/)
+
+这个我看组内有同事在看，它能做的比下面两个圈复杂度工具要多，主要用来检测 C/C++ 项目。其支持如下代码标准，
+
+- Misra C 2012: Full coverage in open source tool.
+- Autosar: Partial coverage in Cppcheck Premium.
+- Cert C: Full coverage in Cppcheck Premium.
+- Misra C++ 2008: Partial coverage in Cppcheck Premium.
+
+##### 安装
+
+- linux
+
+  `sudo apt-get install cppcheck` 开箱即用，很方便
+
+- windows
+
+  下载 [exe 文件](https://github.com/danmar/cppcheck/releases/download/2.10/cppcheck-2.10-x64-Setup.msi)默认安装即可
+
+##### 使用
+
+来看一个 linux 下的简单例子，
+
+```shell
+cppcheck ./ -i .ccls-cache/
+Checking hello_period.c ...
+hello_period.c:275:4: error: Array 'a[10]' accessed at index 10, which is out of bounds. [arrayIndexOutOfBounds]
+  a[10] = 0;
+   ^
+1/2 files checked 69% done
+Checking memcpy.c ...
+Checking memcpy.c: __GNUC__...
+2/2 files checked 100% done
+```
+
+对于异常代码，其会给出清晰的标注。
 
 ### 圈复杂度
 
@@ -170,9 +207,9 @@ MET,FL_FUNC,../memcpy.c,1
 
 - **总行数(Lines)**：包括空行在内的代码行数；
 
-- **语句数目(Statements)**：在C语言中，语句是以分号结尾的。分支语句if，循环语句for、while，跳转语句goto都被计算在内，预处理语句#include、#define和#undef也被计算在内，对其他的预处理语句则不作计算，在#else和#endif、#elif和#endif之间的语句将被忽略；
+- **语句数目(Statements)**：在 C 语言中，语句是以分号结尾的。分支语句 if，循环语句 for、while，跳转语句 goto 都被计算在内，预处理语句#include、#define 和#undef 也被计算在内，对其他的预处理语句则不作计算，在#else 和#endif、#elif 和#endif 之间的语句将被忽略；
 
-- **分支语句比例(Percent Branch Statements)**：该值表示分支语句占语句数目的比例，这里的“分支语句”指的是使程序不顺序执行的语句，包括if、else、for、while和switch；
+- **分支语句比例(Percent Branch Statements)**：该值表示分支语句占语句数目的比例，这里的“分支语句”指的是使程序不顺序执行的语句，包括 if、else、for、while 和 switch；
 
 - **注释比例(Percent Lines with Comments)**：该值指示注释行（包括/*……*/和//……形式的注释）占总行数的比例；
 
@@ -180,7 +217,7 @@ MET,FL_FUNC,../memcpy.c,1
 
 - **平均每个函数包含的语句数目(Average Statements per Function)**：总的函数语句数目除以函数数目得到该值；
 
-- **函数圈复杂度(Function Complexity)**：圈复杂度指示一个函数可执行路径的数目，以下语句为圈复杂度的值贡献1：if/else/for/while语句，三元运算符语句，if/for/while判断条件中的"&&"或“||”，switch语句，后接break/goto/ return/throw/continue语句的case语句，catch/except语句；
+- **函数圈复杂度(Function Complexity)**：圈复杂度指示一个函数可执行路径的数目，以下语句为圈复杂度的值贡献 1：if/else/for/while 语句，三元运算符语句，if/for/while 判断条件中的"&&"或“||”，switch 语句，后接 break/goto/ return/throw/continue 语句的 case 语句，catch/except 语句；
 
 - **函数深度(Block Depth)**：函数深度指示函数中分支嵌套的层数。
 
@@ -215,9 +252,40 @@ MET,FL_FUNC,../memcpy.c,1
 | 可用 python 脚本[配置](https://github.com/terryyin/lizard#using-lizard-as-python-module) |                                                              |
 | 对于不需要检查的函数可以使用白名单忽略，或者在代码中使用特定的注释忽略 |                                                              |
 
+##### 安装
+
+- pip install lizard
+- 使用 lizard -h 查看是否安装成功
+
+##### 使用
+
+- 使用方便，可以用 `lizard -h` 查看所有的功能，这里列举些常用的
+
+  ```plain
+  positional arguments:
+    paths                 list of the filename/paths.
+
+  optional arguments:
+    -l LANGUAGES			项目使用的语言
+    -C CCN, --CCN CCN     限制 CC，超过报警
+    -f INPUT_FILE			检查特定文件
+    -o OUTPUT_FILE		将结果输出到特定文件
+    -w, --warnings_only   只输出报警信息
+    -x EXCLUDE			不包含某些信息
+    --csv                 将结果以 csv 方式输出
+    -H, --html            将结果以 html 方式输出
+    -W WHITELIST			设置白名单，不用检测
+  ```
+
 Example:
 
+```shell
+lizard ./ -x"./image/*" -x"./.git/*" -x"./.ccls-cache/*" -x"./script/*" -l c
 ```
+
+
+
+```plain
 ================================================
   NLOC    CCN   token  PARAM  length  location
 ------------------------------------------------
