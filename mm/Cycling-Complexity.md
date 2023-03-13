@@ -10,16 +10,6 @@
 然而，静态分析只能识别违反预编程规则的实例，不能仅通过阅读源代码找出所有缺陷。 也存在误报的风险，因此需要对结果进行解释。从这个意义上说，静态代码分析是代码审查的有价值补充，因为它突出了已知的问题，并为对整体设计和方法的审查等更有趣的任务腾出了时间。静态代码分析构成自动化检查系列的一部分，可保持代码质量，应与其他形式的动态分析（执行代码以检查已知问题）和自动化测试结合使用。
 
 这里总结了很多工具[^2]，下面挑一些开源的学习一下。
-#### Corax
-问题：
-- 需要构建的环境？C/C++
-	这个构建应该是指需要编译，corax 使用编译的结果进行分析。
-- 探针？探针是 corax 为每个环境创建的配置命令
-- 静态检查怎样做到如此精确？
-
-#### [vera++](https://bitbucket.org/verateam/vera/src/master/)
-
-这是一个代码格式化工具，可以通过配置自己的规则脚本来检查代码格式是否规范，如每行不超过 100 字符、文件命名规范、关键字后根空格等。有需要可以使用。
 
 #### [AdLint](https://adlint.sourceforge.net/pmwiki/upload.d/Main/users_guide_en.html)
 
@@ -115,7 +105,7 @@ MET,FL_FUNC,../memcpy.c,1
        | "FN_CYCM"  <- Cyclomatic complexity
 ```
 
-总的来说，功能比较多，自由度也很高，但和上面的 corax 和 coverity 相比还有差距，尤其是只能支持 c 语言，局限性较大，不知道能够用于公司的项目。
+总的来说，功能比较多，自由度也很高，但其应该只是一个能用的水平，和 coverity 相比差距在哪，还需要进一步对比。尤其是只能支持 c 语言，局限性较大，不知道能够用于公司的项目。
 
 #### [cppcheck](https://cppcheck.sourceforge.io/)
 
@@ -153,6 +143,143 @@ Checking memcpy.c: __GNUC__...
 ```
 
 对于异常代码，其会给出清晰的标注。
+
+#### [infer](https://infer.liaohuqiu.net/docs/getting-started.html)
+
+Infer 是 facebook 开源的一款代码静态分析工具，现支持的语言有 Java、Objective-C、C 和 C++; 对 Android 和 Java 代码可以发现 null pointer exceptions 和 resource leaks 等；对 iOS、C 和 C++代码可以发现 memory leak 等。
+
+其分析方式分为两步：
+
+- 捕获阶段
+
+  Infer 捕获编译命令，将文件翻译成 Infer 内部的中间语言。
+
+  这种翻译和编译类似，Infer 从编译过程获取信息，并进行翻译。在调用 Infer 时需要带上一个编译命令，比如: `infer -- clang -c file.c`, `infer -- javac File.java`。结果就是文件照常编译，同时被 Infer 翻译成中间语言，留作第二阶段处理。特别注意的就是，如果没有文件被编译，那么也没有任何文件会被分析。
+
+  Infer 把中间文件存储在结果文件夹中，一般来说，这个文件夹会在运行 `infer` 的目录下创建，命名是 `infer-out/`（可通过 -o 自定义）。
+
+- 分析阶段
+
+  在分析阶段，Infer 分析 `infer-out/` （或其他自定义文件）下的所有文件。分析时，会单独分析每个方法和函数。在分析一个函数的时候，如果发现错误，将会停止分析，但这不影响其他函数的继续分析。
+
+  在检查问题时，修复输出的错误之后，需要继续运行 Infer 进行检查，知道确认所有问题都已经修复。
+
+##### 安装
+
+infer 只能运行在 macos 和 linux 上，这里只介绍 linux。
+
+- linux
+  - [下载](https://github.com/facebook/infer/releases/download/v1.1.0/infer-linux64-v1.1.0.tar.xz)文件
+  - 加压后将 infer/bin 目录设置到环境变量中
+
+##### 使用
+
+infer 有如下几种运行机制：
+
+- 初次运行时，确保项目是清理过的。可以通过 (`make clean`，`gradle clean` 等等)；
+
+- 两次运行之间，记得清理项目，或者通过 `--incremental` 选项，防止因为增量编译而无结果输出；
+
+- 如果使用非增量编译系统，则无需如此，比如：`infer -- javac Hello.java`，编译整个 Java 文件；
+
+- 成功运行之后，在同一目录下，可以通过 `inferTraceBugs` 浏览更加详细的报告；
+- 除此之外，还可以和其他许多编译系统一起使用 Infer。比如：`infer -- make -j8`。
+
+经过测试，发现其对于一些 bug 无法检测，来看一个例子：
+
+```c
+#include "stdio.h"
+
+int fib(int n) {
+  if (n == 1 || n == 2) {
+    return 1;
+  } else if (n == 0) {
+    return 0;
+  }
+  int pre = 1, cur = 1;
+  for (int i = 3; i <= n; i++) {
+    cur += pre;
+    pre = cur - pre;
+  }
+  return cur;
+}
+
+int main() {
+  // int n = 0;
+  char a[10];
+  a[10] = 0; // test code
+  int * test = NULL;
+  test = (int *)&a[10];
+
+  for (int i = 0; i <= 30; i++) { // test 0 ~ 30
+    printf("fib %d: %d\n", i, fib(i));
+  }
+  // scanf("%d", &n);
+  // printf("%d\n", fib(n));
+  return 0;
+}
+```
+
+对于这段测试代码，有两个问题，一个是数组越界访问，一个是空指针问题。但是 infer 只检查出一个问题，
+
+```shell
+guanshun@guanshun-ubuntu ~/g/leetcode (main)> infer -- gcc -c fib.c
+Capturing in make/cc mode...
+Found 1 source file to analyze in /home/guanshun/gitlab/leetcode/infer-out
+1/1 [################################################################################] 100% 116ms
+
+fib.c:22: error: Dead Store
+  The value written to &test (type int*) is never used.
+  20.   a[10] = 0;
+  21.   int * test = NULL;
+  22.   test = (int *)&a[10];
+        ^
+  23.
+  24.   for (int i = 0; i <= 30; i++) { // test 0 ~ 30
+
+
+Found 1 issue
+  Issue Type(ISSUED_TYPE_ID): #
+      Dead Store(DEAD_STORE): 1
+```
+
+这只是简单的使用，具体检查效果有待进一步测试。
+
+#### [codacy](https://docs.codacy.com/)
+
+方便好用的集成工具，能够直接测试 gitlab, github, bitbucket 代码托管平台上的代码。文档丰富，底层用的是 flawfinder, cppcheck 等检查工具。
+
+##### 安装
+
+codacy 是在线工具，可以直接[使用](https://app.codacy.com/organizations/gh/UtopianFuture/dashboard)。
+
+##### 使用
+
+其功能可以分为如下几大类：
+
+- commits：对于每次提交的 commit 会作增量检查，![image-20230310174157307](/home/guanshun/.config/Typora/typora-user-images/image-20230310174157307.png)
+
+​	可以清晰的看到每次 commit 引入的 bug。
+
+- files：每个文件所有的 bug；
+
+- issues：所有未解决的 issue
+
+  ![image-20230310174410247](/home/guanshun/.config/Typora/typora-user-images/image-20230310174410247.png)
+
+- security：项目的安全漏洞。这项应该和代码的静态检查关系不到，主要是项目的安全性，因为这里的项目是从一些代码托管平台导入的，所以可能会存在安全问题？
+
+  ![image-20230313100634337](/home/guanshun/.config/Typora/typora-user-images/image-20230313100634337.png)
+
+- code patterns：这里可以设置使用哪些检查工具、检查规则，从我目前了解到的信息来看，这个模块是 CI/CD 最关心的部分，
+
+  ![image-20230313100844303](/home/guanshun/.config/Typora/typora-user-images/image-20230313100844303.png)
+
+这个平台的文档很全面，上面的只是做个简单介绍，具体的说明可以看[这里](https://docs.codacy.com/repositories/repository-dashboard/)。
+
+#### [semgrep](https://semgrep.dev/orgs/utopianfuture)
+
+类似于上面的 codacy，有待研究。
 
 ### 圈复杂度
 
@@ -352,9 +479,13 @@ Total nloc   Avg.NLOC  AvgCCN  Avg.token   Fun Cnt  Warning cnt   Fun Rt   nloc 
        551       8.8     1.8       63.7       37            1      0.03    0.40
 ```
 
+#### [vera++](https://bitbucket.org/verateam/vera/src/master/)
+
+这是一个代码格式化工具，可以通过配置自己的规则脚本来检查代码格式是否规范，如每行不超过 100 字符、文件命名规范、关键字后根空格等。有需要可以使用。
+
 #### 总结
 
-这两个工具个人觉得只能作为小组件检测 CC，无法作为静态检查工具（相比于 corax 和 coverity 相比不是一个级别的工具）。
+这三个工具个人觉得只能作为小组件检测 CC 或者自动化格式检查，无法作为静态检查工具（相比于 corax 和 coverity 相比不是一个级别的工具）。
 
 ### Reference
 
