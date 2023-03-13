@@ -42,7 +42,7 @@
 
 运行一个简单的 [demo](https://github.com/UtopianFuture/timer-interrupt)，
 
-![image-20230308172837311](/home/guanshun/.config/Typora/typora-user-images/image-20230308172837311.png)
+![adlint-linux.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/adlint-linux.png?raw=true)
 
 从结果来看，`hello_period.c` 这个文件是分析失败的，在 `adlint/hello_period.c.msg.csv` 中可找到失败原因，
 
@@ -257,7 +257,9 @@ codacy 是在线工具，可以直接[使用](https://app.codacy.com/organizatio
 
 其功能可以分为如下几大类：
 
-- commits：对于每次提交的 commit 会作增量检查，![image-20230310174157307](/home/guanshun/.config/Typora/typora-user-images/image-20230310174157307.png)
+- commits：对于每次提交的 commit 会作增量检查，
+
+  ![codacy-commits.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/codacy-commits.png?raw=true)
 
 ​	可以清晰的看到每次 commit 引入的 bug。
 
@@ -265,15 +267,15 @@ codacy 是在线工具，可以直接[使用](https://app.codacy.com/organizatio
 
 - issues：所有未解决的 issue
 
-  ![image-20230310174410247](/home/guanshun/.config/Typora/typora-user-images/image-20230310174410247.png)
+  ![codacy-issues.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/codacy-issues.png?raw=true)
 
 - security：项目的安全漏洞。这项应该和代码的静态检查关系不到，主要是项目的安全性，因为这里的项目是从一些代码托管平台导入的，所以可能会存在安全问题？
 
-  ![image-20230313100634337](/home/guanshun/.config/Typora/typora-user-images/image-20230313100634337.png)
+  ![codacy-security.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/codacy-security.png?raw=true)
 
 - code patterns：这里可以设置使用哪些检查工具、检查规则，从我目前了解到的信息来看，这个模块是 CI/CD 最关心的部分，
 
-  ![image-20230313100844303](/home/guanshun/.config/Typora/typora-user-images/image-20230313100844303.png)
+  ![codacy-code.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/codacy-code.png?raw=true)
 
 这个平台的文档很全面，上面的只是做个简单介绍，具体的说明可以看[这里](https://docs.codacy.com/repositories/repository-dashboard/)。
 
