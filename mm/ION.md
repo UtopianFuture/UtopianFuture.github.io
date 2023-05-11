@@ -15,13 +15,11 @@ ION 主要功能：
 
 下图展示了 ION 的基本框架。图中 PID1、PID2、PIDn 表示用户空间进程。ION core 表示 ION 核心层，它提供设备创建、注册等服务，同时提供统一的接口给用户使用。ION Driver 利用 ION core 对相应功能进行实现，可以说它是具体平台相关的，例如 SAMSUNG 平台、QUALCOMM 平台和 MTK 平台都会依据自己的特性开发相应的 ION Driver(soga)。
 
-![ION](/home/guanshun/gitlab/UFuture.github.io/image/ION.png)
-
-
+![ION](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/ION.png?raw=true)
 
 每个 heap 中可分配若干个 buffer，每个 client 通过 handle 管理对应的 buffer（也就是说，handle 是用户态的描述，而 buffer 是内核态的描述）。每个 buffer 只能有一个 handle 对应，每个用户进程只能有一个 client，每个 client 可能有多个 handle。两个 client 利用文件描述符 fd（和 handle 有所对应，通过 handle 获取），通过映射方式，将相应内存映射，实现共享内存[^5]。
 
-![ion_heap](/home/guanshun/gitlab/UFuture.github.io/image/ion_heap.png)
+![ion_heap](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/ion_heap.png?raw=true)
 
 ### ION heaps
 
