@@ -16,9 +16,9 @@ CI-700 的结构就是 Crosspoints(XPs) 和 CHI 兼容设备之间的排列。XP
 
 CI-700 能够配置成单 XPs 或多 XPs，它们的拓扑结构如下图，
 
-![image-20230504084040783](D:\gitlab\UtopianFuture.github.io\image\ci-700-topoly.png)
+![ci-700-topoly.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/ci-700-topoly.png?raw=true)
 
-![image-20230505090103935](D:\gitlab\UtopianFuture.github.io\image\ci-700-topoly-1.png)
+![ci-700-topoly-1.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/ci-700-topoly-1.png?raw=true)
 
 #### 组件
 

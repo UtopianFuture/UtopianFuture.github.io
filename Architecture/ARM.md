@@ -13,7 +13,7 @@ AArch64 状态的异常等级确定了处理器当前运行的特权级别，包
 - EL2：运行虚拟化扩展的虚拟监控程序（hypervisor）；
 - EL3：运行安全世界中的安全监控器（secure monitor）；
 
-![ARM-state-level](D:\gitlab\UtopianFuture.github.io\image\ARM-state-level.svg)
+![img](https://raw.githubusercontent.com/UtopianFuture/UtopianFuture.github.io/3663c45f89165d0460aa3a877d0b811b8024047a/image/ARM-state-level.svg)
 
 不同的异常等级由系统寄存器表示。
 
@@ -33,7 +33,7 @@ ARM 的 IP 授权模式主要分为三种：
 
 ARM 中的总线协议多种多样，我看的头昏眼花，这里系统的总结一下，先看看整个发展：
 
-![ARM-interconnect](D:\gitlab\UtopianFuture.github.io\image\ARM-interconnect.svg)
+![img](https://raw.githubusercontent.com/UtopianFuture/UtopianFuture.github.io/3663c45f89165d0460aa3a877d0b811b8024047a/image/ARM-interconnect.svg)
 
 #### AMBA
 
@@ -123,6 +123,6 @@ CHI协议要求系统架构为multi-copy atomic，所有相关组件必须确保
 
 - 为什么使用同样的处理器，但是每家能够达到的频率不同？
 
-  ![image-20230503145214693](C:\Users\XM\AppData\Roaming\Typora\typora-user-images\image-20230503145214693.png)
+  ![performance-compare](D:\gitlab\UtopianFuture.github.io\image\performance-compare.png)
   
   这个很正常，因为最高频率不仅和 A 核设计有关，还核整个系统的实现，如内存带宽、cache 系统设计等等有关。

@@ -1,10 +1,10 @@
-​
+
 
 ## Android Open Source Project
 
 ### Android 系统架构
 
-![android-structure](/home/guanshun/gitlab/UFuture.github.io/image/android-structure.png)
+![android-structure.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/android-structure.png?raw=true)
 
 ### AOSP 目录结构
 

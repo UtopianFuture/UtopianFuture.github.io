@@ -70,7 +70,7 @@ MESI 协议在总线上的操作分为本地读写和总线操作。本地读写
 
 下图为 MESI 协议中各个状态的转换关系。
 
-![MESI](D:\gitlab\UtopianFuture.github.io\image\MESI.png)
+![img](https://raw.githubusercontent.com/UtopianFuture/UtopianFuture.github.io/3a55d7431904d9d6b3e16058f5652b405460a161/image/MESI.svg)
 
 ### cache 优化
 

@@ -10,7 +10,7 @@ lmkd 需要内核驱动 Lowmemorykiller 的支持才能运行。这里先分析 
 
 ### 整体结构
 
-![lmk](/home/guanshun/gitlab/UFuture.github.io/image/lmk.png)
+![lmk.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/lmk.png?raw=true)
 
 Framework 层(AMS)通过一定的规则调整进程的 adj 的值和内存空间阀值（动态的），而进程的优先级信息存储在 ProcessList 中，越重要的进程的优先级越低，前台 APP 的优先级为 0，系统 APP 的优先级一般都是负值，所以一般进程管理以及杀进程都是针对与上层的 APP 来说的。然后通过 socket 发送给 lmkd 进程，lmkd 两种处理方式， 一种将阀值写入文件节点发送给内核的 LowMemoryKiller，由内核进行杀进程处理，另一种是 lmkd 通过 cgroup 监控内存使用情况，自行计算杀掉进程。
 
