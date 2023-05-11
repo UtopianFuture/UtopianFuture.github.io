@@ -17,11 +17,21 @@
 
 ##### 安装
 
-目前只在 Linux 上使用过，先介绍 Linux 上的安装使用。
+- Linux 安装
 
-- 下载 [ruby 环境](http://www.ruby-lang.org/en/downloads/)
-- `sudo gem install adlint`
-- 使用 `adlintize -v` 和 `adlint -v` 检查是否安装成功
+  - 下载 [ruby 环境](http://www.ruby-lang.org/en/downloads/)
+
+  - `sudo gem install adlint`
+
+  - 使用 `adlintize -v` 和 `adlint -v` 检查是否安装成功
+
+- windows 安装
+
+  - 下载 [ruby 环境](http://www.ruby-lang.org/en/downloads/)
+  - 安装 ruby development kit（注意上面的分开安装）
+  - 将 ruby 安装目录的 bin 文件夹和 ruby devkit 安装目录的 bin, mingw\bin 文件夹添加到系统环境变量
+  - 运行命令行工具，`gem install adlint` 命令安装
+  - 使用 `adlintize -v` 和 `adlint -v` 检查是否安装成功
 
 ##### 使用
 
@@ -33,14 +43,16 @@
   - adlint_all.sh：linux 下的运行脚本
   - adlint_all.bat：windows 下的运行脚本
   - adlint_files.txt：需要分析的文件列表
-- 在 linux 下使用 `./adlint_all.sh` 运行即可。其对 adlint_files.txt 中的每个文件都会产生如下几个分析文件：
+- 在 linux 下使用 `./adlint_all.sh` 运行，在 windows 下使用 `./adlint_all.bat`。其对 adlint_files.txt 中的每个文件都会产生如下几个分析文件：
   - intro_demo.i：源码预处理文件，目前无需关注；
   - intro_demo.c.met.csv：所有的分析数据，adlint 对每个文件的每个函数都会给出分析数据，下面介绍；
   - intro_demo.c.msg.csv：warning, error 信息，每种 warning, error 手册都有详细的解释以及解决方案；
   - intro_demo.met.csv：交叉模块分析数据（目前还未遇到）；
   - intro_demo.msg.csv：交叉模块分析 warning, error 信息；
 
-运行一个简单的 [demo](https://github.com/UtopianFuture/timer-interrupt)，
+运行一个简单的 [demo](https://github.com/UtopianFuture/timer-interrupt)，在 windows 和 linux 中都运行 adlint，
+
+![adlint](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/adlint.png?raw=true)
 
 ![adlint-linux.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/adlint-linux.png?raw=true)
 
@@ -116,6 +128,20 @@ MET,FL_FUNC,../memcpy.c,1
 - Cert C: Full coverage in Cppcheck Premium.
 - Misra C++ 2008: Partial coverage in Cppcheck Premium.
 
+能够检查出如下问题：
+
+error：代码中的错误项，包括内存泄漏等；
+
+warning：为了避免产生bug而提供的编程改进意见；
+
+style：编码风格，提示你哪些函数没有使用、哪些为多余代码等；
+
+portability：移植性警告。该部分如果移植到其他平台上，可能出现兼容性问题；
+
+performance：该部分代码可以优化，这些建议只是基于常识，即使修复这些消息，也不确定会得到任何可测量的性能提升；
+
+information：其他信息（ 配置问题，建议在配置期间仅启用这些），可以忽略；
+
 ##### 安装
 
 - linux
@@ -128,10 +154,10 @@ MET,FL_FUNC,../memcpy.c,1
 
 ##### 使用
 
-来看一个 linux 下的简单例子，
+来看一个 linux 下的简单例子（windows 下同样可使用命令行），
 
 ```shell
-cppcheck ./ -i .ccls-cache/
+./cppcheck ./ -i .ccls-cache/
 Checking hello_period.c ...
 hello_period.c:275:4: error: Array 'a[10]' accessed at index 10, which is out of bounds. [arrayIndexOutOfBounds]
   a[10] = 0;
@@ -142,7 +168,7 @@ Checking memcpy.c: __GNUC__...
 2/2 files checked 100% done
 ```
 
-对于异常代码，其会给出清晰的标注。
+对于异常代码，其会给出清晰的标注。其还有丰富的功能可在项目开发中不断探索。
 
 #### [infer](https://infer.liaohuqiu.net/docs/getting-started.html)
 
@@ -325,7 +351,7 @@ codacy 是在线工具，可以直接[使用](https://app.codacy.com/organizatio
 
 其圈复杂度为：V(G) = 1(for) + 2(if) + 2(if) + 1(for) + 2(if) + 2(if) + 1(for) + 2(if) + 1= 14。
 
-常见的判定语句圈复杂度为：while: 2； switch case: case 个数；三元语句：2。
+常见的判定语句圈复杂度为：while: 1； switch case: case 个数；三元语句：2。
 
 #### sourcemonitor[^3]
 首先要清楚 SourceMonitor 是为了检查代码[圈复杂度](http://kaelzhang81.github.io/2017/06/18/%E8%AF%A6%E8%A7%A3%E5%9C%88%E5%A4%8D%E6%9D%82%E5%BA%A6/)的工具。
@@ -393,7 +419,7 @@ codacy 是在线工具，可以直接[使用](https://app.codacy.com/organizatio
   ```plain
   positional arguments:
     paths                 list of the filename/paths.
-
+  
   optional arguments:
     -l LANGUAGES			项目使用的语言
     -C CCN, --CCN CCN     限制 CC，超过报警
