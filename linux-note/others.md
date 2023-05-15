@@ -1325,3 +1325,7 @@ OOM reaper 作为一个单独的线程实现；这样做是因为 reaper 必须�
 ### [The Linux Staging tree](https://lwn.net/Articles/324279/)
 
 `/drives/staging` 目录包含一些还未充分测试或由于其他原因没有合入主线的驱动或文件系统。创建这个目录是为了用户能够更方便的访问这些驱动或文件系统，不用像之前那样从上百个网站下载文件了。
+
+### Bounce buffer
+
+Bounce buffer 是指在 DMA 传输中，当设备要求直接访问内存时，但由于硬件或软件的限制，无法直接访问时所使用的缓冲区。这种情况下，内核会将原始的 DMA 传输请求拷贝到 bounce buffer 中，并将 bounce buffer 的地址提供给设备，设备会将数据写入 bounce buffer 中，然后由内核将数据从 bounce buffer 中复制到真正的内存地址中。这样就解决了设备无法直接访问内存的问题。
