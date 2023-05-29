@@ -50,18 +50,18 @@ CI-700 根据不同的功能须有能够挂载不同的设备，这里列举其�
 - SF
 
   **The SF tracks cache lines that are present in the RN-Fs**. Using the SF **reduces snoop traffic in the system** by favoring（偏向） directed snoops over snoop broadcasts when possible（不懂）. This approach substantially reduces the snoop response traffic that might otherwise be required.
-  
+
   这种方式应该是目录协议，将所有的 cache line status 保存在 directory 中，SF 就起目录的作用，全局统一管理 cache 状态；
 
 总结一下，上面的这些节点可以分为 3 类：
 
-- HN(Home Node)：协调所有的传输请求，包括snoop请求、访问cache和memory，位于ICN内，用于接收来自RN产生的协议transactions；
+- HN(Home Node)：协调所有的传输请求，包括 snoop 请求、访问 cache 和 memory，位于 ICN 内，用于接收来自 RN 产生的协议 transactions；
 
-- RN（Request Node）：Request Node，产生协议transactions，包含读和写。它主要是 CPU，GPU，或者其他具有缓存的设备；
+- RN（Request Node）：Request Node，产生协议 transactions，包含读和写。它主要是 CPU，GPU，或者其他具有缓存的设备；
 
-- SN（Slave Node）用于接收来自HN的请求，完成相应的操作并返回一个响应。它主要是能够响应 CHI 请求的各种设备；
+- SN（Slave Node）用于接收来自 HN 的请求，完成相应的操作并返回一个响应。它主要是能够响应 CHI 请求的各种设备；
 
-  总结：一个RN会产生transaction(read, write, maintenance)给HN，HN接收后对RN发来的请求进行排序，产生transaction给SN，SN接收这些请求，返回数据或者响应。
+  总结：一个 RN 会产生 transaction(read, write, maintenance)给 HN，HN 接收后对 RN 发来的请求进行排序，产生 transaction 给 SN，SN 接收这些请求，返回数据或者响应。
 
 ##### mesh 组件
 
@@ -115,7 +115,7 @@ HN-F 的默认配置是在将 cacheline 置为 invalid 前需要将 modified dat
 
 - ClenaInvalid: Write back and invalidate (default);
 - MakeInvalid: modified data is not written back to memory;
-- CleanShare: 
+- CleanShare:
 - modified data is written back to memory but clean data remain in internal caches;
 
 HN-F 还支持通过 way reservation 的方式将部分 memory region 锁在内存中，memory region 的大小能够通过软件配置。这部分 memory region 永远不会从 SLC 中被 evicted，任何访问这些 cacheline 的请求都是 hit。HN-F 是通过特定的寄存器来配置哪些 way 需要 lock。
@@ -150,7 +150,6 @@ CI-700 能够处理不同类型的 CHI 操作和传输类型。CI-700 通过几�
 
 - CI-700 怎样完成 cache 一致性？
 - 不同 HN-F 之间如何交互？
-- 
 
 ### Reference
 

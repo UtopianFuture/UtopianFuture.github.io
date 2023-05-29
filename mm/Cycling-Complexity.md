@@ -132,7 +132,7 @@ MET,FL_FUNC,../memcpy.c,1
 
 error：代码中的错误项，包括内存泄漏等；
 
-warning：为了避免产生bug而提供的编程改进意见；
+warning：为了避免产生 bug 而提供的编程改进意见；
 
 style：编码风格，提示你哪些函数没有使用、哪些为多余代码等；
 
@@ -419,7 +419,7 @@ codacy 是在线工具，可以直接[使用](https://app.codacy.com/organizatio
   ```plain
   positional arguments:
     paths                 list of the filename/paths.
-  
+
   optional arguments:
     -l LANGUAGES			项目使用的语言
     -C CCN, --CCN CCN     限制 CC，超过报警

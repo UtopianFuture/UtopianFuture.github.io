@@ -1,4 +1,4 @@
-```
+```plain
 // 1.
 nr_free_pages 2795692 // 当前系统中空闲页面的数量
 nr_zone_inactive_anon 848472 // 当前系统 zone 中的不活跃的匿名页数量
