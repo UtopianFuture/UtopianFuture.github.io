@@ -129,3 +129,11 @@ KexAlgorithms +diffie-hellman-group14-sha1
     最后 `boot` 命令重启即可。
 
 19. 使用 emulator 调试 android 时，需要用到 gdbserver，在 adb push 的时候遇到 /system ro 的问题时，需要在 emulator 启动时增加 -writable-system 命令。
+
+20. aosp 是使用 soong 编译的，其支持直接生成 compile_commands.json 文件，不需要使用 bear 生成，需要使用如下指令生成，生成的 compile_commands.json 在 out/soong/development/ide/compdb 中。
+
+    ```shell
+    export SOONG_GEN_COMPDB=1
+    export SOONG_GEN_COMPDB_DEBUG=1
+    export SOONG_LINK_COMPDB_TO=$ANDROID_HOST_OUT
+    ```
