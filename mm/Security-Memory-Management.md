@@ -41,25 +41,28 @@ TrustZone 技术之所以能提高系统的安全性，是因为对外部资源�
 
 外设总线（Advanced PeripheralBus，APB）不具有 NS bit，为实现 APB 外设与 TrustZone 技术相兼容，保护外设安全，增加一个 APB-to-AXI 桥。其拒绝不匹配的安全事务设置，并且不会将该事务请求发送给外设。
 
-##### 地址空间控制组件
+##### TZASC 地址空间控制组件
 
-TrustZone 地址空间控制组件（TrustZone Address Space Controller，TZASC）是 AXI 总线上的一个主设备，TZASC 能够将从设备全部的地址空间分割成一系列的不同地址范围。在安全状态下，通过编程 TZASC 能够将这一系列分割后的地址区域设定成安全空间或者是非安全空间。被配置成安全属性的区域将会拒绝非安全的访问请求。
+TrustZone 地址空间控制组件（TrustZone Address Space Controller，TZASC）是 AXI 总线上的一个主设备，**能够将从设备全部的地址空间分割成一系列的不同地址范围**。在安全状态下，通过编程 TZASC 能够将这一系列分割后的地址区域设定成安全空间或者是非安全空间。
 
-使用 TZASC 主要是将一个 AXI 从设备分割成几个安全设备，例如 off-Soc、DRAM 等。需要注意的是，TZASC 组件只支持存储映射设备对安全和非安全区域的划分与扩展，但不支持对块设备（如 EMMC、NAND flash 等）的安全和非安全区域的划分与扩展。下图为使用 TZASC 组件使用的例子，
+需要注意的是，TZASC 组件只支持存储映射设备（如 off-Soc、DRAM 等）对安全和非安全区域的划分与扩展，但不支持对块设备（如 EMMC、NAND flash 等）的安全和非安全区域的划分与扩展。下图为使用 TZASC 组件使用的例子，
 
 ![image-20230531172515997](D:\gitlab\UtopianFuture.github.io\image\TZSAC.png)
 
-##### 内存适配器组件
+##### TZMA 内存适配器组件
 
 TrustZone 内存适配器组件（TrustZone Memory Adapter，TZMA）允许对 SRAM 或者 onchiprom 进行安全区域和非安全区域的划分。TZMA 支持最大 2MB 空间的 SRAM 的划分，可以将 2MB 空间划分成两个部分，高地址部分为非安全区域，低地址部分为安全区域，两个区域必须按照 4KB 进行对齐。
 
 ![image-20230531172811037](D:\gitlab\UtopianFuture.github.io\image\TZMA.png)
 
-##### 保护控制器组件
+##### TZPC 保护控制器组件
 
-TrustZone 保护控制器组件（TrustZoneProtection Controller，TZPC）。
+TrustZone 保护控制器组件（TrustZone Protection Controller，TZPC）是用来设定 TZPCDECPORT 信号和 TZPCR0SIZE 等相关控制信
+号的。这些信号用来告知 APB-to-AXI 对应的外设是安全设备还是非安全设备，而 TZPCR0SIZE 信号用来控制 TZMA 对 SRAM 或 onchiprom 安全区域大小的划分。TZPC 包含三组通用寄存器 TZPCDECPROT[2:0]，每组通用寄存器可以产生 8 种 TZPCDECPROT 信号，也就是 TZPC 最多可以将 24 个外设设定成安全外设。TZPC 组件还包含一个 TZPCROSIZE 寄存器，该寄存器用来为 TZMA 提供分区大小信息。下图为 TZPC 的使用例子。
 
-##### 中断控制器组件
+![image-20230601110941497](D:\gitlab\UtopianFuture.github.io\image\TZPC.png)
+
+##### TZIC 中断控制器组件
 
 在支持 TrustZone 的 SoC 上，ARM 添加了 TrustZone 中断控制器（TrustZone Interrupt Controller，TZIC）。TZIC 的作用是**让处理器处**
 **于非安全态时无法捕获到安全中断**。TZIC 是第一级中断控制器，**所有的中断源都需要接到 TZIC 上**。TZIC 根据配置来判定产生的中断类型，然后决定是将该中断信号先发送到非安全的向量中断控制器（Vector Interrupt Controller，VIC）后以 nIRQ 信号发送到处理器，还是以 nTZICFIQ 信号直接发送到处理器。下图为 TZIC 在 SoC 中的使用示意，
