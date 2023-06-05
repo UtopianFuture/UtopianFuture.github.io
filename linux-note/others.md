@@ -1329,3 +1329,17 @@ OOM reaper 作为一个单独的线程实现；这样做是因为 reaper 必须�
 ### Bounce buffer
 
 Bounce buffer 是指在 DMA 传输中，当设备要求直接访问内存时，但由于硬件或软件的限制，无法直接访问时所使用的缓冲区。这种情况下，内核会将原始的 DMA 传输请求拷贝到 bounce buffer 中，并将 bounce buffer 的地址提供给设备，设备会将数据写入 bounce buffer 中，然后由内核将数据从 bounce buffer 中复制到真正的内存地址中。这样就解决了设备无法直接访问内存的问题。
+
+### sg_table
+
+
+在 Linux 内核中，`sg_table` 是用于管理散布/聚集（scatter/gather）I/O 的数据结构。散布/聚集 I/O 是一种技术，**允许多个物理内存块（散布）或者多个数据片段（散布）组合成一个连续的内存区域**，以便进行高效的数据传输。
+
+`sg_table` 结构体定义在 `<linux/scatterlist.h>` 头文件中，它包含以下字段：
+
+- `sgl`：指向散布/聚集列表（scatter/gather list）的指针。散布/聚集列表是一组 `scatterlist` 结构体的数组，每个 `scatterlist` 结构体描述了一个散布/聚集 I/O 区域的相关信息。
+- `orig_nents`：散布/聚集列表中的元素数量。
+- `nents`：有效的散布/聚集列表元素数量。
+- `sgl_alloc_order`：分配散布/聚集列表时使用的页数幂次。
+
+通过使用 `sg_table`，驱动程序可以轻松地处理散布/聚集 I/O 的情况，而不需要直接操作散布/聚集列表。这简化了驱动程序的实现，并提供了更好的性能和灵活性。
