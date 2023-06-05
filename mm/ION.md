@@ -2,9 +2,9 @@
 
 这里先看 LWN 文章[^1][^3] ，然后进一步分析。
 
-ION 是 PMEM 的继承者，目的主要是通过**在硬件设备和用户空间之间分配和共享内存**，实现设备之间零拷贝[^4]共享内存（概念很简单，但是对这些功能缺乏实际的认识，所以难以理解。**需要搞懂如何做到共享内存**）。
+ION 是 PMEM 的继承者，目的主要是通过**在硬件设备和用户空间之间分配和共享内存**，实现设备之间零拷贝[^4]共享内存（概念很简单，但是对这些功能缺乏实际的认识，所以难以理解。**需要搞懂如何做到共享内存**）。gpu, display 和 camera 就是一些可能有特殊内存要求的硬件模块（需要连续的物理内存，用于数据处理及共享），ION 通过管理一个或多个内存池（一些内存池在启动时被整体从 DDR 中预留出来），能够应对内存碎片和满足特殊的硬件需求（这里还需要结合 SMMU/IOMMU 实现内存管理）。
 
-要做到这一点有很多困难。在 SOC 中，有很多不同的设备能够使用 DMA，这些设备有不同的访存能力和权限。例如有设备使用 scatter-gather 技术实现零拷贝；有设备只能访问物理地址连续的内存；有设备能够访问特定的一部分内存等等。如果有一段缓存想和某个设备共享，但是这个缓存位于该设备能够访问的地址之外，那就必须将缓存内容复制到该设备能够访问的地址范围内。那么这样性能就很低了。所以分配一个所有设备都能使用的缓存就显得很重要了。
+要做到这一点有很多困难。在 SOC 中，有很多不同的设备能够使用 DMA，这些设备有不同的访存能力和权限。例如有设备使用 scatter-gather 技术实现零拷贝；有设备只能访问物理地址连续的内存；有设备能够访问特定的一部分内存等等。如果有一段缓存想和某个设备共享，但是这个缓存位于该设备能够访问的地址之外，那就必须将缓存内容复制到该设备能够访问的地址范围内。那么这样性能就很低了。所以**分配一个所有设备都能使用的缓存**就显得很重要了。
 
 ION 主要功能：
 
@@ -13,7 +13,7 @@ ION 主要功能：
 
 ### 基本结构
 
-下图展示了 ION 的基本框架。图中 PID1、PID2、PIDn 表示用户空间进程。ION core 表示 ION 核心层，它提供设备创建、注册等服务，同时提供统一的接口给用户使用。ION Driver 利用 ION core 对相应功能进行实现，可以说它是具体平台相关的，例如 SAMSUNG 平台、QUALCOMM 平台和 MTK 平台都会依据自己的特性开发相应的 ION Driver(soga)。
+下图展示了 ION 的基本框架。图中 PID1、PID2、PIDn 表示用户空间进程。ION core 表示 ION 核心层，它提供设备创建、注册等服务，同时提供统一的接口给用户使用。ION Driver 利用 ION core 对相应功能进行实现，可以说它是具体平台相关的，例如 SAMSUNG、QUALCOMM 和 MTK 都会依据自己的特性开发相应的 ION Driver(soga)。
 
 ![ION](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/ION.png?raw=true)
 
@@ -250,7 +250,7 @@ struct ion_buffer {
 
 ### Using ION from user space
 
-用户态进程会通过 C/C++ 库使用 ION 分配大的连续的地址空间。例如，camera library 能够为相机设备分配一块 capture buffer，当 buffer 满了时，camera library 能够将 buffer 中的数据传输给内核，然后让 jpeg 硬件加密块设备进行处理（意思是这个过程不需要将数据传输到用户态，直接在内核态传到另一个硬件设备中？）。
+用户态进程会通过 C/C++ 库（Google 提供了 libdmabufheap 库）使用 ION 分配大的连续的地址空间。例如，camera library 能够为相机设备分配一块 capture buffer，当 buffer 满了时，camera library 能够将 buffer 中的数据传输给内核，然后让 jpeg 硬件加密块设备进行处理（意思是这个过程不需要将数据传输到用户态，直接在内核态传到另一个硬件设备中？并不是，它传递的是 fd 或者这块内存对应的 base 和 size，其他设备可以根据这个使用这块内存，这样就不需要传输这些数据）。
 
 它们首先需要保证能够访问 `/dev/ion`（对应上面的 `struct ion_device`），可以通过 `open("dev/ion", O_RDONLY)` 来获取一个文件描述符作为 ION client 的句柄，每个进程只能申请一个 client。在申请空间前，需要填充 `struct ion_allocation_data` 结构，
 
@@ -279,7 +279,7 @@ struct ion_handle_data {
 int ioctl(int client_fd, ION_IOC_ALLOC, struct ion_allocation_data *allocation_data)
 ```
 
-这个 handle 是只能被用来获取一个 ion_fd_data 的文件描述符（ION_IOC_ALLOC 不是已经分配好了么，为什么还要再使用一次 ioctl？从后面的描述来看，这个 fd 可以用来在各个 client 之间 share），
+这个 handle 是只能被用来获取一个 `ion_fd_data` 的文件描述符（ION_IOC_ALLOC 不是已经分配好了么，为什么还要再使用一次 ioctl？从后面的描述来看，这个 fd 可以用来在各个 client 之间 share），
 
 ```c
 int ioctl(int client_fd, ION_IOC_SHARE, struct ion_fd_data *fd_data);
@@ -291,7 +291,7 @@ int ioctl(int client_fd, ION_IOC_SHARE, struct ion_fd_data *fd_data);
 
 获取到共享文件描述符 fd 后，共享进程可以通过 mmap 来操作共享内存。
 
-在释放 buffer 时，第二个 client 需要通过 munmap 来取消 mmap 的效果，第一个 client 需要关闭通过 ION_IOC_SHARE 命令获得的文件描述符号，并且使用 ION_IOC_FREE 如下：
+在释放 buffer 时，第二个 client 需要通过 munmap 来取消 mmap 的效果，第一个 client 需要关闭通过 `ION_IOC_SHARE` 命令获得的文件描述符号，并且使用 `ION_IOC_FREE` 如下：
 
 ```csharp
 int ioctl(int client_fd, ION_IOC_FREE, struct ion_handle_data *handle_data);
@@ -737,6 +737,7 @@ static int ion_handle_put_nolock(struct ion_handle *handle)
 - 在 lowmemorykiller 和 ion 中都遇到了 shrinker，不太理解这个是做什么的；
 - android 中有一个名为 binder 的核间通讯机制，有时间需要看看；
 - 现在还不知道怎么调试，先将原理和代码过一遍；
+- 之前学内存管理，知道这些内存是用来干嘛的，也就是说了解应用程序的执行过程，使用场景，所以对为什么需要那些内存分配算法，buddy, slab 等有很清晰的认识。但是 ION 提供给 gpu, display 和 camera 等设备的，对于这些设备的运行流程我不清楚，所以就无法理解为什么要使用 ION 进行这样的内存管理；
 
 ### Reference
 
