@@ -1343,3 +1343,30 @@ Bounce buffer 是指在 DMA 传输中，当设备要求直接访问内存时，�
 - `sgl_alloc_order`：分配散布/聚集列表时使用的页数幂次。
 
 通过使用 `sg_table`，驱动程序可以轻松地处理散布/聚集 I/O 的情况，而不需要直接操作散布/聚集列表。这简化了驱动程序的实现，并提供了更好的性能和灵活性。
+
+### SMMU
+
+The MMU-600 contains the following key components:
+
+- Translation Buffer Unit (TBU)
+
+  **The TBU contains Translation Lookaside Buffers (TLBs) that cache translation tables**. The MMU-600 implements at least one TBU for each connected master, and these TBUs are local to the corresponding master.
+
+- Translation Control Unit (TCU)
+
+  The TCU controls and manages the address translations. The MMU-600 implements a single TCU. In MMU-600-based systems, the AMBA DTI protocol defines the standard for communicating with the TCU.
+
+- DTI interconnect
+
+  The DTI interconnect connects multiple TBUs to the TCU.
+
+When an MMU-600 TBU receives a transaction on the TBS interface, it looks for a matching translation in its TLBs. If it has a matching translation, it uses it to translate the transaction and outputs the transaction on the TBM interface. If it does not have a matching translation, it requests a new translation from the TCU using the DTI interface.
+
+When the TCU receives a DTI translation request, it uses the QTW interface to perform:
+
+- Configuration table walks, which return configuration information for the translation context.
+- **Translation table walks**, that return translation information that is specific to the transaction address.
+
+The TCU contains caches that reduce the number of configuration and translation table walks that are to be performed. Sometimes no walks are required.
+
+When the TBU receives the translation from the TCU, it stores it in its TLBs. If the translation was successful, the TBU uses it to translate the transaction, otherwise it terminates it.
