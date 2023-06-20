@@ -6,97 +6,7 @@
 
 ### 目录
 
-- [内存分布](#内存分布)
-- [数据结构](#数据结构)
-- [页框管理](#页框管理)
-  - [page](#page)
-  - [内存管理区](#内存管理区)
-    - [pglist_data](#pglist_data)
-    - [zone](#zone)
-    - [zonelist](#zonelist)
-    - [free_area](#free_area)
-
-  - [分区页框分配器](#分区页框分配器)
-  - [管理区分配器](#管理区分配器)
-    - [伙伴系统算法](#伙伴系统算法)
-    - [请求页框](#请求页框)
-    - [释放页框](#释放页框)
-- [内存区管理](#内存区管理)
-  - [创建 slab 描述符](#创建 slab 描述符)
-    - [kmem_cache](#kmem_cache)
-    - [kmem_cache_node](#kmem_cache_node)
-    - [kmem_cache_cpu](#kmem_cache_cpu)
-    - [kmem_cache_create](#kmem_cache_create)
-  - [slab 分配器的内存布局](#slab 分配器的内存布局)
-  - [配置 slab 描述符](#配置 slab 描述符)
-  - [分配 slab 对象](#分配 slab 对象)
-  - [释放 slab 对象](#释放 slab 对象)
-  - [slab 分配器和伙伴系统的接口函数](#slab 分配器和伙伴系统的接口函数)
-  - [管理区 freelist](#管理区 freelist)
-  - [kmalloc](#kmalloc)
-- [vmalloc](#vmalloc)
-  - [__vmalloc_node_range](#__vmalloc_node_range)
-  - [分配虚拟内存](#分配虚拟内存)
-  - [分配物理内存](#分配物理内存)
-- [进程地址空间](#进程地址空间)
-  - [mm_struct](#mm_struct)
-  - [VMA](#VMA)
-  - [VMA 相关操作](#VMA 相关操作)
-- [malloc](#malloc)
-  - [brk 系统调用](#brk 系统调用)
-  - [创建 VMA](#创建 VMA)
-  - [分配物理内存](#分配物理内存)
-  - [建立映射关系](#建立映射关系)
-- [mmap](#mmap)
-  - [关键函数 do_mmap](#关键函数 do_mmap)
-  - [关键函数 mmap_region](#关键函数 mmap_region)
-- [缺页异常处理](#缺页异常处理)
-  - [关键函数 do_user_addr_fault](#关键函数 do_user_addr_fault)
-  - [关键函数__handle_mm_fault](#关键函数__handle_mm_fault)
-  - [关键函数 handle_pte_fault](#关键函数 handle_pte_fault)
-  - [匿名页面缺页中断](#匿名页面缺页中断)
-  - [文件映射缺页中断](#文件映射缺页中断)
-  - [写时复制（COW）](#写时复制（COW）)
-- [RMAP](#RMAP)
-  - [anon_vma](#anon_vma)
-  - [anon_vma_chain](#anon_vma_chain)
-  - [父进程产生匿名页面](#父进程产生匿名页面)
-  - [根据父进程创建子进程](#根据父进程创建子进程)
-  - [RMA 的应用](#RMAP 的应用)
-- [页面回收](#页面回收)
-  - [整机层面](#整机层面)
-  - [memory cgroup](#memory cgroup)
-  - [LRU 链表法](#LRU链表法)
-  - [第二次机会法](#第二次机会法)
-  - [触发页面回收](#触发页面回收)
-  - [kswapd 内核线程](#kswapd 内核线程)
-    - [关键函数 balance_pgdat](#关键函数 balance_pgdat)
-    - [关键函数 shrink_node](#关键函数 shrink_node)
-  - [回收页面类型](#回收页面类型)
-
-- [页面迁移](#页面迁移)
-  - [关键函数__unmap_and_move](#关键函数__unmap_and_move)
-  - [关键函数 move_to_new_page](#关键函数 move_to_new_page)
-- [内存规整](#内存规整)
-  - [基本原理](#基本原理)
-  - [kcompactd 内核线程](#kcompactd 内核线程)
-  - [关键函数 compact_zone](#关键函数 compact_zone)
-- [慢路径分配](#慢路径分配)
-  - [关键函数__alloc_pages_slowpath](#关键函数__alloc_pages_slowpath)
-  - [水位管理和分配优先级](#水位管理和分配优先级)
-- [其他内存管理知识](#其他内存管理知识)
-  - [Huge page](#Huge page)
-    - [静态大页](#静态大页)
-    - [透明大页](#透明大页)
-
-  - [mmap_lock 锁](#mmap_lock 锁)
-  - [跨 numa 内存访问](#跨 numa 内存访问)
-
-- [疑问](#疑问)
-
-
-- [Reference](#Reference)
-- [些许感想](#些许感想)
+[TOC]
 
 很多文章都说内存管理是内核中最复杂的部分、最重要的部分之一，在来实验室之后跟着师兄做项目、看代码的这段时间里，渐渐感觉自己的知识框架是不完整的，底下少了一部分，后来发现这部分就是内核，所以开始学习内核。其实这也不是第一次接触内核，之前也陆陆续续的看过一部分，包括做 RISC-V 操作系统实验，LoongArch 内核的启动部分，但始终没有花时间去啃内存管理，进程调度和文件管理这几个核心模块，而师兄也说过，内核都看的懂，啥代码你看不懂，所以分析一下内存管理模块。
 
@@ -2545,6 +2455,34 @@ fail:
 }
 ```
 
+### ZRAM
+
+### zamalloc
+
+### CMA
+
+CMA(Contiguous Memory Allocator)负责**物理地址连续的内存分配**。一般系统会在启动过程中，从整个 memory 中配置一段连续内存用于 CMA，然后内核其他的模块可以通过 CMA 的接口 API 进行连续内存的分配。CMA 的核心并不是设计精巧的算法来管理地址连续的内存块，实际上它的**底层还是依赖内核伙伴系统这样的内存管理机制**，或者说 CMA 是处于需要连续内存块的其他内核模块（例如 DMA mapping framework）和内存管理模块之间的一个中间层模块，主要功能包括：
+
+- 解析 DTS 或者命令行中的参数，确定 CMA 内存的区域，这样的区域我们定义为 CMA area；
+- 提供 cma_alloc 和 cma_release 两个接口函数用于分配和释放 CMA pages；
+- 记录和跟踪 CMA area 中各个 pages 的状态；
+- 调用伙伴系统接口，进行真正的内存分配。
+
+Linux 内核中已经提供了各种内存分配的接口，为何还要建立 CMA 这种连续内存分配的机制呢？
+
+各种各样的驱动有连续内存分配的需求，例如现在大家的手机都有视频功能，camera 功能，这类驱动都需要非常大块的内存，而且有 DMA 用来进行外设和大块内存之间的数据交换。**对于嵌入式设备，一般不会有 IOMMU**，而且 DMA 也不具备 scatter-getter 功能，这时候，驱动分配的大块内存（DMA buffer）必须是物理地址连续的。
+
+顺便说一句，huge page 的连续内存需求和驱动 DMA buffer 还是有不同的，例如在对齐要求上，一个 2M 的 huge page，其底层的 2M 的物理页面的首地址需要对齐在 2M 上，一般而言，DMA buffer 不会有这么高的对齐要求。因此，这里描述的 CMA 主要是为设备驱动准备的，huge page 相关的内容之后描述。
+
+举个例子，一台手机像素是 1300W，一个像素需要 3B，那么拍摄一幅图片需要的内存大概是 1300W x 3B ＝ 26MB。通过内存管理系统分配 26M 的内存，压力不小。当然，在系统启动之处，伙伴系统中的大块内存比较大，也许分配 26M 很容易，但是随着系统的运行，内存不断的分配、释放，大块内存不断的裂解，再裂解，这时候，内存碎片化导致分配地址连续的大块内存就不是那么容易。
+
+在 CMA 被提出来之前有两个选择：
+
+- 在启动时分配用于视频采集的 DMA buffer：缺点是当照相机不使用时（大多数时间内 camera 其实都是空闲的），预留的那些 DMA BUFFER 的内存实际上被浪费了；
+- 另外一个方案是当实际使用 camere 设备的时候分配 DMA buffer：这种方式不会浪费内存，但是不可靠，随着内存碎片化，大的、连续的内存分配变得越来越困难，一旦内存分配失败，camera 就无法使用。
+
+Michal Nazarewicz 的 CMA 补丁能够解决这一问题。对于 CMA 内存，当前驱动没有分配使用的时候，这些 memory 可以内核的被其他的模块使用（当然有一定的要求），而当驱动分配 CMA 内存后，那些被其他模块使用的内存需要吐出来，形成物理地址连续的大块内存，给具体的驱动来使用。
+
 ### 进程地址空间
 
 还是先看看进程的地址空间布局。
@@ -3396,11 +3334,13 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 }
 ```
 
+### mremap
+
 ### 缺页异常处理
 
 前面介绍到 malloc 和 mmap 都是只分配了虚拟地址，但是**没有分配物理内存，也没有建立虚拟地址和物理地址之间的映射**。当进程访问这些还没有建立映射关系的虚拟地址时，CPU 自动触发一个缺页异常。缺页异常的处理是内存管理的重要部分，需要考虑多种情况以及实现细节，包括匿名页面、KSM 页面、页面高速缓存、写时复制（COW）、私有映射和共享映射等等。这里先看看大概的执行流程，然后再详细分析每种情况的实现。
 
-![page_fault](/home/guanshun/gitlab/UFuture.github.io/image/page_fault.png)
+![page_fault.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/page_fault.png?raw=true)
 
 从触发缺页异常到 CPU 根据中断号跳转到对应的处理函数这个过程在之前做项目时已经跟踪过，就不再分析，这里主要分析 `handle_mm_fault` 相关的处理函数。
 
@@ -5409,6 +5349,8 @@ got_pg:
 #### mmap_lock 锁
 
 #### 跨 numa 内存访问
+
+#### footprint
 
 ### 疑问
 
