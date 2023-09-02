@@ -1,8 +1,10 @@
-## 分析内核源码 memblock_add_range()
+## Memblock
 
-### 1. memblock 原理
+[TOC]
 
-MEMBLOCK 内存分配器作为早期的内存管理器，维护了两种内存。第一种内存是系统可用的物理内存，即系统实际含有的物理内存，其值从 DTS 中进行配置，并通过 uboot 实际探测之 后传入到内核。第二种内存是内核预留给操作系统的内存，这部分内存作为特殊功能使用，不能作为共享内存使用。MEMBLOCK 内存分配器基础框架如下：
+### memblock 原理
+
+MEMBLOCK 内存分配器作为早期的内存管理器，维护了两种内存。第一种内存是系统可用的物理内存，即系统实际含有的物理内存，其值从 DTS 中进行配置，并通过 uboot 实际探测之 后传入到内核。第二种内存是内核预留给操作系统的内存（reserved memory），这部分内存作为特殊功能使用，不能作为共享内存使用，memblock 通过 dts 信息来初始化这部分内存。MEMBLOCK 内存分配器基础框架如下：
 
 ```plain
 MEMBLOCK
@@ -33,9 +35,9 @@ MEMBLOCK
                        +----------+
 ```
 
-从上面的逻辑图可以知道，MEMBLOCK 分配器使用一个 struct memblock 结构维护着两种内存， 其中成员 memory 维护着可用物理内存区域；成员 reserved 维护着操作系统预留的内存区域。 每个区域使用数据结构 struct memblock_type 进行管理，其成员 regions 负责维护该类型内 存的所有内存区，每个内存区使用数据结构 struct memblock_region 进行维护。
+从上面的逻辑图可以知道，MEMBLOCK 分配器使用一个 struct memblock 结构维护着两种内存， 其中成员 memory 维护着可用物理内存区域；成员 reserved 维护着操作系统预留的内存区域。 每个区域使用数据结构 struct memblock_type 进行管理，其成员 regions 负责维护该类型内存的所有内存区，每个内存区使用数据结构 struct memblock_region 进行维护。
 
-### 2. 相关数据结构
+### 相关数据结构
 
 MEMBLOCK 分配器的主体是使用数据结构 struct memblock 进行维护：
 
@@ -99,7 +101,7 @@ struct memblock_region {
 };
 ```
 
-### 3. 源码分析
+### memblock 源码分析
 
 代码树展开：
 
@@ -112,7 +114,7 @@ memblock_add_range()
 | -- memblock_merge_regions();
 ```
 
-#### 3.1. memblock_add_range()
+#### memblock_add_range()
 
 ```c
 /**
@@ -220,7 +222,7 @@ repeat:
 
 如果内存区内已经包含其他的内存区块，那么函数继续执行。函数首先调用 for_each_memblock_type() 函数遍历该内存区内的所有内存区块，每遍历到一个内存区块， 函数会将新的内存区块和该内存区块进行比较，这两个内存区块一共会出现 11 种情况，但函数将这么多的情况分作三种进行统一处理：
 
-##### 3.1.1. 遍历到的内存区块的起始地址大于或等于新内存区块的结束地址，新的内存区块位于遍历到内存区块的前端
+**遍历到的内存区块的起始地址大于或等于新内存区块的结束地址，新的内存区块位于遍历到内存区块的前端**
 
 对于这类，会存在两种情况，分别为：
 
@@ -249,7 +251,7 @@ repeat:
 
 由于于**内存区内的所有内存区块都是按其首地址从低到高排列**（但并不是低地址都已经被分配了），对于这类情况，函数会直接退出 for_each_memblock() 循环，直接进入下一个判断，此时新内 存块的基地址都小于其结束地址，这样函数就会将新的内存块加入到内存区的链表中去。
 
-##### 3.1.2. 遍历到的内存区块的终止地址小于或等于新内存区块的起始地址, 新的内存区块位于遍历到内存区块的后面
+**遍历到的内存区块的终止地址小于或等于新内存区块的起始地址, 新的内存区块位于遍历到内存区块的后面**
 
 对于这类情况，会存在两种情况，分别为：
 
@@ -274,7 +276,7 @@ repeat:
 
 对于这类情况，函数会在 for_each_memblock() 中继续循环遍历剩下的节点，直到找到新加的内存区块与已遍历到的内存区块**存在其他类情况**。也可能出现遍历的内存区块是内存区最后一块内存区块，那么函数就会结束 for_each_memblock() 的循环，这样的话新内存区块还是和最后 一块已遍历的内存区块**保持这样的关系**。接着函数检查到新的内存区块的基地址小于其结束地址， 那么函数就将这块内存区块加入到内存区链表内。
 
-##### 3.1.3. 其他情况,两个内存区块存在重叠部分
+**其他情况，两个内存区块存在重叠部分**
 
 剩余的情况中，新的内存区块都与已遍历到的内存区块存在重叠部分，但可以分做两种情况进行处理：
 
@@ -344,9 +346,9 @@ rbase                     rend
 	}
 ```
 
-#### 3.2. memblock_insert_region()
+#### memblock_insert_region()
 
-该函数的作用就是将一个内存区块插入到内存区块链表的指定位置。
+该函数的作用就是**将一个内存区块插入到内存区块链表的指定位置**。
 
 函数首先检查内存区块链表是否已经超出最大内存区块数，如果是则报错。接着函数调用 memmove() 函数将内存区块链表中 idx 对应的内存区块以及之后的内存区块都往内存区块链表**后移一个位置**，然后将空出来的位置给新的内存区使用。移动完之后就是更新相关的数据。
 
@@ -382,9 +384,9 @@ static void __init_memblock memblock_insert_region(struct memblock_type *type,
 }
 ```
 
-#### 3.3. memblock_merge_regions()
+#### memblock_merge_regions()
 
-函数的作用就是将内存区对应的内存区块链表中能合并的内存区块进行合并。
+函数的作用就是**将内存区对应的内存区块链表中能合并的内存区块进行合并**。
 
 函数通过遍历内存区块链表内存的所有内存区块，如果满足两个内存区是连接在一起的，以及 NUMA 号相同，flags 也相同，那么这两块内存区块就可以合并；反之只要其中一个条件不满足， 那么就不能合并。合并两个内存区块就是调用 memmove() 函数，首先将能合并的两个内存区块数据进行更新，将前一块的 size 增加后一块的 size，然后将后一块的下一块开始的 i - 2 块往 前移一个位置，那么合并就完成了。
 
@@ -421,8 +423,319 @@ static void __init_memblock memblock_merge_regions(struct memblock_type *type)
 }
 ```
 
+### reserved memory 源码分析
+
+上面介绍到，memblock 管理的内存分为两个部分：系统可用的物理内存和内核预留给操作系统的内存（reserved memory），这里我们进一步分析一下 memblock 是怎样通过解析设备树来构建内存信息的。
+
+#### 建立 memory type 的内存块
+
+setup_arch--->setup_machine_fdt--->early_init_dt_scan--->early_init_dt_scan_nodes--->memblock_add
+
+setup_arch 是架构相关的初始化，在这里解析设备树，
+
+```c
+void __init __no_sanitize_address setup_arch(char **cmdline_p)
+{
+	setup_initial_init_mm(_stext, _etext, _edata, _end);
+
+	*cmdline_p = boot_command_line;
+
+	...
+
+	setup_machine_fdt(__fdt_pointer); // 这个地址是 dts 的地址，在 head.S 中赋值
+
+	...
+
+	arm64_memblock_init(); // 所有的内存都以 memblock->memory region 的方式管理
+
+	...
+}
+```
+
+setup_machine_fdt->early_init_dt_scan->early_init_dt_scan_nodes，在这个函数中解析设备树，但有个问题，解析出来的信息怎么没有一个全局变量保存？其实是有保存的，以 {size, address} 为例，dt_root_size_cells 和 dt_root_addr_cells 就是用来保存这两个值的，其他的也一样。
+
+```c
+void __init early_init_dt_scan_nodes(void)
+{
+	int rc = 0;
+
+    // of_scan_flat_dt 遍历所有的 node，对每个 node 调用对应的回调函数
+	/* Initialize {size,address}-cells info */
+	of_scan_flat_dt(early_init_dt_scan_root, NULL);
+
+	/* Retrieve various information from the /chosen node */
+	rc = of_scan_flat_dt(early_init_dt_scan_chosen, boot_command_line);
+	if (!rc)
+		pr_warn("No chosen node found, continuing without\n");
+
+	/* Setup memory, calling early_init_dt_add_memory_arch */
+	of_scan_flat_dt(early_init_dt_scan_memory, NULL);
+
+	/* Handle linux,usable-memory-range property */
+    // 这种属性的内存我们之后遇到再分析
+	early_init_dt_check_for_usable_mem_range();
+}
+```
+
+这里面 early_init_dt_scan_memory 需要详细看一下，它是用来解析 memory node 的。
+
+```c
+/*
+ * early_init_dt_scan_memory - Look for and parse memory nodes
+ */
+int __init early_init_dt_scan_memory(unsigned long node, const char *uname,
+				     int depth, void *data)
+{
+    // 这里和 dts 中的 memory node 对上了
+    // memory node 的 device_type 就是 memory
+	const char *type = of_get_flat_dt_prop(node, "device_type", NULL);
+	const __be32 *reg, *endp;
+	int l;
+	bool hotpluggable;
+
+	/* We are scanning "memory" nodes only */
+	if (type == NULL || strcmp(type, "memory") != 0)
+		return 0;
+
+    // 目前我看到的没有这一属性
+    // 使用的是 reg 指定内存区域
+	reg = of_get_flat_dt_prop(node, "linux,usable-memory", &l);
+	if (reg == NULL)
+		reg = of_get_flat_dt_prop(node, "reg", &l);
+	if (reg == NULL)
+		return 0;
+
+	endp = reg + (l / sizeof(__be32));
+    // 这个属性也没看到，看来在 dts 就支持内存条热拔插
+	hotpluggable = of_get_flat_dt_prop(node, "hotpluggable", NULL);
+
+	pr_debug("memory scan node %s, reg size %d,\n", uname, l);
+
+    // 解析 reg
+	while ((endp - reg) >= (dt_root_addr_cells + dt_root_size_cells)) {
+		u64 base, size;
+
+        // ddr 的物理内存可能不是整个连续的映射到虚拟地址空间，中间存在空洞
+        // 这些空洞是其他 master 使用的
+		base = dt_mem_next_cell(dt_root_addr_cells, &reg);
+		size = dt_mem_next_cell(dt_root_size_cells, &reg);
+
+		...
+
+        // 在这里调用 memblock_add 加入到 memory 部分的 memory region 中管理
+        // memblock_add 中做必要的范围检查，没问题就可以调用 memblock_add_range
+        // 剩下的就回到开头介绍的
+        // 当然这里只是解析了整个 ddr 内存空间，对于 reserved memory 还没有处理
+		early_init_dt_add_memory_arch(base, size);
+
+		...
+	}
+
+	return 0;
+}
+```
+
+#### 建立 reserved type 的内存块
+
+setup_arch--->arm64_memblock_init--->early_init_fdt_scan_reserved_mem--->__fdt_scan_reserved_mem--->memblock_reserve
+
+这里解析所有的 reserved memory node，
+
+```c
+/*
+ * __fdt_scan_reserved_mem() - scan a single FDT node for reserved memory
+ */
+static int __init __fdt_scan_reserved_mem(unsigned long node, const char *uname,
+					  int depth, void *data)
+{
+	static int found;
+	int err;
+
+	if (!found && depth == 1 && strcmp(uname, "reserved-memory") == 0) {
+		if (__reserved_mem_check_root(node) != 0) {
+			pr_err("Reserved memory: unsupported node format, ignoring\n");
+			/* break scan */
+			return 1;
+		}
+		found = 1;
+		/* scan next node */
+		return 0;
+	} else if (!found) {
+		/* scan next node */
+		return 0;
+	} else if (found && depth < 2) {
+		/* scanning of /reserved-memory has been finished */
+		return 1;
+	}
+
+    // 解析 status 字段
+	if (!of_fdt_device_is_available(initial_boot_params, node))
+		return 0;
+
+	err = __reserved_mem_reserve_reg(node, uname);
+	if (err == -ENOENT && of_get_flat_dt_prop(node, "size", NULL))
+		fdt_reserved_mem_save_node(node, uname, 0, 0);
+
+	/* scan next node */
+	return 0;
+}
+```
+
+解析 reserved memory node 的 reg, no-map 等属性，
+
+```c
+/*
+ * __reserved_mem_reserve_reg() - reserve all memory described in 'reg' property
+ */
+static int __init __reserved_mem_reserve_reg(unsigned long node,
+					     const char *uname)
+{
+	int t_len = (dt_root_addr_cells + dt_root_size_cells) * sizeof(__be32);
+	phys_addr_t base, size;
+	int len;
+	const __be32 *prop;
+	int first = 1;
+	bool nomap;
+
+	prop = of_get_flat_dt_prop(node, "reg", &len);
+
+    ...
+
+	nomap = of_get_flat_dt_prop(node, "no-map", NULL) != NULL;
+
+	while (len >= t_len) {
+		base = dt_mem_next_cell(dt_root_addr_cells, &prop);
+		size = dt_mem_next_cell(dt_root_size_cells, &prop);
+
+        // 在这里设置 reserved memory
+        // 对于 reserved map node，调用 memblock_reserve->memblock_add_range 保存到 memblock.reserved 中
+        // 对于 reserved no-map node，调用 memblock_mark_nomap->memblock_setclr_flag 设置属性
+        // 还需要了解一下 memblock 是怎么将这些内存给 buddy 管理的
+		if (size &&
+		    early_init_dt_reserve_memory_arch(base, size, nomap) == 0)
+			pr_debug("Reserved memory: reserved region for node '%s': base %pa, size %lu MiB\n",
+				uname, &base, (unsigned long)(size / SZ_1M));
+		else
+			pr_info("Reserved memory: failed to reserve memory for node '%s': base %pa, size %lu MiB\n",
+				uname, &base, (unsigned long)(size / SZ_1M));
+
+		len -= t_len;
+		if (first) {
+			fdt_reserved_mem_save_node(node, uname, base, size);
+			first = 0;
+		}
+	}
+	return 0;
+}
+```
+
+我们来看看 memblock 是怎样将 reserved memroy 设置为 nomap 的。
+
+early_init_dt_reserve_memory_arch--->memblock_mark_nomap--->memblock_setclr_flag
+
+```c
+/**
+ * memblock_setclr_flag - set or clear flag for a memory region
+ * @base: base address of the region
+ * @size: size of the region
+ * @set: set or clear the flag
+ * @flag: the flag to update
+ *
+ * This function isolates region [@base, @base + @size), and sets/clears flag
+ *
+ * Return: 0 on success, -errno on failure.
+ */
+static int __init_memblock memblock_setclr_flag(phys_addr_t base,
+				phys_addr_t size, int set, int flag)
+{
+	struct memblock_type *type = &memblock.memory; // 为什么还是 memblock.memory，不是 memblock.reserved
+	int i, ret, start_rgn, end_rgn;
+
+    // 将需要设置为 no-map 的内存段单独“扣”出来
+	ret = memblock_isolate_range(type, base, size, &start_rgn, &end_rgn);
+	if (ret)
+		return ret;
+
+	for (i = start_rgn; i < end_rgn; i++) {
+		struct memblock_region *r = &type->regions[i];
+
+		if (set)
+			r->flags |= flag; // 每个 memory region 配置属性
+		else
+			r->flags &= ~flag;
+	}
+
+	memblock_merge_regions(type); // 再规整一下
+	return 0;
+}
+```
+
+#### reserved memory 初始化
+
+完成上面的初始化之后，memblock 模块已经通过 device tree 构建了整个系统的内存全貌：哪些是普通内存区域，哪些是保留内存区域。对于那些 reserved memory，我们还需要进行初始化。
+
+setup_arch--->arm64_memblock_init--->early_init_fdt_scan_reserved_mem--->fdt_init_reserved_mem->__reserved_mem_init_node
+
+```c
+/**
+ * fdt_init_reserved_mem() - allocate and init all saved reserved memory regions
+ */
+void __init fdt_init_reserved_mem(void)
+{
+	int i;
+
+	/* check for overlapping reserved regions */
+	__rmem_check_for_overlap();
+
+	for (i = 0; i < reserved_mem_count; i++) {
+		struct reserved_mem *rmem = &reserved_mem[i];
+		unsigned long node = rmem->fdt_node;
+		int len;
+		const __be32 *prop;
+		int err = 0;
+		bool nomap;
+
+		nomap = of_get_flat_dt_prop(node, "no-map", NULL) != NULL;
+		prop = of_get_flat_dt_prop(node, "phandle", &len);
+		if (!prop)
+			prop = of_get_flat_dt_prop(node, "linux,phandle", &len);
+		if (prop)
+			rmem->phandle = of_read_number(prop, len/4);
+
+		if (rmem->size == 0)
+			err = __reserved_mem_alloc_size(node, rmem->name,
+						 &rmem->base, &rmem->size);
+		if (err == 0) {
+			err = __reserved_mem_init_node(rmem);
+			if (err != 0 && err != -ENOENT) {
+				pr_info("node %s compatible matching fail\n",
+					rmem->name);
+				if (nomap)
+					memblock_clear_nomap(rmem->base, rmem->size);
+				else
+					memblock_free(rmem->base, rmem->size);
+			}
+		}
+	}
+}
+```
+
+#### 进入 buddy 系统
+
+memblock 始终是初始化阶段的内存管理模块，最终我们还是要转向 buddy 系统。
+
+start_kernel--->mm_init--->mem_init--->free_all_bootmem--->free_low_memory_core_early--->__free_memory_core
+
+在上面的过程中，free memory 被释放到伙伴系统中，而 reserved memory 不会进入伙伴系统），对于 CMA area，我们之前说过，最终由伙伴系统管理，因此，在初始化的过程中，CMA area 的内存会全部导入伙伴系统（方便其他应用可以通过伙伴系统分配内存）。具体代码如下：
+
+```c
+core_initcall(cma_init_reserved_areas);
+```
+
+至此，所有的 CMA area 的内存进入伙伴系统。
+
 ### reference
 
 [1] https://biscuitos.github.io/blog/MMU-ARM32-MEMBLOCK-memblock_add_range/
 
-这篇博客确实帮助很大，讲解很详细，而且分析代码的方式也值的学习，一段段的代码贴出来，而不是整个函数复制。然后通过简单的作图，更容易理解，我看代码光靠头脑风暴，不太行，之后也可以采用这种方法。
+这篇博客确实帮助很大，讲解很详细，而且分析代码的方式也值得学习，一段段代码贴出来，而不是整个函数复制。然后通过简单的作图，更容易理解，我看代码光靠头脑风暴，不太行，之后也可以采用这种方法。

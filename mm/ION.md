@@ -738,6 +738,7 @@ static int ion_handle_put_nolock(struct ion_handle *handle)
 - android 中有一个名为 binder 的核间通讯机制，有时间需要看看；
 - 现在还不知道怎么调试，先将原理和代码过一遍；
 - 之前学内存管理，知道这些内存是用来干嘛的，也就是说了解应用程序的执行过程，使用场景，所以对为什么需要那些内存分配算法，buddy, slab 等有很清晰的认识。但是 ION 提供给 gpu, display 和 camera 等设备的，对于这些设备的运行流程我不清楚，所以就无法理解为什么要使用 ION 进行这样的内存管理；
+- dma_heap 为什么叫 dma_heap，跟 dma 有什么关系，dma 怎样使用这些 heap？
 
 ### Reference
 

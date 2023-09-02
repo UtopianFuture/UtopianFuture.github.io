@@ -121,7 +121,7 @@ MET,FL_FUNC,../memcpy.c,1
 
 #### [cppcheck](https://cppcheck.sourceforge.io/)
 
-这个我看组内有同事在看，它能做的比下面两个圈复杂度工具要多，主要用来检测 C/C++ 项目。其支持如下代码标准，
+它能做的比下面两个圈复杂度工具要多，主要用来检测 C/C++ 项目。其支持如下代码标准，
 
 - Misra C 2012: Full coverage in open source tool.
 - Autosar: Partial coverage in Cppcheck Premium.

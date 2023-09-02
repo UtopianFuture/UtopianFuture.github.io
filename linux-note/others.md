@@ -1,5 +1,9 @@
 # 杂项
 
+[TOC]
+
+
+
 ### page coloring
 
 系统在为进程分配内存空间时，是按照 virtual memory 分配的，然后 virtual memory 会映射到不同的 physical memory，这样会导致一个问题，相邻的 virtual memory 会映射到不相邻的 physical memory 中，然后在缓存到 cache 中时，相邻的 virtual memory 会映射到同一个 cache line，从而导致局部性降低，性能损失。
@@ -784,7 +788,7 @@ NUMA 的特点是：被共享的内存物理上是分布式的，所有这些内
 
 Initrd ramdisk 或者 initrd 是指一个临时文件系统，它在启动阶段被 Linux 内核调用。initrd 主要用于当“根”文件系统被[挂载](https://zh.wikipedia.org/wiki/Mount_(Unix))之前，进行准备工作。
 
-### [设备树（dt）](https://e-mailky.github.io/2019-01-14-dts-1)
+### 设备树（dt）
 
 Device Tree 由一系列被命名的结点（node）和属性（property）组成，而结点本身可包含子结点。所谓属性， 其实就是成对出现的 name 和 value。在 Device Tree 中，可描述的信息包括（原先这些信息大多被 hard code 到 kernel 中）：
 
@@ -798,9 +802,15 @@ Device Tree 由一系列被命名的结点（node）和属性（property）组�
 
 它基本上就是画一棵电路板上 CPU、总线、设备组成的树，**Bootloader 会将这棵树传递给内核**，然后内核可以识别这棵树， 并根据它**展开出 Linux 内核中的** platform_device、i2c_client、spi_device 等**设备**，而这些设备用到的内存、IRQ 等资源， 也被传递给了内核，内核会将这些资源绑定给展开的相应的设备。
 
-是否 Device Tree 要描述系统中的所有硬件信息？答案是否定的。基本上，那些可以动态探测到的设备是不需要描述的， 例如 USB device。不过对于 SOC 上的 usb hostcontroller，它是无法动态识别的，需要在 device tree 中描述。同样的道理， 在 computersystem 中，PCI device 可以被动态探测到，不需要在 device tree 中描述，但是 PCI bridge 如果不能被探测，那么就需要描述之。
+是否 Device Tree 要描述系统中的所有硬件信息？答案是否定的。基本上，那些可以动态探测到的设备是不需要描述的， 例如 USB device。不过对于 SOC 上的 usb hostcontroller，它是无法动态识别的，需要在 device tree 中描述。同样的道理， 在 computer system 中，PCI device 可以被动态探测到，不需要在 device tree 中描述，但是 PCI bridge 如果不能被探测，那么就需要描述之。
 
 设备树和 ACPI 有什么关系？
+
+关于设备树的知识看这个系列的文档就足够了：
+
+- [dts-1](https://e-mailky.github.io/2019-01-14-dts-1)
+- [dts-2](https://e-mailky.github.io/2019-01-14-dts-2)
+- [dts-3](https://e-mailky.github.io/2019-01-14-dts-3)
 
 ### [BootMem 内存分配器](https://cloud.tencent.com/developer/article/1376122)
 
@@ -864,7 +874,16 @@ NUMA 内存体系中，每个节点都要初始化一个 bootmem 分配器。
 
 ### [SWIOTLB](https://blog.csdn.net/liuhangtiant/article/details/87825466)
 
-龙芯 3 号的访存能力是 48 位，而龙芯的顶级 IO 总线是 40 位的，部分 PCI 设备的总线只有 32 位，如果系统为其分配了超过 40 位或 32 位总线寻址能力的地址，那么这些设备就不能访问对应的 DMA 数据，为了**让访存能力有限的 IO 设备能够访问任意的 DMA 空间**，就必须**在硬件上设置一个 DMA 地址 - 物理地址的映射表**，或者由内核在设备可访问的地址范围预先准备一款内存做中转站——SWIOTLB。
+swiotlb 技术是一种纯软件的地址映射技术，主要**为寻址能力受限的 DMA 提供软件上的地址映射**。
+
+在 64 位的系统中，如果为外设 DMA（部分外设 DMA 只支持 32 位）分配了超过其寻址能力的地址，那么该外设 DMA 无法使用该地址，这时就要使用 swiotlb。
+swiotlb 维护了一块低地址的 buffer，该 buffer 的大小可以由 bootloader 通过 swiotlb 参数传递给内核，也可以使用默认值，默认值是 64M。如果给 DMA 分配的物理地址（这里记做 pa1）超过了其寻址能力，swiotlb 技术将从其 buffer 中分配同样大小的一块空间，给 DMA 使用，其物理地址记做 pa2，swiotlb 会维护 pa1 和 pa2 的映射关系。
+这里有两个问题比较关键：
+
+- 如何确保 swiotlb 维护的 buffer 在低地址呢？
+尽可能早地分配该 buffer，在 ARM64 平台上在函数 mem_init 的一开始，就调用 swiotlb_init 做 swiotlb 的初始化，swiotlb_init 中就会分配所需要的 buffer；
+- 如何维护 pa1 和 pa2 之间的映射？
+- swiotlb 维护了一张 io_tlb_orig_addr 表，这张表维护了原始物理地址和 swiotlb 分配物理地址之间的映射关系。当 DMA 将数据写入 swiotlb 分配的物理地址后，一般会以中断的方式通知 CPU，CPU 在查看 DMA 写到内存的数据之前，需要先做一个 sync，该 sync 操作就会触发 swiotlb**将数据拷贝到原始物理地址处**，这样就保证了 CPU 能够看到正确的数据，不过显而易见，这种方法效率非常低下。
 
 ### LSX 和 LASZ
 
@@ -1019,6 +1038,18 @@ const 主要用来修饰变量、函数形参和类成员函数：
 - 用 const 修饰类成员函数：该函数对成员变量只能进行只读操作，就是 const 类成员函数是不能修改成员变量的数值的。
 
 被 const 修饰的东西都受到强制保护，可以预防意外的变动，能提高程序的健壮性。
+
+const 在如下场景很容易混淆：
+
+```c
+const int a; // a 是一个常整型数
+int const a; // a 是一个常整型数
+const int *a; // a 是一个指向常整型数的指针（也就是，整型数是不可修改的，但指针可以）
+int * const a; // a 是一个指向整型数的常指针（也就是说，指针指向的整型数是可以修改的，但指针是不可修改的）
+int const * a const; // a 是一个指向常整型数的常指针（也就是说，指针指向的整型数是不可修改的，同时指针也是不可修改的）
+```
+
+另外需要注意，const 修饰的局部变量在**栈**上分配空间，这个局部变量是可以修改的，而 const 修饰的全局变量在**只读存储区**分配空间。这个全局变量是不能修改的。
 
 ### struct 内存对齐的 3 大规则
 
@@ -1370,3 +1401,29 @@ When the TCU receives a DTI translation request, it uses the QTW interface to pe
 The TCU contains caches that reduce the number of configuration and translation table walks that are to be performed. Sometimes no walks are required.
 
 When the TBU receives the translation from the TCU, it stores it in its TLBs. If the translation was successful, the TBU uses it to translate the transaction, otherwise it terminates it.
+
+### ioremap
+
+内核在访问外设或者 no-map 预留内存时只知道物理地址，需要使用 iormap 将物理地址映射为虚拟地址，对此，内核提供了一系列接口：
+
+- ioremap & ioremap_nocache 实现相同，使用场景为映射 device memory 类型内存；
+- ioremap_cached，使用场景为映射 normal memory 类型内存，且映射后的虚拟内存支持 cache；
+- ioremap_wc & ioremap_wt 实现相同，使用场景为映射 normal memory 类型内训，且映射后的虚拟内存不支持 cache；
+
+### [驱动开发](https://www.cnblogs.com/downey-blog/p/10600249.html)
+
+obj-m 表示把文件 test.o 作为"模块"进行编译，不会编译到内核，但是会生成一个独立的 "test.ko" 文件，调试它的话需要将其放到 initramfs 中，进入到内核后，执行 insmod test.o 进行挂载；
+
+obj-y 表示把 test.o 文件编译进内核；
+
+而如果需要添加一个驱动到内核中，需要按照如下步骤：
+
+- 如果是新建文件夹，因为是分布式编译，需要在文件夹下添加一个 Makefile 文件和 Kconfig 文件并修改成指定格式，如果是单个文件直接添加，则直接修改当前目录下的 Makefile 和 Kconfig 文件将其添加进去即可；
+- 如果是新建文件夹，需要修改上级目录的 Makefile 和 Kconfig，以将文件夹添加到整个源码编译树中；
+- 执行 make menuconfig，查看对应的驱动是否加入到内核中，并置为 "Y" 或者 "M"，执行 make。
+
+### [ioremap](https://lwn.net/Articles/653585/) 和 [memremap](http://www.biscuitos.cn/blog/SPARSE___iomem/) 应该用哪个
+
+ioremap 返回的地址指针带 `__iomem`，`__iomem` 宏用于指定指针必须指向设备地址空间。如果指针指向其他空间，比如用户空间， 或者内核空间，那么 sparse checker 就会报 werror。`__attribute((address_space(2)))`， 是用来修饰一个变量的，而且变量所在的地址空间必须是 2，即 I/O 空间。这里把程序空间分成了 3 个部分，0 表示 normal space，即普通地址空间，对内核代码来说， 就是内核空间地址；1 表示用户地址空间；2 表示是设备地址映射空间，例如硬件设备的寄存器在内核里所映射的地址空间。
+
+但是 Franklin 源码中 sparse checker 没有开，所以用哪个无所谓。

@@ -50,13 +50,13 @@
 
    需要在用户目录下的.ssh/config 中添加
 
-   ```plain
+
 ~/.ssh/config
 Host rd.loongson.cn
 HostName 10.2.5.20
 Port 29148
 KexAlgorithms +diffie-hellman-group14-sha1
-   ```
+   ```plain
 
    配置，如果访问其他的设备有问题则重新配置，会提示配置什么算法。
 
@@ -66,7 +66,7 @@ KexAlgorithms +diffie-hellman-group14-sha1
 
     ```plain
     rsync -avzP /home/guanshun/gitlab/latx guanshun:/home/guanshun/gitlab
-    ```
+   ```
 
 11. ​	Linux 中有三个标准流，在一个程序启动的时候它们会自动开启。它们分别是：
 
@@ -137,3 +137,5 @@ KexAlgorithms +diffie-hellman-group14-sha1
     export SOONG_GEN_COMPDB_DEBUG=1
     export SOONG_LINK_COMPDB_TO=$ANDROID_HOST_OUT
     ```
+
+21. nokaslr 禁止内核起始地址随机化，这个很重要， 否则 GDB 调试可能有问题；console=ttyAMA0 指定了串口，没有这一步就看不到 linux 的输出；同时在 menuconfig 中要将所有 AMBA 相关的驱动使能。

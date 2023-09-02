@@ -2,18 +2,7 @@
 
 ### 目录
 
-- [start_kernel](#start_kernel)
-  - [setup_arch](#setup_arch)
-    - [cpu_probe](#cpu_probe)
-    - [plat_early_init](#plat_early_init)
-    - [prom_init](#prom_init)
-    - [arch_mem_init](#arch_mem_init)
-    - [plat_smp_setup](#plat_smp_setup)
-    - [paging_init](#paging_init)
-  - [trap_init](#trap_init)
-  - [init_IRQ](#init_IRQ)
-
-这里分析 LoongArch 内核的初始化过程。
+[TOC]
 
 主核的执行入口（PC 寄存器的初始值）是编译内核时决定的，运行时由 BIOS 或者 BootLoader 传递给内核。内核的初始入口是`kernel_entry`。LA 的 `kernel_entry` 和 mips 的类似，进行.bss 段的清 0（包括之后加载用户态进程也需要清 0，[为什么要清 0？](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/linux-note/others.md#bss-%E6%AE%B5%E6%B8%85-0)），保存 a0~a3 等操作。之后就进入到第二入口 `start_kernel`。
 
@@ -817,7 +806,7 @@ static void __init arch_mem_init(char **cmdline_p)
 	early_init_fdt_scan_reserved_mem();
 
 	if (loongson_fdt_blob)
-		dt_bootmem_init(); // 建立boot_mem_map内存映射图
+		dt_bootmem_init(); // 建立 boot_mem_map 内存映射图
 						   // 这里应该不是建立，而是建立好了将其挂载到物理空间，所以关键还是找到boot_mem_map在哪里初始化的
 	else
 		bootmem_init();

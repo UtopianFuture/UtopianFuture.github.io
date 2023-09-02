@@ -499,7 +499,7 @@ EXPORT_SYMBOL(alloc_pages);
 
    	return page;
    }
-   EXPORT_SYMBOL(__alloc_pages);
+   EXPORT_SYMBOL(__alloc_pages); // 该函数可被驱动使用
    ```
 
 ​	这其中涉及一些概念需要理解清楚。
@@ -2218,7 +2218,9 @@ static __always_inline unsigned int __kmalloc_index(size_t size,
 
 vmalloc 映射区的**映射方式与用户空间完全相同**，内核可以通过调用 vmalloc 函数在内核地址空间的 vmalloc 区域获得内存。这个函数的功能相当于用户空间的 malloc 函数，所提供的虚拟地址空间是连续的， 但不保证物理地址是连续的。
 
-还是先看看 `vmalloc` 相关的数据结构，内核中用 `vm_struct` 来表示一块 vmalloc 分配的区域，注意不要和用户态的 VMA 搞混了。
+#### vm_struct
+
+还是先看看 `vmalloc` 相关的数据结构，**内核中用 `vm_struct` 来表示一块 vmalloc 分配的区域**，注意不要和用户态的 VMA 搞混了。
 
 ```c
 struct vm_struct {
@@ -2264,12 +2266,32 @@ vmalloc 有不同的给外界提供了不同的接口，如 `__vmalloc`, `vmallo
 void *__vmalloc_node(unsigned long size, unsigned long align,
 			    gfp_t gfp_mask, int node, const void *caller)
 {
+    // 主要就是分配虚拟地址，然后构造 vm_struct 这个结构体
 	return __vmalloc_node_range(size, align, VMALLOC_START, VMALLOC_END,
 				gfp_mask, PAGE_KERNEL, 0, node, caller);
 }
 ```
 
 `vmalloc` 分配的空间在[内存分布](# 内存分布)小节中的图中有清晰的说明（不同架构的内存布局是不一样的，因为这篇文章的时间跨度较大，参考多本书籍，所以混合了 arm 内核、Loongarch 内核和 x86 内核的源码，这是个问题，之后要想想怎么解决。在 64 位 x86 内核中，该区域为 `0xffffc90000000000 ~ 0xffffe8ffffffffff`）。
+
+`vm_struct` 会区分多种类型的映射区域，
+
+```c
+/* bits in flags of vmalloc's vm_struct below */
+#define VM_IOREMAP		0x00000001	/* ioremap() and friends */
+#define VM_ALLOC		0x00000002	/* vmalloc() */
+#define VM_MAP			0x00000004	/* vmap()ed pages */
+#define VM_USERMAP		0x00000008	/* suitable for remap_vmalloc_range */
+#define VM_DMA_COHERENT		0x00000010	/* dma_alloc_coherent */
+#define VM_UNINITIALIZED	0x00000020	/* vm_struct is not fully initialized */
+#define VM_NO_GUARD		0x00000040      /* don't add guard page */
+#define VM_KASAN		0x00000080      /* has allocated kasan shadow memory */
+#define VM_FLUSH_RESET_PERMS	0x00000100	/* reset direct map and flush TLB on unmap, can't be freed in atomic context */
+#define VM_MAP_PUT_PAGES	0x00000200	/* put pages and free array in vfree */
+#define VM_NO_HUGE_VMAP		0x00000400	/* force PAGE_SIZE pte mapping */
+```
+
+这些映射类型在后续的学习工作中都会遇到。
 
 #### __vmalloc_node_range
 
@@ -2455,11 +2477,13 @@ fail:
 }
 ```
 
-### ZRAM
+### vmap
 
-### zamalloc
+vmap 函数完成的工作是，在 vmalloc 虚拟地址空间中找到一个空闲区域，然后将 page 页面数组对应的物理内存映射到该区域，最终返回映射的虚拟起始地址。
 
-### CMA
+### zsmalloc
+
+### CMA[^7]
 
 CMA(Contiguous Memory Allocator)负责**物理地址连续的内存分配**。一般系统会在启动过程中，从整个 memory 中配置一段连续内存用于 CMA，然后内核其他的模块可以通过 CMA 的接口 API 进行连续内存的分配。CMA 的核心并不是设计精巧的算法来管理地址连续的内存块，实际上它的**底层还是依赖内核伙伴系统这样的内存管理机制**，或者说 CMA 是处于需要连续内存块的其他内核模块（例如 DMA mapping framework）和内存管理模块之间的一个中间层模块，主要功能包括：
 
@@ -2470,7 +2494,7 @@ CMA(Contiguous Memory Allocator)负责**物理地址连续的内存分配**。�
 
 Linux 内核中已经提供了各种内存分配的接口，为何还要建立 CMA 这种连续内存分配的机制呢？
 
-各种各样的驱动有连续内存分配的需求，例如现在大家的手机都有视频功能，camera 功能，这类驱动都需要非常大块的内存，而且有 DMA 用来进行外设和大块内存之间的数据交换。**对于嵌入式设备，一般不会有 IOMMU**，而且 DMA 也不具备 scatter-getter 功能，这时候，驱动分配的大块内存（DMA buffer）必须是物理地址连续的。
+各种各样的驱动有连续内存分配的需求，例如现在大家的手机都有视频功能，camera 功能，这类驱动都需要非常大块的内存，而且有 DMA 用来进行外设和大块内存之间的数据交换。**对于嵌入式设备，一般不会有 IOMMU**，而且 DMA 也不具备 scatter-getter 功能，这时，**驱动分配的大块内存（DMA buffer）必须是物理地址连续的**。
 
 顺便说一句，huge page 的连续内存需求和驱动 DMA buffer 还是有不同的，例如在对齐要求上，一个 2M 的 huge page，其底层的 2M 的物理页面的首地址需要对齐在 2M 上，一般而言，DMA buffer 不会有这么高的对齐要求。因此，这里描述的 CMA 主要是为设备驱动准备的，huge page 相关的内容之后描述。
 
@@ -2481,7 +2505,234 @@ Linux 内核中已经提供了各种内存分配的接口，为何还要建立 C
 - 在启动时分配用于视频采集的 DMA buffer：缺点是当照相机不使用时（大多数时间内 camera 其实都是空闲的），预留的那些 DMA BUFFER 的内存实际上被浪费了；
 - 另外一个方案是当实际使用 camere 设备的时候分配 DMA buffer：这种方式不会浪费内存，但是不可靠，随着内存碎片化，大的、连续的内存分配变得越来越困难，一旦内存分配失败，camera 就无法使用。
 
-Michal Nazarewicz 的 CMA 补丁能够解决这一问题。对于 CMA 内存，当前驱动没有分配使用的时候，这些 memory 可以内核的被其他的模块使用（当然有一定的要求），而当驱动分配 CMA 内存后，那些被其他模块使用的内存需要吐出来，形成物理地址连续的大块内存，给具体的驱动来使用。
+Michal Nazarewicz 的 CMA 补丁能够解决这一问题。对于 CMA 内存，**当前驱动没有分配使用的时候，这些 memory 可以内核的被其他的模块使用（当然有一定的要求）**，而当驱动分配 CMA 内存后，那些被其他模块使用的内存需要吐出来，形成物理地址连续的大块内存，给具体的驱动来使用。
+
+配置 CMA 内存区有两种方法，一种是通过 dts 的 reserved memory，另外一种是通过 command line 参数和内核配置参数。
+
+device tree 中可以包含 reserved-memory node，在该节点的 child node 中，可以定义各种保留内存的信息。**compatible 属性是 shared-dma-pool 的那个节点是专门用于建立 global CMA area 的**，而其他的 child node 都是 for per device CMA area 的。
+
+Global CMA area 的初始化可以参考定义如下：
+
+```c
+RESERVEDMEM_OF_DECLARE(cma, "shared-dma-pool", rmem_cma_setup);
+```
+
+具体的 setup 过程倒是比较简单，从 device tree 中可以获取该 memory range 的起始地址和大小，调用 cma_init_reserved_mem 函数即可以注册一个 CMA area。需要补充说明的是：**CMA 对应的 reserved memory 节点必须有 reusable 属性，不能有 no-map 的属性**。具有 reusable 属性的 reserved memory 有这样的特性，即**在驱动不使用这些内存的时候，OS 可以使用这些内存（当然有限制条件）**，而当驱动从这个 CMA area 分配 memory 的时候，OS 可以回收这些内存，让驱动可以使用它。no-map 属性和地址映射相关，**如果没有 no-map 属性，那么 OS 会为这段 memory 创建地址映射，像其他普通内存一样**。但是有 no-map 属性的往往是专用于某个设备驱动，在驱动中会进行 ioremap，如果 OS 已经对这段地址进行了 mapping，而驱动又一次 mapping，这样就有**不同的虚拟地址 mapping 到同一个物理地址上去**，在某些 ARCH 上（ARMv6 之后的 cpu），会造成不可预知的后果。而 CMA 这个场景，reserved memory 必须要 mapping 好，这样才能用于其他内存分配场景，例如 page cache。
+
+通过命令行参数也可以建立 cma area。这种方式用的少，不再介绍。
+
+#### CMA 初始化
+
+**CMA area 的内存最终还是要并入伙伴系统进行管理**，因此 CMA 模块的初始化必须要在适当的时机，以适当的方式插入到内存管理（包括 memblock 和伙伴系统）初始化过程中。
+
+内存管理子系统进行初始化的时候，首先是 memblock 掌控全局的，这时候需要确定整个系统的的内存布局，简单说就是了解整个 memory 的分布情况，哪些是 memory block 是 memory type，哪些 memory block 是 reserved type。CMA area 对应的是 reserved type。最先进行的是 memory type 的内存块的建立，可以参考如下代码：
+
+setup_arch--->setup_machine_fdt--->early_init_dt_scan--->early_init_dt_scan_nodes--->memblock_add
+
+随后会建立 reserved type 的 memory block，可以参考如下代码：
+
+setup_arch--->arm64_memblock_init--->early_init_fdt_scan_reserved_mem--->__fdt_scan_reserved_mem--->memblock_reserve
+
+完成上面的初始化之后，memblock 模块已经通过 device tree 构建了整个系统的内存全貌：**哪些是普通内存区域，哪些是保留内存区域**。对于那些 reserved memory，我们还需要进行初始化，代码如下：
+
+setup_arch--->arm64_memblock_init--->early_init_fdt_scan_reserved_mem--->fdt_init_reserved_mem->__reserved_mem_init_node
+
+memblock 始终是初始化阶段的内存管理模块，最终我们还是要转向伙伴系统，具体的代码如下：
+
+start_kernel--->mm_init--->mem_init--->free_all_bootmem--->free_low_memory_core_early--->__free_memory_core
+
+在上面的过程中，free memory 被释放到伙伴系统中，而 reserved memory 不会进入伙伴系统，对于 CMA area，我们之前说过，最终被伙伴系统管理，因此，在初始化的过程中，CMA area 的内存会全部导入伙伴系统（方便其他应用可以通过伙伴系统分配内存）。具体代码如下：
+
+core_initcall(cma_init_reserved_areas);
+
+我们来分析一下这个 CMA 是怎样转入 buddy 系统进行管理的，
+
+```c
+static int __init cma_init_reserved_areas(void)
+{
+	int i;
+
+	for (i = 0; i < cma_area_count; i++)
+		cma_activate_area(&cma_areas[i]); // 每个 cma_area 都初始化，这是一个全局变量
+
+	return 0;
+}
+core_initcall(cma_init_reserved_areas); // initcall 在内核初始化时执行
+```
+
+cma_activate_area 主要检查该 CMA 是否所有 page 都在一个 zone 以及调用 `init_cma_reserved_pageblock` 将所有的内存以 page 为单位释放给 buddy。
+
+```c
+static void __init cma_activate_area(struct cma *cma)
+{
+	unsigned long base_pfn = cma->base_pfn, pfn;
+	struct zone *zone;
+
+	...
+
+	/*
+	 * alloc_contig_range() requires the pfn range specified to be in the
+	 * same zone. Simplify by forcing the entire CMA resv range to be in the
+	 * same zone.
+	 */
+	WARN_ON_ONCE(!pfn_valid(base_pfn));
+	zone = page_zone(pfn_to_page(base_pfn));
+	for (pfn = base_pfn + 1; pfn < base_pfn + cma->count; pfn++) {
+		WARN_ON_ONCE(!pfn_valid(pfn));
+		if (page_zone(pfn_to_page(pfn)) != zone)
+			goto not_in_zone;
+	}
+
+	for (pfn = base_pfn; pfn < base_pfn + cma->count;
+	     pfn += pageblock_nr_pages)
+		init_cma_reserved_pageblock(pfn_to_page(pfn));
+
+	spin_lock_init(&cma->lock);
+
+    ...
+
+	return;
+}
+```
+
+备注写的很清楚，关于为什么需要将 page type 设置为 `MIGRATE_CMA` 后面有介绍，
+
+```c
+/* Free whole pageblock and set its migration type to MIGRATE_CMA. */
+void __init init_cma_reserved_pageblock(struct page *page)
+{
+	unsigned i = pageblock_nr_pages;
+	struct page *p = page;
+
+	do {
+		__ClearPageReserved(p);
+		set_page_count(p, 0);
+	} while (++p, --i);
+
+	set_pageblock_migratetype(page, MIGRATE_CMA);
+
+	if (pageblock_order >= MAX_ORDER) {
+		i = pageblock_nr_pages;
+		p = page;
+		do {
+			set_page_refcounted(p);
+			__free_pages(p, MAX_ORDER - 1);
+			p += MAX_ORDER_NR_PAGES;
+		} while (i -= MAX_ORDER_NR_PAGES);
+	} else {
+		set_page_refcounted(page);
+		__free_pages(page, pageblock_order);
+	}
+
+	adjust_managed_page_count(page, pageblock_nr_pages);
+	page_zone(page)->cma_pages += pageblock_nr_pages;
+}
+```
+
+至此，所有的 CMA area 的内存进入伙伴系统。
+
+注意，上面的 `RESERVEDMEM_OF_DECLARE(cma, "shared-dma-pool", rmem_cma_setup);` 是 CMA 的初始化，这里是将 CMA 导入到 buddy 系统。
+
+#### CMA 使用
+
+当从伙伴系统请求内存的时候，我们需要提供了一个 gfp_mask 的参数。它有多种类型，不过在 CMA 这个场景，它用来指定请求页面的迁移类型（migrate type）。migrate type 有很多中，其中有一个是 MIGRATE_MOVABLE 类型，被标记为 MIGRATE_MOVABLE 的 page 说明该页面上的数据是可以迁移的。
+
+```c
+enum migratetype {
+	MIGRATE_UNMOVABLE,
+	MIGRATE_MOVABLE,
+	MIGRATE_RECLAIMABLE,
+#ifdef CONFIG_CMA
+	MIGRATE_CMA,
+#endif
+	MIGRATE_PCPTYPES, /* the number of types on the pcp lists */
+	MIGRATE_HIGHATOMIC = MIGRATE_PCPTYPES,
+#ifdef CONFIG_MEMORY_ISOLATION
+	MIGRATE_ISOLATE,	/* can't allocate from here */
+#endif
+	MIGRATE_TYPES
+};
+```
+
+伙伴系统不会跟踪每一个 page frame 的迁移类型，实际上它是按照 pageblock 为单位进行管理的，memory zone 中会有一个 bitmap，指明该 zone 中每一个 pageblock 的 migrate type。在处理内存分配请求的时候，一般会首先从和请求相同 migrate type（gfp_mask）的 pageblocks 中分配页面。如果分配不成功，不同 migrate type 的 pageblocks 中也会考虑，甚至可能改变 pageblock 的 migrate type。这意味着一个 non-movable 页面请求也可以从 migrate type 是 movable 的 pageblock 中分配。这一点 CMA 是不能接受的，所以引入了一个新的 migrate type：MIGRATE_CMA。这种迁移类型具有一个重要性质：**只有可移动的页面可以从 MIGRATE_CMA 的 pageblock 中分配**。
+
+##### 分配连续内存
+
+cma_alloc 用来从指定的 CMA area 上分配 count 个连续的 page frame，按照 align 对齐。具体的代码就不再分析了，比较简单，实际上就是从 bitmap 上搜索 free page 的过程，一旦搜索到，就调用 alloc_contig_range 向伙伴系统申请内存。需要注意的是，**CMA 内存分配过程是一个比较“重”的操作，可能涉及页面迁移、页面回收等操作，因此不适合用于 atomic context**。
+
+但设备往往不是直接调用 cma_alloc 的，而是调用如下三个封装函数：
+
+- cma_heap_allocate：这个函数是 dma-heap 申请分配内存的接口，其也是通过 cma_alloc 来分配；
+- dma_alloc_contiguous：正常的设备可以使用该函数来申请 CMA 内存，我们下面来详细分析一下这个函数；
+- dma_alloc_from_contiguous：这个函数的功能和 dma_alloc_contiguous 一样，但从代码上来看，它还是一个内部函数，其他函数来调用它；
+
+**dma_alloc_contiguous**
+
+这个函数没有使用 EXPORT_SYMBOL 导出来，所以在现行 google GKI 的限制下，我们无法使用到它。
+
+```c
+/**
+ * dma_alloc_contiguous() - allocate contiguous pages
+ * @dev:   Pointer to device for which the allocation is performed.
+ * @size:  Requested allocation size.
+ * @gfp:   Allocation flags.
+ *
+ * tries to use device specific contiguous memory area if available, or it
+ * tries to use per-numa cma, if the allocation fails, it will fallback to
+ * try default global one.
+ *
+ * Note that it bypass one-page size of allocations from the per-numa and
+ * global area as the addresses within one page are always contiguous, so
+ * there is no need to waste CMA pages for that kind; it also helps reduce
+ * fragmentations.
+ */
+struct page *dma_alloc_contiguous(struct device *dev, size_t size, gfp_t gfp)
+{
+#ifdef CONFIG_DMA_PERNUMA_CMA
+	int nid = dev_to_node(dev);
+#endif
+
+	/* CMA can be used only in the context which permits sleeping */
+	if (!gfpflags_allow_blocking(gfp)) // __GFP_DIRECT_RECLAIM 需要置 1
+		return NULL;
+	if (dev->cma_area) // 没有设备独占的 cma
+		return cma_alloc_aligned(dev->cma_area, size, gfp);
+	if (size <= PAGE_SIZE)
+		return NULL;
+
+#ifdef CONFIG_DMA_PERNUMA_CMA
+	if (nid != NUMA_NO_NODE && !(gfp & (GFP_DMA | GFP_DMA32))) {
+		struct cma *cma = dma_contiguous_pernuma_area[nid];
+		struct page *page;
+
+		if (cma) {
+			page = cma_alloc_aligned(cma, size, gfp);
+			if (page)
+				return page;
+		}
+	}
+#endif
+	if (!dma_contiguous_default_area)
+		return NULL;
+
+	return cma_alloc_aligned(dma_contiguous_default_area, size, gfp);
+}
+```
+
+和 dma_alloc_contiguous 类似的是 dma_alloc_coherent，它是用于申请 reserved map 形式的内存。从代码上来看，使用这个函数的场景更多（因为它 EXPORT 出来了，驱动可以使用）。
+
+```c
+static inline void *dma_alloc_coherent(struct device *dev, size_t size,
+		dma_addr_t *dma_handle, gfp_t gfp)
+{
+	return dma_alloc_attrs(dev, size, dma_handle, gfp,
+			(gfp & __GFP_NOWARN) ? DMA_ATTR_NO_WARN : 0);
+}
+```
+
+##### 释放连续内存
+
+分配连续内存的逆过程，除了 bitmap 的操作之外，最重要的就是调用 free_contig_range，将指定的 pages 返回伙伴系统。
 
 ### 进程地址空间
 
@@ -3334,7 +3585,224 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 }
 ```
 
-### mremap
+### ioremap
+
+ioremap 的变体众多，但底层实现是类似的，都是调用 `__ioremap_caller` 函数，我们来逐个分析。
+
+目前 ioremap 有如下变体（可能还有其他的，遇到了再分析）：
+
+- ioremap 使用场景为映射 device memory 类型内存；
+- ioremap_cache，使用场景为映射 normal memory 类型内存，且映射后的虚拟内存支持 cache（但不是所有的系统都实现了）；
+- ioremap_wc & ioremap_wt 实现相同，使用场景为映射 normal memory 类型内存，且映射后的虚拟内存不支持 cache，一种是 writecombine，一种是 writethrogh；
+- memremap(pbase, size, MEMREMAP_WB)；
+- memremap(pbase, size, MEMREMAP_WC)；
+
+```c
+// 都是同一个接口，只是配置的属性不同
+#define ioremap(addr, size)		__ioremap((addr), (size), __pgprot(PROT_DEVICE_nGnRE))
+#define ioremap_wc(addr, size)		__ioremap((addr), (size), __pgprot(PROT_NORMAL_NC))
+#define ioremap_np(addr, size)		__ioremap((addr), (size), __pgprot(PROT_DEVICE_nGnRnE))
+
+extern void __iomem *ioremap_cache(phys_addr_t phys_addr, size_t size);
+__weak void __iomem *ioremap_cache(resource_size_t offset, unsigned long size)
+{
+	return ioremap(offset, size);
+}
+
+#ifndef ioremap_wt
+#define ioremap_wt ioremap
+#endif
+
+// memremap 支持多种属性
+// MEMREMAP_WB = 1 << 0,
+// MEMREMAP_WT = 1 << 1,
+// MEMREMAP_WC = 1 << 2,
+// MEMREMAP_ENC = 1 << 3,
+// MEMREMAP_DEC = 1 << 4,
+void *memremap(resource_size_t offset, size_t size, unsigned long flags);
+void memunmap(void *addr);
+```
+
+从代码上来看，ioremap, ioremap_cache, ioremap_wt 的底层实现都是 ioremap，即将虚拟地址映射为 device memory 类型的内存。而 memremap 也是 ioremap 的封装。
+
+#### memremap
+
+我们先来看一下 memremap 的实现，
+
+```c
+/**
+ * memremap() - remap an iomem_resource as cacheable memory
+ * @offset: iomem resource start address
+ * @size: size of remap
+ * @flags: any of MEMREMAP_WB, MEMREMAP_WT, MEMREMAP_WC,
+ *		  MEMREMAP_ENC, MEMREMAP_DEC
+ *
+ * memremap() is "ioremap" for cases where it is known that the resource
+ * being mapped does not have i/o side effects and the __iomem
+ * annotation is not applicable. In the case of multiple flags, the different
+ * mapping types will be attempted in the order listed below until one of
+ * them succeeds.
+ *
+ * 也就是说 MEMREMAP_WB 适用于 system RAM, cached 映射
+ * MEMREMAP_WB - matches the default mapping for System RAM on
+ * the architecture.  This is usually a read-allocate write-back cache.
+ * Moreover, if MEMREMAP_WB is specified and the requested remap region is RAM
+ * memremap() will bypass establishing a new mapping and instead return
+ * a pointer into the direct map.
+ *
+ * MEMREMAP_WT 不带 cache，映射为 device memory
+ * MEMREMAP_WT - establish a mapping whereby writes either bypass the
+ * cache or are written through to memory and never exist in a
+ * cache-dirty state with respect to program visibility.  Attempts to
+ * map System RAM with this mapping type will fail.
+ *
+ * MEMREMAP_WC 不带 cache，映射为 device memory
+ * writecombine 意思是将能够将多笔写操作合并为一个写入 memory 或 buffer
+ * MEMREMAP_WC - establish a writecombine mapping, whereby writes may
+ * be coalesced together (e.g. in the CPU's write buffers), but is otherwise
+ * uncached. Attempts to map System RAM with this mapping type will fail.
+ */
+void *memremap(resource_size_t offset, size_t size, unsigned long flags)
+{
+	int is_ram = region_intersects(offset, size,
+				       IORESOURCE_SYSTEM_RAM, IORES_DESC_NONE);
+	void *addr = NULL;
+
+	if (!flags)
+		return NULL;
+
+    // 这些类型不懂，是不是根据 dts 中配置的属性为 device_type = "memory" 来判断这段内存是不是 system RAM
+    // 这种内存视图是在哪里构建的呢？
+	if (is_ram == REGION_MIXED) {
+		WARN_ONCE(1, "memremap attempted on mixed range %pa size: %#lx\n",
+				&offset, (unsigned long) size);
+		return NULL;
+	}
+
+	/* Try all mapping types requested until one returns non-NULL */
+	if (flags & MEMREMAP_WB) {
+		/*
+		 * MEMREMAP_WB is special in that it can be satisfied
+		 * from the direct map.  Some archs depend on the
+		 * capability of memremap() to autodetect cases where
+		 * the requested range is potentially in System RAM.
+		 */
+		if (is_ram == REGION_INTERSECTS)
+			addr = try_ram_remap(offset, size, flags); // 好像大部分情况走这里
+		if (!addr)
+			addr = arch_memremap_wb(offset, size); // 底层实现是 ioremap_cache
+	}
+
+	/*
+	 * If we don't have a mapping yet and other request flags are
+	 * present then we will be attempting to establish a new virtual
+	 * address mapping.  Enforce that this mapping is not aliasing
+	 * System RAM.
+	 */
+    // 如果映射的是 system RAM，但没用 MEMREMAP_WB 就会报错
+	if (!addr && is_ram == REGION_INTERSECTS && flags != MEMREMAP_WB) {
+		WARN_ONCE(1, "memremap attempted on ram %pa size: %#lx\n",
+				&offset, (unsigned long) size);
+		return NULL;
+	}
+
+    // 从这里可以看出，如果系统没有实现 iormap_wt 和 ioremap_wc
+    // 那么其实现还是 ioremap
+    // 在本文分析的环境中，是支持 ioremap_wc 的
+	if (!addr && (flags & MEMREMAP_WT))
+		addr = ioremap_wt(offset, size);
+
+	if (!addr && (flags & MEMREMAP_WC))
+		addr = ioremap_wc(offset, size);
+
+	return addr;
+}
+EXPORT_SYMBOL(memremap);
+
+void memunmap(void *addr)
+{
+	if (is_ioremap_addr(addr))
+		iounmap((void __iomem *) addr);
+}
+EXPORT_SYMBOL(memunmap);
+```
+
+从上面的分析来看，映射最关键的属性有两个：
+
+- device memory&normal memory；
+
+- cache&uncache；
+
+#### __ioremap_caller
+
+我们再来看一下 `__ioremap_caller` 是怎样建立映射以及怎样处理这两种属性。
+
+```c
+static void __iomem *__ioremap_caller(phys_addr_t phys_addr, size_t size,
+				      pgprot_t prot, void *caller)
+{
+	unsigned long last_addr;
+	unsigned long offset = phys_addr & ~PAGE_MASK;
+	int err;
+	unsigned long addr;
+	struct vm_struct *area;
+
+	... // 映射前的检查
+
+    /*
+	 * Don't allow RAM to be mapped.
+	 */
+    // 在这里检查映射的是否是 RAM 内存
+    // 这些 RAM 内存就是在 dts 配置的
+    // 所以如果是 DDR 空间使用 ioremap 映射肯定会出问题
+	if (WARN_ON(pfn_is_map_memory(__phys_to_pfn(phys_addr))))
+		return NULL;
+
+	area = get_vm_area_caller(size, VM_IOREMAP, caller); // 在这里就分配好虚拟地址了，vmalloc 地址范围内分配
+	if (!area)
+		return NULL;
+	addr = (unsigned long)area->addr;
+	area->phys_addr = phys_addr;
+
+    // 建立多级页表映射，pgd->p4d->pud->pmd->pte
+	err = ioremap_page_range(addr, addr + size, phys_addr, prot);
+	if (err) {
+		vunmap((void *)addr);
+		return NULL;
+	}
+
+	return (void __iomem *)(offset + addr); // addr 只是页地址，要加上页内偏移
+}
+```
+
+最后的 pte 设置是这样的，
+
+```c
+/*** Page table manipulation functions ***/
+static int vmap_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
+			phys_addr_t phys_addr, pgprot_t prot,
+			unsigned int max_page_shift, pgtbl_mod_mask *mask)
+{
+	pte_t *pte;
+	u64 pfn;
+	unsigned long size = PAGE_SIZE;
+
+	pfn = phys_addr >> PAGE_SHIFT;
+	pte = pte_alloc_kernel_track(pmd, addr, mask);
+	if (!pte)
+		return -ENOMEM;
+	do {
+		...
+
+        // prot 在这里已经写到 pte 中了
+        // 然后 set_pte
+		set_pte_at(&init_mm, addr, pte, pfn_pte(pfn, prot));
+		pfn++;
+	} while (pte += PFN_DOWN(size), addr += size, addr != end);
+	*mask |= PGTBL_PTE_MODIFIED;
+	return 0;
+}
+```
 
 ### 缺页异常处理
 
@@ -3938,6 +4406,8 @@ static vm_fault_t do_fault(struct vm_fault *vmf)
 在 2.4 版本的内核中，为了确定某个页面是否被某个进程映射，必须遍历每个进程的页表，因此效率很低，在 2.5 版本的内核中，使用了反向映射（Reverse Mapping）。
 
 RMAP 的主要目的是**从物理页面的 page 数据结构中找到有哪些用户进程的 PTE**，这样就可以快速解除所有的 PTE 并回收这个页面。为何要设计的这么复杂，能否直接在 page 中加入一个链表，存储所有的 PTE。粗略的看，占用空间太多？
+
+#### 数据结构
 
 ##### anon_vma
 
@@ -5352,6 +5822,23 @@ got_pg:
 
 #### footprint
 
+#### zRAM[^8]
+
+当系统内存紧张的时候，会将文件页丢弃或写回磁盘（如果是脏页），还可能会触发 LMK 杀进程进行内存回收。这些被回收的内存如果再次使用都需要重新从磁盘读取，而这个过程涉及到较多的 IO 操作。频繁地做 IO 操作，会影响 flash 使用寿命和系统性能。内存压缩能够尽量减少由于内存紧张导致的 IO，提升性能。
+
+目前内核主流的内存压缩技术主要有 3 种：zSwap, zRAM, zCache，这里主要介绍 zRAM。
+
+##### 原理
+
+zRAM 是 memory reclaim 的一部分，它的本质是时间环空间，通过 CPU 压缩、解压缩的开销换取更大的可用空间。
+
+在如下时机会进行内存压缩：
+
+- Kswapd 场景；
+- Direct reclaim 场景：内存分配过程进入 slowpath，进行直接行内存回收。
+
+
+
 ### 疑问
 
 1. `vm_area_alloc` 创建新的 VMA 为什么还会调用到 slab 分配器？
@@ -5382,6 +5869,8 @@ got_pg:
 
 [^5]: https://mp.weixin.qq.com/s/S0sc2aysc6aZ5kZCcpMVTw
 [^6]:https://blog.csdn.net/tanzhe2017/article/details/81001507
+[^7]:[CMA](http://www.wowotech.net/memory_management/cma.html)
+[^8]:[zRAM](http://www.wowotech.net/memory_management/zram.html)
 
 ### 些许感想
 
