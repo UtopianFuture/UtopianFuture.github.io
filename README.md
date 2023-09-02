@@ -39,15 +39,17 @@
 
 ## Memory Management
 
-[DMA-heap](./mm/DMA-heap.md)
+- [DMA-heap](./mm/DMA-heap.md)
 
-[Memory-Hierarchy](./mm/Memory-Hierarchy.md)
+- [Memory-Hierarchy](./mm/Memory-Hierarchy.md)
 
-[Low Memory Killer](./mm/LMK.md)
+- [Low Memory Killer](./mm/LMK.md)
 
-[System Level Cache](./mm/SLC.md)
+- [System Level Cache](./mm/SLC.md)
 
-[Security Memory Management](./mm/Security-Memory-Management.md)
+- [Security Memory Management](./mm/Security-Memory-Management.md)
+
+- [SMMU](./mm/SMMU.md)
 
 ## Architecture
 

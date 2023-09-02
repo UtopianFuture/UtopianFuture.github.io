@@ -5569,7 +5569,7 @@ EXPORT_SYMBOL(__alloc_pages);
 
 但如果当前系统内存的水位在最低水位之下，那么 `__alloc_pages` 就会进入到慢路径分配内存，`__alloc_pages_slowpath` 也比较复杂，我们先看看整个的执行流程。
 
-![alloc_pages_slowpath](/home/guanshun/gitlab/UFuture.github.io/image/alloc_pages_slowpath.png)
+![alloc_pages_slowpath.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/alloc_pages_slowpath.png?raw=true)
 
 这其中涉及了众多内存优化机制，前面都有分析，这里我们结合代码再看一遍。
 

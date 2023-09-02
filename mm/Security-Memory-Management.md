@@ -21,7 +21,7 @@ monitor call，smc）指令实现 CPU 的安全状态与非安全状态之间的
 
 SOC 由 ARM 核、bus、onchipram、onchiprom、外设等组成，只有支持 TrustZone 技术的 ARM 核配合安全扩展组件，才能为整个系统提供芯片硬件级别的保护和隔离。下图是一个典型的支持 TrustZone 的 SoC 的硬件框图。
 
-![image-20230531165700880](D:\gitlab\UtopianFuture.github.io\image\ARM-SOC.png)
+![ARM-SOC.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/ARM-SOC.png?raw=true)
 
 #### ARM 安全扩展组件
 
@@ -47,27 +47,27 @@ TrustZone 地址空间控制组件（TrustZone Address Space Controller，TZASC�
 
 需要注意的是，TZASC 组件只支持存储映射设备（如 off-Soc、DRAM 等）对安全和非安全区域的划分与扩展，但不支持对块设备（如 EMMC、NAND flash 等）的安全和非安全区域的划分与扩展。下图为使用 TZASC 组件使用的例子，
 
-![image-20230531172515997](D:\gitlab\UtopianFuture.github.io\image\TZSAC.png)
+![TZSAC.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/TZSAC.png?raw=true)
 
 ##### TZMA 内存适配器组件
 
 TrustZone 内存适配器组件（TrustZone Memory Adapter，TZMA）允许对 SRAM 或者 onchiprom 进行安全区域和非安全区域的划分。TZMA 支持最大 2MB 空间的 SRAM 的划分，可以将 2MB 空间划分成两个部分，高地址部分为非安全区域，低地址部分为安全区域，两个区域必须按照 4KB 进行对齐。
 
-![image-20230531172811037](D:\gitlab\UtopianFuture.github.io\image\TZMA.png)
+![TZMA.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/TZMA.png?raw=true)
 
 ##### TZPC 保护控制器组件
 
 TrustZone 保护控制器组件（TrustZone Protection Controller，TZPC）是用来设定 TZPCDECPORT 信号和 TZPCR0SIZE 等相关控制信
 号的。这些信号用来告知 APB-to-AXI 对应的外设是安全设备还是非安全设备，而 TZPCR0SIZE 信号用来控制 TZMA 对 SRAM 或 onchiprom 安全区域大小的划分。TZPC 包含三组通用寄存器 TZPCDECPROT[2:0]，每组通用寄存器可以产生 8 种 TZPCDECPROT 信号，也就是 TZPC 最多可以将 24 个外设设定成安全外设。TZPC 组件还包含一个 TZPCROSIZE 寄存器，该寄存器用来为 TZMA 提供分区大小信息。下图为 TZPC 的使用例子。
 
-![image-20230601110941497](D:\gitlab\UtopianFuture.github.io\image\TZPC.png)
+![TZPC.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/TZPC.png?raw=true)
 
 ##### TZIC 中断控制器组件
 
 在支持 TrustZone 的 SoC 上，ARM 添加了 TrustZone 中断控制器（TrustZone Interrupt Controller，TZIC）。TZIC 的作用是**让处理器处**
 **于非安全态时无法捕获到安全中断**。TZIC 是第一级中断控制器，**所有的中断源都需要接到 TZIC 上**。TZIC 根据配置来判定产生的中断类型，然后决定是将该中断信号先发送到非安全的向量中断控制器（Vector Interrupt Controller，VIC）后以 nIRQ 信号发送到处理器，还是以 nTZICFIQ 信号直接发送到处理器。下图为 TZIC 在 SoC 中的使用示意，
 
-![image-20230531173759587](D:\gitlab\UtopianFuture.github.io\image\TZIC.png)
+![TZIC.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/TZIC.png?raw=true)
 
 ##### Cache 和 MMU 的扩展
 
