@@ -17,6 +17,12 @@ AArch64 状态的异常等级确定了处理器当前运行的特权级别，包
 
 不同的异常等级由系统寄存器表示。
 
+### ARM idle managem	ent
+
+降低功耗的方式通常有两种，电源门控和时钟门控(power-gating、clock-gating)。电源门控是指关闭电源，没有了动态和静态电流。时钟门控是指关闭时钟输入，移除了动态功耗，还存在静态功耗。 ARM core 通常支持几个级别的电源管理，如 Standby、Retention、Power down、Dormant mode、Hotplug。对于某些操作，需要在断电之前和之后保存和恢复状态。保存和恢复所花费的时间，以及所消耗的电力，这些额外的工作可以成为电源管理活动中软件选择适当状态的一个重要因素。
+
+core logic cahce RAM 备注 Standby partional off ON 不复位，cache 不丢失。执行 WFI/WFE 指令进入 standby 模式 Retention partional off ON 不复位，cache 不丢失，比 standby，更省 Dormant (sleep) mode OFF ON 复位，cache 不丢失 Power down OFF OFF 复位，cache 丢失 Hotplug OFF OFF 复位，cache 丢失，显示命令
+
 ### ARM 授权模式
 
 ARM 的 IP 授权模式主要分为三种：
@@ -137,6 +143,35 @@ ATF 主要完成的功能如下：
 #### ATF 与 TEE 的关系
 
 为规范和简化 TrustZone OS 的集成，在 ARMv8 架构中，ARM 引入 ATF 作为底层固件并开放了源码，用于完成系统中 BootLoader、Linux 内核、TEE OS 的加载和启动以及正常世界状态和安全世界状态的切换。ATF 将整个启动过程划分成不同的启动阶段，由 BLx 来表示。例如，TEE OS 的加载是由 ATF 中的 bl32 来完成的，安全世界状态和正常世界状态之间的切换是由 bl31 来完成的。在加载完 TEE OS 之后，TEE OS 需要返回一个处理函数的接口结构体变量给 bl31。当在 REE 侧触发安全监控模式调用指令时，bl31 通过查询该结构体变量就可知需要将安全监控模式调用指令请求发送给 TEE 中的那个接口并完成正常世界状态到安全世界状态的切换。
+
+### ATF 与 TEE 的关系
+
+为规范和简化 TrustZone OS 的集成，在 ARMv8 架构中，ARM 引入 ATF 作为底层固件并开放了源码，用于完成系统中 BootLoader、Linux 内核、TEE OS 的加载和启动以及正常世界状态和安全世界状态的切换。ATF 将整个启动过程划分成不同的启动阶段，由 BLx 来表示。例如，TEE OS 的加载是由 ATF 中的 bl32 来完成的，安全世界状态和正常世界状态之间的切换是由 bl31 来完成的。在加载完 TEE OS 之后，TEE OS 需要返回一个处理函数的接口结构体变量给 bl31。当在 REE 侧触发安全监控模式调用指令时，bl31 通过查询该结构体变量就可知需要将安全监控模式调用指令请求发送给 TEE 中的那个接口并完成正常世界状态到安全世界状态的切换。
+
+进一步说明 ARM 的启动链路与 ATF 中各个组件之间的关系，
+
+- bl1 跳转到 bl2 执行 在 bl1 完成了 bl2 image 加载到 RAM 中的操作，中断向量表设定以及其他 CPU 相关设定之后，在 bl1_main 函数中解析出 bl2 image 的描述信息，获取入口地址，并设定下一个阶段的 cpu 上下文。完成之后，调用 el3_exit 函数实现 bl1 到 bl2 的跳转操作，进入到 bl2 中执行；
+
+- bl2 跳转到 bl31 执行
+
+  bl1 就是 Trusted Boot Firmware，负责系统的安全启动。在 bl2 中将会加载 bl31, bl32, bl33 的 image 到对应权限的 RAM 中，并将该三个 image 的描述信息组成一个链表保存起来，以备 bl31 启动 bl32 和 bl33 使用。
+
+  - 在 ARM64 中，bl31 为 EL3 runtime software，运行时的主要功能是管理 smc 指令和中断的处理，运行在 secure monitor 状态中；
+
+  - bl32 一般为 TEE OS image；
+
+  - bl33 为非安全 image，例如 uboot, linux kernel 等，当前该部分为 bootloader 部分的 image，再由 bootloader 来启动 linux kernel；
+
+​	从 bl2 跳转到 bl31 是通过带入 bl31 的 entry point info 调用 smc 指令触发在 bl1 中设定的 smc 异常来通过 cpu 将权限交给 bl31 并跳转到 bl31 中执行；
+
+- bl31 跳转到 bl32 执行
+
+  在 bl31 中会执行 runtime_service_inti 操作，该函数会调用注册到 EL3 中所有 service 的 init 函数，其中有一个 service 就是为 TEE 服务，该 service 的 init 函数会将 TEE OS 的初始化函数赋值给 bl32_init 变量，当所有的 service 执行完 init 后，在 bl31 中会调用 bl32_init 执行的函数来跳转到 TEE OS 的执行；
+
+- bl31 跳转到 bl33 执行
+    - 当 TEE_OS image 启动完成之后会触发一个 ID 为 TEESMC_OPTEED_RETURN_ENTRY_DONE 的 smc 调用来告知 bl31 TEE OS image 已经完成了初始化，然后将 CPU 的状态恢复到 bl31_init 的位置继续执行；
+    - bl31 通过遍历在 bl2 中记录的 image 链表来找到需要执行的 bl33 的 image。然后通过获取到 bl33 image 的镜像信息，设定下一个阶段的 CPU 上下文，退出 el3 然后进入到 bl33 image 的执行。
+
 
 ### 问题
 

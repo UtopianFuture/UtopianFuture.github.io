@@ -73,3 +73,19 @@ volatile 和 C 语言中的一致，如果汇编指令产生边界效应，需�
 #define likely(x) __builtin_expect(!!(x), 1) //x很可能为真
 #define unlikely(x) __builtin_expect(!!(x), 0) //x很可能为假
 ```
+
+### 6. 条件判断
+
+内核很喜欢将这种条件判断封装成一个函数，应该是使用的地方多，方便吧。
+
+```c
+static bool kvm_pgtable_walk_skip_cmo(const struct kvm_pgtable_visit_ctx *ctx)
+{
+	return unlikely(ctx->flags & KVM_PGTABLE_WALK_SKIP_CMO);
+}
+
+static bool kvm_phys_is_valid(u64 phys)
+{
+	return phys < BIT(id_aa64mmfr0_parange_to_phys_shift(ID_AA64MMFR0_EL1_PARANGE_MAX));
+}
+```

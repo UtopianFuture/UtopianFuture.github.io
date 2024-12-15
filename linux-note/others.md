@@ -1426,4 +1426,359 @@ obj-y 表示把 test.o 文件编译进内核；
 
 ioremap 返回的地址指针带 `__iomem`，`__iomem` 宏用于指定指针必须指向设备地址空间。如果指针指向其他空间，比如用户空间， 或者内核空间，那么 sparse checker 就会报 werror。`__attribute((address_space(2)))`， 是用来修饰一个变量的，而且变量所在的地址空间必须是 2，即 I/O 空间。这里把程序空间分成了 3 个部分，0 表示 normal space，即普通地址空间，对内核代码来说， 就是内核空间地址；1 表示用户地址空间；2 表示是设备地址映射空间，例如硬件设备的寄存器在内核里所映射的地址空间。
 
-但是 Franklin 源码中 sparse checker 没有开，所以用哪个无所谓。
+### [内核中的 LRU 链表](https://zhuanlan.zhihu.com/p/613016541)
+
+新分配的页面不断地加入 ACTIVE LRU 链表中，同时 ACTIVE LRU 链表也不断地取出将页面放入 INACTIVE LRU 链表。链表中的锁（pgdat->lru_lock）竞争力度是非常强烈的，**如果页面转移是一个一个进行的，那对锁的竞争将会十分严重**。
+
+为了改善这种情况，内核加入了一个 PER-CPU 的 LRU 缓存（用 struct pagevec 表示），页面要加入 LRU 链表会**先放入当前 CPU 的 LRU 缓存 中，直到 LRU 缓已经满了（一般为 15 个页面），再获取 lru_lock，一次性将这些页面批量放入 LRU 链表**（这个思路很简单，直观来看，应该很有效）。
+
+### PCP(per cpu page)
+
+由于内存页面属于公共资源，系统中频繁分配释放页面，会因为获得释放锁（zone->lock），CPU 之间的同步操作产生大量消耗。同样为了改善这种情况，内核加入了缓存（struct per_cpu_pages 表示），每个 CPU 都从 Buddy 批发申请少量的页面存放在本地。当系统需要申请内存时，**优先从 PCP 缓存拿**，用完了再从 buddy 批发。**释放时也优先放回该 PCP 缓存**，缓存满了再放回 buddy 系统（之前一直不理解为啥在 buddy 分配单个 page 时，会先从 pcp 里面申请，原来如此）。
+
+### DMA
+
+之前对 dma 的理解仅限于它是直接在内存和外设之间搬数据的设备之类的东西，但是对于其在内核中是怎样工作的一直不理解。
+
+DMA(Direct Memory Access) 像普通的外设一样提供一组控制/状态、数据、中断 Linux 内核里把 DMA 分为 provider 和 client 两种角色。
+
+所谓 provider 就是 DMA 控制器驱动，它直接访问寄存器，提供 DMA 通道，但并不提供用户态可用的系统调用或设备文件，而 client 则申请使用 DMA 通道，结合具体外设实现真正的驱动功能。
+
+很多时候 DMA 并不是独立工作的，而是要和其他与内存之间有数据搬运的外设结合到一起，例如 ADC 使用 DMA 将采集到的电压值写入给定内存，SPI 使用 DMA 不断将内存中的数据搬运到 SPI 数据寄存器从而实现发送。
+
+Linux 内核实现了 dmaengine，封装了 DMA client 驱动开发的统一接口，提出了实现 DMA 控制器驱动的接口要求，三者之间的关系可以看下面这张图：
+
+![dma-structure](D:\gitlab\UtopianFuture.github.io\image\dma-structure.svg)
+
+在 DMA Client 驱动中粗略的讲要做下面的事情：
+
+- 使用 dma_request_channel 申请使用 DMA 通道；
+- 为 DMA 操作申请一致性内存；
+- 构造 struct dma_async_tx_descriptor；
+- 使用 dmaengine_submit 启动传输；
+- 使用 dma_async_is_tx_complete 检查传输状态；
+- dmaengine_terminate_all 终止传输；
+
+### genalloc
+
+内核中有许多内存分配子系统，每一个都是针对特定的需求。然而，有时候内核开发者需要为特定范围的特殊用途的内存实现一个新的分配器；通常这个内存位于某个设备上。该设备的驱动程序的作者当然可以写一个小的分配器来完成工作，但这是让内核充满几十个测试 差劲的分配器的方法。早在 2005 年，Jes Sorensen 从 sym53c8xx_2 驱动中提取了其中的一 个分配器，并将其作为一个通用模块发布，用于创建特设的内存分配器。
+
+- [`gen_pool_create`](https://www.kernel.org/doc/html/v5.18/core-api/genalloc.html#c.gen_pool_create) 用来创建一个内存池，主要是创建 `struct gen_pool` 结构体。分配的粒度由 `min_alloc_order` 设置；它 是一个以 2 为底的对数，表示多少字节对齐。因此，如果 `min_alloc_order` 被传递为3，那么所有的分配将是 8 字节的倍数。
+- [`gen_pool_add`](https://www.kernel.org/doc/html/v5.18/core-api/genalloc.html#c.gen_pool_add) 用来将从地址（在内核的虚拟地址空间）开始的内存的大小字节放入给定的池中，再次使用 nid 作为节点 ID 进行辅助内存分配。`gen_pool_add_virt` 变体将显式物理地址与内存联系起来；只有在内存池被用于 DMA 分配时，这才是必要的。gen_pool 的内存不是从 buddy 中申请的，而是设备自己的内存，采用 genpool 算法管理；
+- [`gen_pool_alloc`](https://www.kernel.org/doc/html/v5.18/core-api/genalloc.html#c.gen_pool_alloc) 将从给定的池中分配 size 个字节。[`gen_pool_dma_alloc`](https://www.kernel.org/doc/html/v5.18/core-api/genalloc.html#c.gen_pool_dma_alloc) 变量分配内存用于 DMA 操作，返回 dma 所指向的空间中的相关物理地址。这只有在内存是用 `gen_pool_add_virt` 添加的情况下才会起作用；
+
+- `gen_pool_alloc_algo` 进行的分配指定了一种用于选择要分配的内存的算法。
+
+### nGnRnE
+
+内核代码中关于页面属性有这样一个配置：nGnRnE，它们有如下含义：
+
+- Gathering 或者non Gathering (G or nG)。这个特性表示对多个memory的访问是否可以合并，如果是nG，表示处理器必须严格按照代码中内存访问来进行，不能把两次访问合并成一次。例如：代码中有2次对同样的一个地址的读访问，那么处理器必须严格进行两次read transaction；
+
+- Re-ordering (R or nR)。这个特性用来表示是否允许处理器对内存访问指令进行重排。nR表示必须严格执行program order；
+
+- Early Write Acknowledgement (E or nE)。PE访问memory是有问有答的（更专业的术语叫做transaction），对于write而言，PE需要write ack操作以便确定完成一个write transaction。为了加快写的速度，系统的中间环节可能会设定一些write buffer。**nE表示写操作的ack必须来自最终的目的地而不是中间的write buffer**；
+
+
+### [Per-CPU](http://www.wowotech.net/kernel_synchronization/per-cpu.html)
+
+**将一个共享 memory 变成 Per-CPU memory 本质上是一个耗费更多 memory 来解决 performance 的方法**。当一个在多个 CPU 之间共享的变量变成每个 CPU 都有属于自己的一个私有的变量的时候，我们就不必考虑来自多个 CPU 上的并发，仅仅考虑本 CPU 上的并发就 OK 了。当然，还有一点要注意，那就是在访问Per-CPU 变量的时候，不能调度，当然更准确的说法是**该 task 不能调度到其他 CPU 上去（调度到其他 CPU 就访问不到对应的 Per-CPU 变量了）**。目前的内核的做法是在访问 Per-CPU 变量的时候 disable preemptive，虽然没有能够完全避免使用锁的机制（disable preemptive 也是一种锁的机制），但毫无疑问，这是一种代价比较小的锁。
+
+### Android 内存指标
+
+- VSS: virtual set size 虚拟耗用内存；
+
+- RSS: resident set size 进程+共享库耗用的物理内存总和；
+
+- PSS: proportional set size 进程+部分共享库（n 个进程使用该共享库，其中一个进程就占 1/n）占用的物理内存总和；
+
+- USS: unique set size 进程独自占用的物理内存；
+
+可以通过 `adb shell procrank` 命令来查看系统当前运行中各个进程各部分内存消耗。一般将 PSS 作为实际使用内存的指标来进行监控，其能比较准确的表示进程占用的实际物理内存。
+
+### might_sleep
+
+`might_sleep` 是内核中一个非常重要的宏定义，用于标记一个代码路径是否可能导致睡眠。如果当前运行的上下文已经是不允许睡眠的，那么这个代码路径将会引发内核的一个 panic，从而防止系统出现死锁或其他严重问题。
+
+### [static inline](https://blog.csdn.net/huanghui167/article/details/41346663)
+
+在头文件中使用 inline 时务必加入 static，否则当 inline 不内联时就和普通函数在头文件中的定义一样，当多个 .c 引用时会出现重定义（使用 #ifdef 能避免这种情况么）。inline 可能不内联是因为 inline 关键字是建议内联不是强制内联，gcc 中 O0 优化时不内联。
+
+那为什么要在头文件中定义函数呢？有些简单的函数，不希望增加一次函数调用的时间，那么可以通过宏来解决，但是接口使用宏不够清晰，那么选择 inline，然后就变成了 static inline。
+
+### 缺页中断
+
+`DEFINE_IDTENTRY_RAW_ERRORCODE(exc_page_fault)`
+
+- `unsigned long address = read_cr2();` 在 X86 架构中，cr2 寄存器保存着访存时引发 #PF 异常的线性地址，cr3 寄存器提供页表的基地址（在 `mm_struct` 中也保存有页表基地址，cr3 寄存器中的值应该是在进程切换时从 `mm_struct` 中写入进去的)；
+- `handle_page_fault`
+ - `do_kern_addr_fault` 内核地址空间引发的中断；
+ - `do_user_addr_fault` 用户地址空间引发的中断；
+
+### dup 系统调用
+
+dup 函数是用来**打开一个新的文件描述符，指向和 oldfd 同一个文件，共享文件偏移量和文件状态。**
+
+dup2 函数，把指定的 newfd 也指向 oldfd 指向的文件，也就是说，执行完 dup 2之后，有 newfd 和 oldfd 同时指向同一个文件，**共享文件偏移量和文件状态**。
+
+### dma_mask
+
+`dma_mask` 表示的是该设备通过 DMA 方式可寻址的物理地址范围（其实从内核注释来看，这个就是表示该设备是否支持 dma），如果没有配置，说明该设备不具备 DMA 寻址能力，在使用 `dma_map_sgtable` 类接口**映射时**会报错；
+
+`coherent_dma_mask` 表示所有设备通过 DMA 方式可寻址的公共的物理地址范围（从功能上该变量和 dma_mask 有所重叠，但这个变量是用在 alloc_coherent 类接口上的），其往往会和 `dev->bus_dma_limit` 结合，得到 dma 寻址的上下限。如果没有配置，那么使用 dma_alloc_coherent 等接口**申请内存时**，会报错。`dma_coherent_ok` 函数能够判断访问的物理地址是否超过了该设备支持的 dma 内存范围；
+
+在使用时不用区分的如此细致，使用 `dma_set_mask_and_coherent` 接口都会进行配置，但是要注意 dma 的寻址范围。
+
+与这两者类似的还有 `dev->dma_coherent`，表示该设备是否自己支持 dma 内存一致性，该变量能够通过 dts 配置，在 设备初始化流程的`arch_setup_dma_ops` 函数进行赋值，如果支持，那后续刷 cache 的接口就不会执行。
+
+### why soc?
+
+ 讲 SoC 前我们先看下传统的 PC 构架，当你去买电脑的时候，首先决定价位的就是 **CPU**，然后就是**显卡、声卡、无线网卡**等各种配件，最后电脑攒出来了，一个机箱个头不小啊，耗电也是响当当的。家里插电还可以用，但是对于手机、汽车等移动设备来说，电池供电再这么搞是不行了，系统对**省电、体积、功能**有更高的要求，需要越来越多的模块，解决方案就是**SoC**。
+
+随着芯片的集成化程度提升，很多模块都做到芯片的内部，比如 isp、dsp、gpu，这样做成**片上系统**（System on Chip，简称 **SoC**），好处是整个系统功能更内聚，板级面积会减少，但是芯片的体积却越来越大。大的芯片面积造成芯片成本和功耗增加，但是整体功耗相对减小，随着芯片制造工艺的提高，可以提高能耗比和降低成本。
+
+### PageFlags
+
+- `PG_locked`：该页已被上锁，通常表明有进程在进行硬盘 I/O 操作。；
+- `PG_writeback`：该页正在被写到磁盘上；
+- `PG_referenced`：该页刚刚被访问过，该标志位与 PG_reclaim 标志位共同被用于匿名与文件备份缓存的页面回收；
+- `PG_uptodate`：该页处在最新状态（up-to-date），当对该页完成一次读取时，该页便变更为 up-to-date 状态，除非发生了磁盘 IO 错误；
+- `PG_dirty`：该页为**脏页**，即该页的内容已被修改，应当尽快将内容写回磁盘上；
+- `PG_lru`：该页处在一个 LRU 链表上；
+- `PG_head`：在内核中有时需要将多个页组成一个 compound pages，而设置该状态时表明该页是 compound pages 的第一个页；
+- `PG_waiters`：有进程在等待该页面；
+- `PG_active`：该页面位于活跃 lru 链表中；
+- `PG_workingset`：该页位于某个进程的 working set（工作集，即一个进程同时使用的内存数量，例如一个进程可能分配了114514MB内存，但是在同一时刻只使用其中的1919MB，这就是工作集）中；
+- `PG_error`：该页在 I/O 过程中出现了差错；
+- `PG_slab`：该页由 slab 使用；
+- `PG_owner_priv_1`：该页由其所有者使用，若是作为 pagecache 页面，则可能是被文件系统使用；
+- `PG_arch_1`：该标志位与体系结构相关联；
+- `PG_reserved`：该页被保留，不能够被 swap out（内核会将不活跃的页交换到磁盘上）；
+- `PG_private` && `PG_private2`：该页拥有私有数据（private 字段）；
+- `PG_mappedtodisk`：该页被映射到硬盘中；
+- `PG_reclaim`：如果页面是 dirty 或者处于 writeback 状态，那么这种页面会放到不活跃链表头，并设置该标记位，表示该页可以被回收；
+- `PG_swapbacked`：swapcache 表示匿名页面已经交换(swap)到磁盘中，而 SwapBacked，表示匿名页面的内容已经从磁盘换回(backed)到内存中；
+- `PG_unevictable`：该页不可被回收（被锁），且会出现在 `LRU_UNEVICTABLE` 链表中；
+- `PG_mlocked`：该页被对应的 vma 上锁（通常是系统调用 mlock）；
+- `PG_uncached`：该页被设置为不可缓存；
+- `PG_hwpoison`：硬件相关的标志位；
+- `PG_young`：
+- `PG_idle`：
+- `PG_arch_2`：64位下的体系结构相关标志位；
+
+内核不会直接使用这些 flags，而是通过 folio_set_xxx 来使用，如 folio_set_locked，folio_test_locked，folio_clear_locked。
+
+### kmap/vmap/ioremap
+
+- vmap 用于相对长时间的映射，可同时映射多个 pages，需要 page 结构作为入参；
+
+- kmap 和 kmap_atomic 则用于相对短时间的映射，只能映射单个 page；
+- ioremap 函数，其功能是将给定的物理地址映射为虚拟地址；
+
+### ATF
+
+ARM 可信任固件(ARM Trustedd Firmware, ATF)是由 ARM 提供的底层固件，该固件统一了 ARM 底层接口标准，如电源状态控制接口(Power Status Control Interface, PCSI)， 安全启动需求(Trusted Board Boot Requirements, TBBR)，安全世界状态(SWS)和正常世界状态(NWS)切换的安全监控模式调用(secure monitor call, smc)操作等。ATF 旨在将 ARM 底层的操作统一使代码能够重用和便于移植。其提供了安全世界的参考实现软件，https://github.com/ARM-software/arm-trusted-firmware.
+
+### [AVF](https://source.android.com/docs/core/virtualization?hl=zh-cn)
+
+android virtualization framework，在 KVM 的基础上开发，不过它的安全性比 KVM 要更高，其实现了一个 pKVM(protected Kernel-based Vitral Machine)，运行在 EL2，kernel 运行在 EL1，加载过程如下图所示，![pKVM 启动过程](https://source.android.com/static/docs/core/virtualization/images/pkvm_boot_procedure.png?hl=zh-cn)
+
+- 引导加载程序以 EL2 进入通用内核；
+
+- 通用内核检测到它在以 EL2 运行，并将自身权限下调至 EL1，而 pKVM 及其模块会继续以 EL2 运行。此外，此时还会加载 pKVM 供应商模块；
+
+- 通用内核会继续正常启动，加载所有必要的设备驱动程序，直至到达用户空间为止。此时，pKVM 已就位并处理第 2 阶段页面表格。
+
+启动过程会信任引导加载程序，以便仅在前期启动期间保持内核映像的完整性。在内核调低权限后，Hypervisor 将不再认为内核可信，并将负责进行自我保护，**即使内核遭到入侵也不例外**。也就是说，host kernel 被攻击也不会影响其他的虚拟机。
+
+### [memset](https://blog.csdn.net/weixin_42135087/article/details/133560137)
+
+memset 的作用是传入一个虚拟地址，将虚拟地址对应的内存中的数据清理掉，写成指定的数据。但是这样会有一个问题，如果要清理的内存太大，会导致 cache 浪费，将 cache 全部占满，但又是无效数据。为了解决这一问题，ARM 给出了一个解决方案，write streaming mode，也就是在识别到 ACPU 写入一系列完整的 cacheline 时，就会进入 write streaming mode，根据写入的数据大小，将数据直接写入到 L2, L3, DDR 中，这样就可以避免污染 cache。
+
+但从软件架构上来说，如果有非 ACPU 侧的 master 访问该块内存，还是要**在访问之前进行 clean cache 操作**，确保数据全部写入到 DDR 中，因为 write streaming mode 很难保证每个字节都是直接写入到 L2, L3, DDR 中。
+
+### SVC/HVC/SMC
+
+- The Supervisor Call (SVC) instruction enables a user program at EL0 to request an OS service at EL1;
+- The Hypervisor Call (HVC) instruction, available if the Virtualization Extensions are implemented, enables the OS to request hypervisor services at EL2;
+- The Secure Monitor Call (SMC) instruction, available if the Security Extensions are implemented, enables the Normal world to request Secure world services from firmware at EL3;
+
+When the PE is executing at EL0, it cannot call directly to a hypervisor at EL2 or secure monitor at EL3, as this is only possible from EL1 and higher. The application at EL0 must use an SVC call to the kernel, and have the kernel perform the action to call into higher Exception levels.
+
+![arm-exception](D:\gitlab\UtopianFuture.github.io\image\arm-exception.jpg)
+
+### get_user_pages
+
+该函数通过查询页表找到的 pte 对应的 page 结构体，但是若是页表或者物理页尚未创建成功，那么 `__get_user_pages` 会通过 `faultin_page` 模拟一个缺页中断，完成相关物理页及页表建立，然后再执行 pin 的动作。
+
+### SVE
+
+随着 Neon 架构扩展（其指令集具有固定的 128 位向量长度）的开发，Arm 设计了**可扩展向量扩展 (SVE)** 作为 AArch64 的下一代 SIMD 扩展。SVE 引入可扩展概念， 允许灵活的向量长度实现，使其能够在现在或将来的多应用场景下实现伸缩，允许 CPU 设计者自由选择向量的长度来实现。矢量长度可以从最小 128 位到最大 2048 位不等，以 128 位为增量。**SVE 的设计保证同样的应用程序可以在支持 SVE 的不同实现上执行，而无需重新编译代码。** SVE 提高了架构对高性能计算 (HPC) 和机器学习 (ML) 应用程序的适用性，这些应用程序需要大量数据处理。
+
+### spectre 漏洞
+
+由于 cpu 具有多级流水线和分支预测功能，在分支预测时可能会将该分支对应的数据提前加载到 cache 中。一旦分支预测失败，则由于另一分支的数据未被加载到 cache，因此其访问速度和预测成功时相比会慢的多。因此攻击者**可能利用这种执行速度的差异来判断分支预测是否成功**，而失败分支的数据依然还位于 cache 中。因此，攻击者最终可能有机会从 cache 中获取该数据，从而造成数据泄露。这就是 spectre 漏洞，**其本质是利用侧信道方式攻击 cache 中的数据**。vector slots 中不同 slot 中的 vector 就是根据硬件能力，用于防止不同等级 spectre 漏洞的向量表集合。
+
+### [break-before-make](ARM架构下如何使用break-before-make规则安全地动态更改MMU 页表条目（ translation table entries）_mmu break before-CSDN博客)
+
+我们在使用 ARM MMU 一般会遵循如下流程：
+
+- 配置 TTBR、TCR 和 MAIR 等 MMU 配置寄存器;
+- 配置页表 pagetable，VA 和 PA 的映射关系，地址空间属性等等；
+- 使能MMU和cache；
+
+即先配置好 pagetable 再使能 MMU 和 cache，在 MMU 和 cache 使能之后，如果想要在程序运行时，动态改变 pagetable 或者称为 translation table，需要遵循一定的规则（break-before-make）才能保证其安全性和可靠性。它有如下步骤：
+
+- 先将页表中老旧的页表条目（old translation table entry）**用无效的条目来替代**，也就是先将该转换关系给禁止；
+- 执行一个 DSB 内存屏障指令，以确保该替换操作生效；
+- 针对该页表条目执行一个广播的 TLB invalidate 指令，将 TLB 中缓存的旧页表条目信息删除；
+- 执行一个 DSB 内存屏障指令，以确保 TLB invalidate 指令操作生效；
+- 然后将新的页表条目写入；
+- 执行一个 DSB 内存屏障指令，以确保新的页表条目更新成功；
+
+### [simulator/emulator](仿真器（emulator）和模拟器（simulator）的区别_simulator emulator-CSDN博客)
+
+模拟器（simulator）是**用于分析研究目标系统本身，模拟器系统本身要跟目标系统保持一致**。例如飞行模拟器对于用户来讲其本身要跟真正的飞机一致；再比如gem5模拟器，其本身要跟CPU所有内部行为一致（包括内部运行原理都要一致）。好的模拟器本身也可以仿真其目标系统，但不是所有模拟器都有这个特性。
+
+仿真器（emulator）的目的是作为**目标系统的替代品，可以完全替代目标系统，完成其对外的功能**，即**仿真器系统只需要保证呈现给外部的行为跟目标系统一致（不需要保证内部运行原理一致）**。使用仿真器的目的是模拟目标系统呈现出的运行环境，仿真器保证的是完成目标系统相同的行为，不在乎其内部实现原理，再例如EMU8086仿真器，可以在另一台非8086电脑上仿真8086微处理器的行为。即使再好的仿真器也不能作为模拟器用于研究目标系统内部运行原理。
+
+### 芯片设计
+
+芯片设计流程通常可分为：数字 IC 设计流程和模拟 IC 设计流程。
+
+**数字** IC 设计流程：**芯片定义** **→** **逻辑设计** **→** **逻辑综合** **→** **物理设计** **→** **物理验证** **→** **版图交付。**
+
+**芯片定义(Specification)**是指根据需求制定芯片的功能和性能指标，完成设计规格文档，HLD；
+
+**逻辑设计(Logic Design)**是指基于硬件描述语言在 RTL(Register-Transfer Level)级（买的 IP 就是这个）实现逻辑设计，并通过逻辑验证或者形式验证等验证功能正确；
+
+**逻辑综合(Logic Synthesis)**是指将 RTL 转换成特定目标的**门级网表**（这个就是用 EDA 转化的），并优化网表延时、面积和功耗；
+
+**物理设计(Physical Design)**是指将门级网表根据约束布局、布线并最终生成版图的过程，其中又包含：**数据导入 →** **布局规划 →** **单元布局 →** **时钟树综合 →** **布线**。
+
+- **数据导入**是指导入综合后的网表和时序约束的脚本文件，以及代工厂提供的库文件；
+
+- **布局规划**是指在芯片上规划输入**/**输出单元，宏单元及其他主要模块位置的过程；
+
+- **单元布局**是根据网表和时序约束自动放置标准单元的过程；
+
+- **时钟树综合**是指插入时钟缓冲器，生成时钟网络，最小化时钟延迟和偏差的过程；
+
+- **布线**是指在满足布线层数限制，线宽、线间距等约束条件下，根据电路关系自动连接各个单元的过程；
+
+**物理验证(Physical Verificaiton)**通常包括版图设计规则检查（DRC），版图原理图一致性检查（LVS）和电气规则检查（ERC）等；
+
+**版图交付(Tape Out)**是在所有检查和验证都正确无误的前提下，传递版图文件给代工厂生成掩膜图形，并生产芯片；
+
+**模拟** IC 设计流程：**芯片定义** **→** **电路设计** **→** **版图设计** **→** **版图验证** **→** **版图交付。**
+
+其中芯片定义和版图交付和数字电路相同，模拟IC在电路设计、版图设计、版图验证和数字电路有所不同。
+
+模拟**电路设计**是指根据系统需求，设计晶体管级的模拟电路结构，并采用SPICE等仿真工具验证电路的功能和性能。
+
+模拟**版图设计**是按照设计规则，绘制电路图对应的版图几何图形，并仿真版图的功能和性能。
+
+模拟**版图验证**是验证版图的工艺规则、电气规则以及版图电路图一致性检查等。
+
+这里，做一个简单的总结：
+
+**芯片设计：就是在EDA工具的支持下，通过购买 IP 授权自主研发（合作开发）的 IP，并遵循严格的集成电路设计仿真验证流程，完成芯片设计的整个过程。在这个过程中，EDA、IP、严格的设计流程三者缺一不可。**
+
+### [GUP](http://www.biscuitos.cn/blog/GUP/)
+
+相比用户空间的缺页机制，**Get User Pages(GUP) 机制**则提供了另外一种思路，其**允许内核线程访问未映射物理内存的用户空间虚拟内存**，然后通过提前缺页(PreFault)的方式**分配物理内存**，并建立页表将用户虚拟内存映射到物理内存上，那么用户进程可以直接访问虚拟内存而不会触发缺页，除此之外， GUP 机制还支持以下功能：
+
+- **PreFault**：内核线程可以让未映射物理内存的用户空间虚拟内存提前发生缺页(PreFault)，然后内核线程获得对应的物理内存，并采用临时映射向物理页写入指定数据，那么用户进程可以从虚拟内存里读到预设的数据；
+- **PreAlloc**：用户进程采用 SYS_MMAP 系统调用分配虚拟内存时，可以借助 GUP 机制在分配虚拟内存的同时也分配物理内存，并建立好页表映射，这样用户进程可以直接使用分配好的虚拟内存；
+- **锁定页面**：在进行某些操作时(如进行直接内存访问 DMA 操作)，需要页面保持不动，不被交换出去。GUP 提供的页面锁定确保在操作进行期间，页面保留在物理内存中；
+- **检测进程虚拟内存**：内核线程可以通过 GUP 机制访问指定用户进程的虚拟内存对应的物理页，那么内核线程可以使用物理页内容，以此影响或检测应用程序的行为；
+
+```c
+FOLL_WRITE: 检查页面表条目是否可写, 通常用于确保页面的写操作不会因写保护而失败
+FOLL_TOUCH: 标记页面为已访问, 这可以更新页面的访问时间，用于页面老化和替换算法
+FOLL_DUMP: 通常用于进程的核心转储和错误报告，处理内存区域中的空洞
+FOLL_TRIED: 表示操作重试，意味着之前的尝试已经开始了 I/O
+FOLL_REMOTE: 表示在非当前任务 /mm 上操作，通常用于远程任务内存操作
+FOLL_ANON: 在操作期间更倾向于使用匿名内存(即，不由文件支持的内存)
+FOLL_HWPOISON: 检查页面是否已被硬件标记为坏(由于错误)
+FOLL_MIGRATION: 等待页面替换其迁移条目。这在内核的内存迁移上下文中使用
+FOLL_FORCE: 允许无视当前权限读写页面。这是一个强大的选项，应谨慎使用，因为它绕过了标准内存保护机制
+FOLL_NOWAIT: 如果需要(例如，对于换入页面的交换)，启动所需的磁盘I/O，但不等待I/O完成。这可以在某些场景中提高响应性
+FOLL_NOFAULT: 在访问页面时不引起页面错误。这在某些页面错误代价高昂或不希望发生错误的场景中有用
+FOLL_NUMA: 强制 NUMA（非统一内存访问）提示，可以影响多节点系统上的页面放置决策，优化内存访问模式
+FOLL_GET: 通过 get_page 增加页面的引用计数, 这对确保页面在使用时保留在内存中至关重要
+FOLL_LONGTERM: 表明映射的生命周期是无限的，这可能会影响内核如何处理这些页面，比如关于交换或回收
+FOLL_SPLIT_PMD: 在返回之前拆分巨大的页面表映射(PMDs), 这与处理巨大页面或透明巨大页面有关
+FOLL_PIN: 表明页面必须通过 unpin_user_page() 来释放，通常与页面固定函数一起使用，确保它们在显式取消固定之前保持在内存中
+FOLL_FAST_ONLY: 与快速用户页面查找功能一起使用，防止在快速路径失败时回退到更慢的方法
+```
+
+### ptrace 系统调用
+
+该系统调用是用于进程跟踪的，它提供了**父进程可以观察和控制其子进程执行的能力**，并允许父进程检查和替换子进程的内核镜像(包括寄存器)的值。其基本原理是：当使用了 ptrace 跟踪后，所有发送给被跟踪的子进程的信号(除了 SIGKILL)，**都会被转发给父进程，而子进程则会被阻塞**，这时子进程的状态就会被系统标注为 `TASK_TRACED`。而父进程收到信号后，就可以对停止下来的子进程进行检查和修改，然后让子进程继续运行。ptrace 是如此的强大，以至于有很多大家所常用的工具都基于 ptrace 来实现，如 strace 和 gdb。
+
+### [ftrace](https://www.cnblogs.com/-Donge/p/17981595)
+
+ftrace 是众多 trace 工具中的一种，
+
+![trace-tools](D:\gitlab\UtopianFuture.github.io\image\trace-tools.jpg)
+
+
+
+### CPU 投机访问
+
+所谓投机访问跟 prefetch 类似的，CPU 根据之前执行的 pattern 预测下一次可能会访问的地址，向 MMU 发起访问，由 MMU 读取页表找到对应的 pte，如果该块内存是 device memroy（stage1/stage2 任意一个），那么 MMU 就不会返回物理地址，预取失败，否则返回物理地址，CPU 会去读取该块内存放到 cache 中。CPU 执行时感知不到内核在执行什么进程，它就是根据自己定义好的预取规则执行操作。
+
+另外还有个问题，在使能了虚拟化的机器上，投机访问是怎样进行的？会去 hypervisor 使用的页表中投机么？会的。
+
+什么时候 CPU **不会**进行投机访问？
+
+### 虚拟总线
+
+相对于 USB、PCI、I2C、SPI 等物理总线来说，**platform 总线是一种虚拟、抽象出来的总线**，实际中并不存在这样的总线。
+
+那为什么需要 platform 总线呢？
+
+因为对于 usb 设备、i2c 设备、pci 设备、spi 设备等等，他们与 cpu 的通信都是直接挂在相应的总线下面与我们的 cpu 进行数据交互的，但是在嵌入式系统中，并不是所有的设备都能够归属于这些常见的总线。在嵌入式系统里面，SoC 系统中集成的独立的外设控制器、挂接在 SoC 内存空间的外设（IOMMU/SMMU 等）却不依附与此类总线。所以 Linux 驱动模型为了保持完整性，将这些设备挂在一条虚拟的总线上（platform总线），而不至于使得有些设备挂在总线上，另一些设备没有挂在总线上。
+
+### pkill -9 之后发生了什么
+
+程序实际上从未接收到 SIGKILL 信号，因为 SIGKILL 完全由操作系统/内核处理。
+
+当发送特定进程的 SIGKILL 时，内核的调度程序立即停止给该进程更多运行用户空间代码的 CPU 时间。如果在调度程序做出此决定时，进程在其他 CPU /核心上有执行用户空间代码的线程，那么这些线程也将被停止。(在单核系统中，这过去要简单得多：如果系统中唯一的 CPU 核心运行调度程序，那么根据定义，它就不是同时运行进程了！)
+
+如果进程/线程在执行 SIGKILL 时正在执行内核代码(例如系统调用，或与内存映射文件相关联的 I/O 操作)，则会变得更加棘手：只有一些系统调用是可中断的，因此内核在内部将进程标记为处于特殊的“死亡”状态，直到系统调用或 I/O 操作被解析为止。解决这些问题的 CPU 时间将和往常一样安排。可中断系统调用或 I/O 操作将检查调用它们的进程是否处于任何适当的停止点，并且在这种情况下会提前退出。不间断操作将运行到完成，并在返回到用户空间代码之前检查是否处于“死亡”状态。
+
+一旦解析了进程内的内核例程，进程状态就从“运行”变为“死亡”，内核开始清理它，就像程序正常退出时一样。清理完成后，将分配大于 -128 的结果代码(以指示进程被信号杀死；[关于混乱的细节，请看这个答案](https://cloud.tencent.com/developer/tools/blog-entry?target=https%3A%2F%2Funix.stackexchange.com%2Fa%2F99134%2F258991&objectId=116302817&objectType=7))，进程将转换为“僵尸”状态。将**使用 SIGCHLD 信号通知终止进程的父进程**。
+
+所以，进程本身永远不会有机会实际处理它已经接收到 SIGKILL 的信息。
+
+### [WFE/WFI](http://www.wowotech.net/armv8a_arch/wfe_wfi.html)
+
+这两条指令都是让 CPU 进入 low-power standby state，即保持供电，关闭 clock。
+
+不同点在于，对 WFI 来说，执行 WFI 指令后，ARM core 会立即进入 low-power standby state，直到有 WFI Wakeup events 发生。
+
+而 WFE 则稍微不同，执行 WFE 指令后，根据 Event Register（一个单 bit 的寄存器，每个 PE 一个）的状态，有两种情况：如果 Event Register 为 1，该指令会把它清零，然后执行完成（不会 standby）；如果 Event Register 为 0，和 WFI 类似，进入 low-power standby state，直到有 WFE Wakeup events 发生。
+
+### near/far-atomics
+
+Atomic operations performed internally by a fully coherent Request Node (RN-F) are called near-atomics. Atomic operations that are performed externally to the Requester are called far-atomics.
+
+### TTBR
+
+TTBR 是 Translation Table Base Register 的意思，即 ARM 中的基址寄存器。
+
+- TTBR0_EL1/TTBR1_EL1：EL1 OS 使用的用户态转换页表基地址和内核态转换页表基地址；
+
+- TTBR0_EL2/TTBR1_EL2：EL2 Hypervisor 使用的转换页表基地址；
+
+- TTBR0_EL3：EL3 仅有 Stage 1 转换页表基地址；
+
+- VTTBR_EL2：虚拟化场景下页表转换 Stage 2 基地址。
+
+### THIS_MODULE
+
+### ARM NEON 指令
+
+### 软核、硬核和固核
