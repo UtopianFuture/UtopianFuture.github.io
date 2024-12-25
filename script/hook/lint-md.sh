@@ -16,7 +16,7 @@ mapfile -t res < <(echo "$res_string")
 echo "Lint-md warning : ${res[1]}"
 echo "Lint-md error : ${res[2]}"
 
-if [ "${res[1]}" != "" ] || [ "${res[2]}" != "" ]; then
+if [ "${res[1]}" != 0 ] || [ "${res[2]}" != 0 ]; then
     echo "Try to fix problem"
     lint-md -f ./*.md doc/ -c .lintmdrc.json
     echo "Please recheck Chinese document"

@@ -1121,11 +1121,311 @@ static MemoryRegionSection *address_space_lookup_region(AddressSpaceDispatch *d,
 
 ### KVM 内存虚拟化
 
-首先明确虚拟机中 mmu 的功能，当虚拟机内部进行内存访问的是后，mmu 会根据 guest 的页表将 GVA 转化为 GPA，然后根据 EPT 页表将 GPA 转换成 HPA，这就是所谓的两级地址转换，即代码中出现的 tdp(two dimission page)。在将 GVA 转化为 GPA 的过程中如果发生缺页异常，这个异常会由 guest 处理，不需要 vm exit，即 guest 的缺页异常处理函数负责分配一个客户物理页面，将该页面物理地址回填，建立客户页表结构。而在 GPA 转换成 HPA 过程中发生缺页异常，则会以 `EXIT_REASON_EPT_VIOLATION` 退出到 host，然后使用 `[EXIT_REASON_EPT_VIOLATION] = handle_ept_violation,` 进行处理。映射建立完后中断返回，切换到非根模式继续运行。
+首先明确虚拟机中 mmu 的功能，当虚拟机内部进行内存访问时，mmu 会根据 guest 的页表将 GVA 转化为 GPA（同架构的情况下，guestos 也是通过 mmu 来进行地址转换么？），然后根据 EPT 页表将 GPA 转换成 HPA，这就是所谓的两级地址转换，即代码中出现的 tdp(two dimission page)。在将 GVA 转化为 GPA 的过程中如果发生缺页异常，这个异常会由 guest 处理，不需要 vm exit，即 guest 的缺页异常处理函数负责分配一个客户物理页面，将该页面物理地址回填，建立客户页表结构。而在 GPA 转换成 HPA 过程中发生缺页异常，则会**以 `EXIT_REASON_EPT_VIOLATION` 退出到 host，然后使用 `[EXIT_REASON_EPT_VIOLATION] = handle_ept_violation,` 进行处理**。映射建立完后中断返回，切换到非根模式继续运行。
+
+X86 是增加了 EPT 来处理 GPA -> HPA 的地址转换，而 ARM 是直接在 MMU/SMMU 中区分 stage1/stage2 映射，stage1 映射由虚拟机建立，进行 GVA -> GPA 的地址转换，stage2 映射由 hypervisor 建立，进行 IPA(HVA) -> HPA 的地址转换（GPA -> HVA 的转换由 hypervisor 完成 `gfn_to_hva_memslot_prot`），这个过程和 X86 一样的，ARM64 中，hypervisor 就是 pKVM。
 
 这个大概的流程，我们需要搞懂 mmu 是怎样初始化、使用、处理缺页的，ept 是怎样初始化、使用、处理缺页的。下面就按照这个步骤进行分析。
 
-#### 虚拟机 MMU 初始化
+#### ARM64 虚拟机 MMU 初始化
+
+这些初始化操作都是在 el1 执行的，
+
+```c
+| kvm_arm_init // module_init，kvm 是一个 ko，使用这种方式加载
+|	-> is_hyp_mode_available // 判断当前 kvm 是否支持 pkvm
+|	-> kvm_get_mode // 当前内核是否支持 kvm
+|	-> kvm_sys_reg_table_init // 没看懂为啥要初始化这些值
+|	-> is_kernel_in_hyp_mode // 判断内核是否处于 el2
+|	-> kvm_set_ipa_limit // 架构支持的 ipa 位数，会打印出来
+|	-> kvm_arm_init_sve // 可扩展向量扩展，SIMD 指令集的扩展，暂不需要关注
+|	// vmid 为 8/16 位，由 ID_AA64MMFR1_EL1_VMIDBits_16 寄存器控制
+|	// 用 bitmap 来管理 vmid，使用 new_vmid 来获取新的 vmid
+|	-> kvm_arm_vmid_alloc_init
+|	-> init_hyp_mode // 为什么只有在 el2 下才需要执行该函数
+|		-> kvm_mmu_init // 主要是初始化 hypervisor 的页表
+|			-> kvm_pgtable_hyp_init // 申请页表
+|			-> kvm_map_idmap_text // 将 hypervisor 镜像的地址信息做好 identity 映射
+|				-> __create_hyp_mappings // 传入的 start 和 phys 是一样的，这就是 identity 映射
+|		-> create_hyp_mappings
+|		-> init_pkvm_host_fp_state
+|		-> kvm_hyp_init_symbols
+|		-> kvm_hyp_init_protection
+|			-> do_pkvm_init
+|				-> __pkvm_init // 这里可以深入分析
+|					-> divide_memory_pool
+|					-> recreate_hyp_mappings
+|					-> hyp_alloc_init
+|					-> update_nvhe_init_params
+|					-> __pkvm_init_switch_pgd
+|						-> __pkvm_init_finalise // 配置 stage2 页表和页表操作函数
+|							-> kvm_host_prepare_stage2
+|							-> __host_enter // 在 hyp/nvhe/host.S 中，前面还有一系列操作
+|	-> kvm_init_vector_slots // 防止 spectre 漏洞
+|	-> init_subsystems
+|		-> cpu_hyp_init
+|		-> hyp_cpu_pm_init
+|		-> kvm_vgic_hyp_init // 中断虚拟化相关，暂不分析
+|		-> kvm_timer_hyp_init // 时钟虚拟化，暂不分析
+|	// 目前 ARM64 KVM 有两种模式，
+|	// VHE，kvm + kernel 作为 hypervisor，运行在 EL2，kernel 能访问所有的物理地址
+|	// nVHE，hypervisor 运行在 el2，kernel 运行在 el1
+|	// VHE 和 nVHE 都是 ARM 为支持虚拟化开发的硬件特性
+| 	// pKVM 作为 hypervisor 运行在 el2，android 运行在 el1，pKVM 是在 nVHE 的基础上开发的 hypervisor
+|	-> is_protected_kvm_enabled
+|	-> kvm_init
+|		-> kvm_irqfd_init
+|		-> kvm_vfio_ops_init
+|	-> finalize_init_hyp_mode
+```
+
+##### 关键函数 init_hyp_mode
+
+该函数只有在 nVHE 模式下才会执行，这里的种种操作都是初始化执行在 el2 的 hypervisor（就叫 hypervisor？有啥名字么）。这里面涉及到很多架构相关的操作，还不熟悉。
+
+```c
+/* Inits Hyp-mode on all online CPUs */
+static int __init init_hyp_mode(void)
+{
+	u32 hyp_va_bits;
+	int cpu;
+	int err = -ENOMEM;
+
+	/*
+	 * The protected Hyp-mode cannot be initialized if the memory pool
+	 * allocation has failed.
+	 */
+    // hyp_mem_base 是全局变量，在 bootmem_init -> kvm_hyp_reserve 从 memblock 中申请内存
+    // 从这里就可以一窥 pkvm 的执行流程
+    // 系统先是在 el1 执行各种初始化操作，然后通过 hvc 进入到 el2
+    // 后面会给出 pkvm 的详细执行流程
+	if (is_protected_kvm_enabled() && !hyp_mem_base)
+		goto out_err;
+
+	/*
+	 * Allocate Hyp PGD and setup Hyp identity mapping
+	 */
+	err = kvm_mmu_init(&hyp_va_bits);
+	if (err)
+		goto out_err;
+
+	/*
+	 * Allocate stack pages for Hypervisor-mode
+	 */
+    // 给每个 CPU 分配栈内存，这些内存是用来干嘛的
+	for_each_possible_cpu(cpu) {
+		unsigned long stack_page;
+
+		stack_page = __get_free_page(GFP_KERNEL);
+		if (!stack_page) {
+			err = -ENOMEM;
+			goto out_err;
+		}
+
+		per_cpu(kvm_arm_hyp_stack_page, cpu) = stack_page;
+	}
+
+	/*
+	 * Allocate and initialize pages for Hypervisor-mode percpu regions.
+	 */
+    // 这块内存也不知道干嘛用的
+	for_each_possible_cpu(cpu) {
+		struct page *page;
+		void *page_addr;
+
+		page = alloc_pages(GFP_KERNEL, nvhe_percpu_order());
+		if (!page) {
+			err = -ENOMEM;
+			goto out_err;
+		}
+
+		page_addr = page_address(page);
+		memcpy(page_addr, CHOOSE_NVHE_SYM(__per_cpu_start), nvhe_percpu_size());
+		kvm_nvhe_sym(kvm_arm_hyp_percpu_base)[cpu] = (unsigned long)page_addr;
+	}
+
+	... // 建立 hypervisor 代码段，数据段等映射
+
+	/*
+	 * Map the Hyp stack pages
+	 */
+    // 这些映射也没搞明白
+	for_each_possible_cpu(cpu) {
+		struct kvm_nvhe_init_params *params = per_cpu_ptr_nvhe_sym(kvm_init_params, cpu);
+		char *stack_page = (char *)per_cpu(kvm_arm_hyp_stack_page, cpu);
+
+		err = create_hyp_stack(__pa(stack_page), &params->stack_hyp_va);
+		if (err) {
+			kvm_err("Cannot map hyp stack\n");
+			goto out_err;
+		}
+
+		/*
+		 * Save the stack PA in nvhe_init_params. This will be needed
+		 * to recreate the stack mapping in protected nVHE mode.
+		 * __hyp_pa() won't do the right thing there, since the stack
+		 * has been mapped in the flexible private VA space.
+		 */
+		params->stack_pa = __pa(stack_page);
+	}
+
+	for_each_possible_cpu(cpu) {
+		char *percpu_begin = (char *)kvm_nvhe_sym(kvm_arm_hyp_percpu_base)[cpu];
+		char *percpu_end = percpu_begin + nvhe_percpu_size();
+
+		/* Map Hyp percpu pages */
+		err = create_hyp_mappings(percpu_begin, percpu_end, PAGE_HYP);
+		if (err) {
+			kvm_err("Cannot map hyp percpu region\n");
+			goto out_err;
+		}
+
+		/* Prepare the CPU initialization parameters */
+		cpu_prepare_hyp_mode(cpu, hyp_va_bits);
+	}
+
+	err = init_pkvm_host_fp_state();
+	if (err)
+		goto out_err;
+
+	kvm_hyp_init_symbols();
+
+	hyp_trace_init_events();
+
+	if (is_protected_kvm_enabled()) {
+		if (IS_ENABLED(CONFIG_ARM64_PTR_AUTH_KERNEL) &&
+		 cpus_have_const_cap(ARM64_HAS_ADDRESS_AUTH))
+			pkvm_hyp_init_ptrauth();
+
+		init_cpu_logical_map();
+
+		if (!init_psci_relay()) {
+			err = -ENODEV;
+			goto out_err;
+		}
+
+		err = kvm_hyp_init_protection(hyp_va_bits);
+		if (err) {
+			kvm_err("Failed to init hyp memory protection\n");
+			goto out_err;
+		}
+	}
+
+	return 0;
+
+out_err:
+	teardown_hyp_mode();
+	kvm_err("error initializing Hyp mode: %d\n", err);
+	return err;
+}
+```
+
+##### 关键函数 kvm_mmu_init
+
+前面的初始化流程只是设置了一些系统寄存器，而并没有为 hypervisor 创建页表和开启 mmu。本函数的主要目的就是为 hypervisor 分配页表 pgd，并且基于该pgd 为 hypervisor 的 identity 段建立 identity 映射。与内核初始化类似，在内核初始化时会将开启 mmu 附近的代码放在一个叫做 identity 的段中，在建立页表时该段将会映射到与**物理地址相同的虚拟地址**上，从而保证 mmu 使能时能平滑切换。hypervisor 映射也类似，其也包含一个 mmu 切换相关的 identity 段，并且也需要建立虚拟地址与物理地址相等的映射关系。
+
+```c
+int __init kvm_mmu_init(u32 *hyp_va_bits)
+{
+	int err;
+	u32 idmap_bits;
+	u32 kernel_bits;
+
+    // arch/arm64/kernel/head.S 中执行从此地址开始执行
+    // idmap 是什么意思
+    // 恒等映射（identity mapping）：开启 MMU 的代码是恒等映射，
+    // 即物理地址等于虚拟地址。由于芯片是多级流水，
+    // 多条指令会被预取到流水线中，开启 MMU 后，预取的指令会以虚拟地址来访问
+	hyp_idmap_start = __pa_symbol(__hyp_idmap_text_start);
+	hyp_idmap_start = ALIGN_DOWN(hyp_idmap_start, PAGE_SIZE);
+	hyp_idmap_end = __pa_symbol(__hyp_idmap_text_end);
+	hyp_idmap_end = ALIGN(hyp_idmap_end, PAGE_SIZE);
+	hyp_idmap_vector = __pa_symbol(__kvm_hyp_init);
+
+	/*
+	 * We rely on the linker script to ensure at build time that the HYP
+	 * init code does not cross a page boundary.
+	 */
+	BUG_ON((hyp_idmap_start ^ (hyp_idmap_end - 1)) & PAGE_MASK);
+
+	/*
+	 * The ID map may be configured to use an extended virtual address
+	 * range. This is only the case if system RAM is out of range for the
+	 * currently configured page size and VA_BITS_MIN, in which case we will
+	 * also need the extended virtual range for the HYP ID map, or we won't
+	 * be able to enable the EL2 MMU.
+	 *
+	 * However, in some cases the ID map may be configured for fewer than
+	 * the number of VA bits used by the regular kernel stage 1. This
+	 * happens when VA_BITS=52 and the kernel image is placed in PA space
+	 * below 48 bits.
+	 *
+	 * At EL2, there is only one TTBR register, and we can't switch between
+	 * translation tables *and* update TCR_EL2.T0SZ at the same time. Bottom
+	 * line: we need to use the extended range with *both* our translation
+	 * tables.
+	 *
+	 * So use the maximum of the idmap VA bits and the regular kernel stage
+	 * 1 VA bits to assure that the hypervisor can both ID map its code page
+	 * and map any kernel memory.
+	 */
+	idmap_bits = 64 - ((idmap_t0sz & TCR_T0SZ_MASK) >> TCR_T0SZ_OFFSET);
+	kernel_bits = vabits_actual;
+	*hyp_va_bits = max(idmap_bits, kernel_bits);
+
+	kvm_debug("Using %u-bit virtual addresses at EL2\n", *hyp_va_bits);
+	kvm_debug("IDMAP page: %lx\n", hyp_idmap_start);
+	kvm_debug("HYP VA range: %lx:%lx\n",
+		 kern_hyp_va(PAGE_OFFSET),
+		 kern_hyp_va((unsigned long)high_memory - 1));
+
+	if (hyp_idmap_start >= kern_hyp_va(PAGE_OFFSET) &&
+	 hyp_idmap_start < kern_hyp_va((unsigned long)high_memory - 1) &&
+	 hyp_idmap_start != (unsigned long)__hyp_idmap_text_start) {
+		/*
+		 * The idmap page is intersecting with the VA space,
+		 * it is not safe to continue further.
+		 */
+		kvm_err("IDMAP intersecting with HYP VA, unable to continue\n");
+		err = -EINVAL;
+		goto out;
+	}
+
+	hyp_pgtable = kzalloc(sizeof(*hyp_pgtable), GFP_KERNEL);
+	if (!hyp_pgtable) {
+		kvm_err("Hyp mode page-table not allocated\n");
+		err = -ENOMEM;
+		goto out;
+	}
+
+	err = kvm_pgtable_hyp_init(hyp_pgtable, *hyp_va_bits, &kvm_hyp_mm_ops);
+	if (err)
+		goto out_free_pgtable;
+
+    // 将 hyp_idmap_start 和 hyp_idmap_end 填入 hyp_pgtable 中
+    // 映射建立过程还是很复杂的，之后有需要再分析
+	err = kvm_map_idmap_text();
+	if (err)
+		goto out_destroy_pgtable;
+
+	io_map_base = hyp_idmap_start;
+	return 0;
+
+out_destroy_pgtable:
+	kvm_pgtable_hyp_destroy(hyp_pgtable);
+out_free_pgtable:
+	kfree(hyp_pgtable);
+	hyp_pgtable = NULL;
+out:
+	return err;
+}
+```
+
+由此就产生一个问题，stage1 和 stage2 的页表是同一套么？
+
+这里只关注内存虚拟化相关内存，启动过程的进一步分析请看 [AVF](./AVF.md)。
+
+#### X86 虚拟机 MMU 初始化
 
 在 KVM 初始化的时候会调用架构相关的 `hardware_setup`，其会调用 `setup_vmcs_config`，在启动读取 `MSR_IA32_VMX_PROCBASED_CTLS` 寄存器，其控制大部分虚拟机执行特性，这个寄存器的功能可以看手册的 Volume 3 A.3.2 部分，其中有全面的介绍。这里我们只关注和内存虚拟化相关的部分。
 
@@ -1373,6 +1673,25 @@ static void init_kvm_tdp_mmu(struct kvm_vcpu *vcpu)
 ```
 
 #### 虚拟机物理地址的设置
+
+```c
+| kvm_vm_ioctl
+|	-> kvm_vm_ioctl_set_memory_region
+|		-> kvm_set_memory_region
+|			-> __kvm_set_memory_region
+|				-> kvm_set_memslot
+|					-> kvm_prepare_memory_region
+|						// hva = userspace_addr 就是在这里配置的，该函数主要就是找到 mmap 创建的 vma，根据需求做些调整
+|						-> kvm_arch_prepare_memory_region
+|					-> kvm_create_memslot
+|						-> kvm_replace_memslot
+|						-> kvm_activate_memslot
+|					-> kvm_delete_memslot
+|					-> kvm_move_memslot
+|					-> kvm_update_flags_memslot
+|					-> kvm_commit_memory_region
+|						-> kvm_arch_commit_memory_region // 没看懂 commit 什么
+```
 
 虚拟机的物理内存是通过 `ioctl(KVM_SET_USER_MEMORY_REGION)` 实现的。
 
@@ -1786,7 +2105,832 @@ void kvm_arch_commit_memory_region(struct kvm *kvm,
 
 这部分源码看完了，但还是有个问题，不知道怎么调试 KVM，所以虚拟机的物理地址的设置只能通过在 QEMU 的 `ioctl(KVM_SET_USER_MEMORY_REGION)` 来间接的看会设置哪些 mr。
 
-#### EPT 页表的构建
+#### ARM64 stage2 页表的构建
+```c
+| kvm_handle_guest_abort // stage2 缺页或 mmio 异常会走到这里
+|	-> kvm_vcpu_get_fault_ipa
+|	-> gfn_to_hva_memslot_prot
+|	-> pkvm_mem_abort // 使能 pkvm
+|		-> pin_user_pages // 怎样 pin 呢，给对应的 page->_refcount 加上一个特殊的值
+|			-> __gup_longterm_locked
+|				-> __get_user_pages_locked
+|					-> __get_user_pages
+|						-> faultin_page // 模拟一个缺页中断，分配物理内存，也就是说，虚拟机的物理内存最终在这里分配
+|						-> try_grab_folio
+|		-> pkvm_host_map_guest // 通过 hvc 进入到 el2 建立映射（特权级切换，就是这么简洁）
+|			-> handle___pkvm_host_map_guest
+|				-> __pkvm_host_donate_guest // 从 andorid 拿出来“贡献”给 pvm 使用的，相当于 pvm 独占
+|					-> do_donate // 看着就有意思
+|						-> host_initiate_donation // PKVM_ID_HOST，解除 host 侧的映射，然后建立新的映射
+|							-> host_stage2_set_owner_locked
+|								-> kvm_pgtable_stage2_annotate
+|								-> kvm_pgtable_walk // 循环遍历页表，直到找到 pte
+|									-> kvm_pgtable_visitor_cb
+|										-> stage2_map_walker
+|											-> stage2_map_walk_leaf // 配置 pte 的关键函数
+|												// 按照 break-before-make 的原则，先将已有的 host 的 pte 无效掉（tlb 也要无效掉）
+|												-> stage2_try_break_pte
+|												// 然后创建一个新的 pte，并写入页表，注意这里映射建立好但 guest 还无法访问
+|												// 要怎样配置才能访问，修改 page owner?
+|												-> stage2_make_pte
+|								// 将 host_state 设置为 PKVM_NOPAGE，这样 host 就无法访问这个 page
+|								-> __host_update_page_state
+|						// PKVM_ID_HYP，两者有什么区别
+|						// 从 switch case 来看，donate 的发起者可以是 host，也可以是 hypervisor
+|						// 接收者可以是 host，也可以是 hypervisor, guest
+|						-> hyp_initiate_donation
+|						-> host_complete_donation // PKVM_ID_HOST，暂未涉及
+|						-> hyp_complete_donation // PKVM_ID_HYP
+|							-> pkvm_create_mappings_locked
+|								-> hyp_map_walker
+|						// 上面只是解除了 host 的映射关系，建立新的 pte，但 vm 还无法访问，这里让 vm 可以访问
+|						-> guest_complete_donation // PKVM_ID_GUEST
+|							-> kvm_pgtable_stage2_map
+|				-> __pkvm_host_share_guest // android 和 pvm 共享
+|					-> do_share // 怎样做到共享？
+|						-> host_initiate_share
+|							-> __host_set_page_state_range
+|								// 这里是先处理缺页中断，下面再共享
+|								-> host_stage2_idmap_locked
+|									-> __host_stage2_idmap
+|										-> kvm_pgtable_stage2_map // 和 donate 的流程一样，table walk
+|								-> __host_update_page_state // state == PKVM_PAGE_SHARED_OWNED
+|						-> guest_initiate_share
+|						-> host_complete_share
+|						-> hyp_complete_share
+|						// 同理，这里配置 pgprot，让其他的 vm 可以访问该块内存
+|						-> guest_complete_share // 属性为 PKVM_PAGE_SHARED_BORROWED，即其他 entity 可以访问
+|							-> 	kvm_pgtable_stage2_map
+|								-> kvm_pgtable_walk // 同样遍历页表
+|	-> user_mem_abort // 没有使能 pkvm
+|		-> kvm_is_write_fault
+|		-> kvm_vcpu_trap_is_exec_fault
+|		-> __gfn_to_pfn_memslot // 怎么就直接得到 pfn 了
+|			-> hva_to_pfn
+|				-> hva_to_pfn_fast
+|				-> hva_to_pfn_slow
+|					-> get_user_pages_unlocked
+|						-> __get_user_pages // 跟上面一样得
+|		-> kvm_pgtable_stage2_map // 怎样写入 stage2 页表的
+|			-> kvm_pgtable_walk
+|		-> kvm_set_pfn_dirty // 将该 page 的 dirty 置上，表示该页中的内容需要尽快写入到磁盘
+```
+
+这里有个问题，所有的 stage2 缺页中断都是在 android/linux kenrel 中处理的么，因为这个代码是在 KVM 中的。
+
+是的，就算在 PKVM 模式下，也是通过 crossvm（类似于 QEMU，用 rust 写的，设备模拟没有 QEMU 强大）来启动 microdroid，只不过建立页表这些操作是放在 PKVM 中完成的。
+
+##### 关键函数 kvm_handle_guest_abort
+
+这个函数就是获取 gpa(ipa), hva，然后根据是否使能 pkvm 进行下一步处理。
+
+```c
+/**
+ * kvm_handle_guest_abort - handles all 2nd stage aborts
+ * @vcpu:	the VCPU pointer
+ *
+ * Any abort that gets to the host is almost guaranteed to be caused by a
+ * missing second stage translation table entry, which can mean that either the
+ * guest simply needs more memory and we must allocate an appropriate page or it
+ * can mean that the guest tried to access I/O memory, which is emulated by user
+ * space. The distinction is based on the IPA causing the fault and whether this
+ * memory region has been registered as standard RAM by user space.
+ */
+int kvm_handle_guest_abort(struct kvm_vcpu *vcpu)
+{
+	unsigned long fault_status;
+	phys_addr_t fault_ipa;
+	struct kvm_memory_slot *memslot;
+	unsigned long hva;
+	bool is_iabt, write_fault, writable;
+	gfn_t gfn;
+	int ret, idx;
+	fault_status = kvm_vcpu_trap_get_fault_type(vcpu);
+	fault_ipa = kvm_vcpu_get_fault_ipa(vcpu); // 读取 hpfar_el2 寄存器，获取 ipa
+	is_iabt = kvm_vcpu_trap_is_iabt(vcpu); // 判断是否是指令异常
+
+	...
+
+	idx = srcu_read_lock(&vcpu->kvm->srcu);
+	gfn = fault_ipa >> PAGE_SHIFT;
+	memslot = gfn_to_memslot(vcpu->kvm, gfn); // 每个 slot 都有 base_pfn 和 npages，这样来确定异常的 ipa 属于哪个 slot
+	hva = gfn_to_hva_memslot_prot(memslot, gfn, &writable); // hva 和 gpa 的对应关系比较简单，就是加一个 offset
+	write_fault = kvm_is_write_fault(vcpu); // 通过读取 esr 寄存器判断是否是读异常
+
+    ...
+
+	/* Userspace should not be able to register out-of-bounds IPAs */
+	VM_BUG_ON(fault_ipa >= kvm_phys_size(vcpu->kvm));
+	if (fault_status == ESR_ELx_FSC_ACCESS) {
+		handle_access_fault(vcpu, fault_ipa); // 这是啥意思
+		ret = 1;
+		goto out_unlock;
+	}
+
+	if (is_protected_kvm_enabled() && fault_status != ESR_ELx_FSC_PERM)
+		ret = pkvm_mem_abort(vcpu, &fault_ipa, memslot, hva, NULL); // 两者在处理上有什么区别么？
+	else
+		ret = user_mem_abort(vcpu, fault_ipa, memslot, hva, fault_status);
+
+	...
+
+	return ret;
+}
+```
+
+##### 关键函数 pkvm_mem_abort
+
+这个函数就干两件事，申请内存（还是通过缺页的方式），进入 el2 建立映射。
+
+```c
+static int pkvm_mem_abort(struct kvm_vcpu *vcpu, phys_addr_t *fault_ipa,
+			 struct kvm_memory_slot *memslot, unsigned long hva,
+			 size_t *size)
+{
+	unsigned int flags = FOLL_HWPOISON | FOLL_LONGTERM | FOLL_WRITE;
+	struct kvm_hyp_memcache *hyp_memcache = &vcpu->arch.stage2_mc;
+	unsigned long index, pmd_offset, page_size;
+	struct mm_struct *mm = current->mm;
+	struct kvm_pinned_page *ppage;
+	struct kvm *kvm = vcpu->kvm;
+	int ret, nr_pages;
+	struct page *page;
+	u64 pfn;
+
+	nr_pages = hyp_memcache->nr_pages;
+	ret = topup_hyp_memcache(hyp_memcache, kvm_mmu_cache_min_pages(kvm), 0);
+	if (ret)
+		return -ENOMEM;
+	nr_pages = hyp_memcache->nr_pages - nr_pages;
+	atomic64_add(nr_pages << PAGE_SHIFT, &kvm->stat.protected_hyp_mem);
+	atomic64_add(nr_pages << PAGE_SHIFT, &kvm->stat.protected_pgtable_mem);
+
+    // 这个是用来记录该 VCPU 所有 pin 住的 page
+	ppage = kmalloc(sizeof(*ppage), GFP_KERNEL_ACCOUNT);
+	if (!ppage)
+		return -ENOMEM;
+	mmap_read_lock(mm);
+	ret = pin_user_pages(hva, 1, flags, &page);
+	mmap_read_unlock(mm);
+
+	...
+
+	pfn = page_to_pfn(page);
+	pmd_offset = *fault_ipa & (PMD_SIZE - 1);
+	page_size = transparent_hugepage_adjust(kvm, memslot,
+						hva, &pfn,
+						fault_ipa);
+	page = pfn_to_page(pfn);
+	if (size)
+		*size = page_size;
+retry:
+	write_lock(&kvm->mmu_lock);
+
+    ...
+
+	ret = pkvm_host_map_guest(pfn, *fault_ipa >> PAGE_SHIFT, // 进入 el2 映射
+				 page_size >> PAGE_SHIFT, KVM_PGTABLE_PROT_R);
+	ppage->page = page;
+	ppage->ipa = *fault_ipa;
+	ppage->order = get_order(page_size);
+	ppage->pins = 1 << ppage->order;
+	WARN_ON(insert_ppage(kvm, ppage)); // 将虚拟机 pin 住的 page 记录下来
+	write_unlock(&kvm->mmu_lock);
+	return 0;
+
+    ...
+}
+```
+
+##### 关键函数 pin_user_pages
+
+***pin 操作有什么效果呢？***
+
+GUP(Get User Pages) 是一种类型的接口，核心思想是在内核态可以提前访问未映射物理地址的用户态虚拟地址，在访问的时候，触发缺页中断分配内存，这样用户态访问就不会再触发缺页中断了。当然也可以在 mmap 处理函数中直接调用该类接口，另一方面，这类接口也可以将指定页面“锁”在内存中，也就是这里的用法。
+
+```c
+| pin_user_pages // 会配置上 FOLL_PIN 标志位
+|	-> __gup_longterm_locked
+|		-> __get_user_pages_locked
+|			-> __get_user_pages
+```
+
+```c
+/**
+ * __get_user_pages() - pin user pages in memory
+ * @mm:		mm_struct of target mm
+ * @start:	starting user address
+ * @nr_pages:	number of pages from start to pin
+ * @gup_flags:	flags modifying pin behaviour
+ * @pages:	array that receives pointers to the pages pinned.
+ *		Should be at least nr_pages long. Or NULL, if caller
+ *		only intends to ensure the pages are faulted in.
+ * @locked: whether we're still with the mmap_lock held
+ *
+ * Returns either number of pages pinned (which may be less than the
+ * number requested), or an error. Details about the return value:
+ *
+ * -- If nr_pages is 0, returns 0.
+ * -- If nr_pages is >0, but no pages were pinned, returns -errno.
+ * -- If nr_pages is >0, and some pages were pinned, returns the number of
+ * pages pinned. Again, this may be less than nr_pages.
+ * -- 0 return value is possible when the fault would need to be retried.
+ *
+ * ...
+ */
+// gup_flags: FOLL_HWPOISON | FOLL_LONGTERM | FOLL_WRITE | FOLL_PIN
+// LONGTERM 表示映射的声明周期是无限制的，FOLL_PIN 表示该页要驻留在内存中
+static long __get_user_pages(struct mm_struct *mm,
+		unsigned long start, unsigned long nr_pages,
+		unsigned int gup_flags, struct page **pages,
+		int *locked)
+{
+	long ret = 0, i = 0;
+	struct vm_area_struct *vma = NULL;
+	struct follow_page_context ctx = { NULL };
+
+	if (!nr_pages)
+		return 0;
+	start = untagged_addr_remote(mm, start);
+
+	VM_BUG_ON(!!pages != !!(gup_flags & (FOLL_GET | FOLL_PIN)));
+	do {
+		struct page *page;
+		unsigned int foll_flags = gup_flags;
+		unsigned int page_increm;
+		/* first iteration or cross vma bound */
+		...
+
+retry:
+		page = follow_page_mask(vma, start, foll_flags, &ctx);
+		if (!page || PTR_ERR(page) == -EMLINK) { // page 为 NULL，触发一个缺页中断向 buddy 申请 page
+			ret = faultin_page(vma, start, &foll_flags,
+					 PTR_ERR(page) == -EMLINK, locked);
+			...
+		}
+        ...
+
+next_page:
+		page_increm = 1 + (~(start >> PAGE_SHIFT) & ctx.page_mask);
+		if (page_increm > nr_pages)
+			page_increm = nr_pages;
+		if (pages) {
+			struct page *subpage;
+			unsigned int j;
+
+			/*
+			 * This must be a large folio (and doesn't need to
+			 * be the whole folio; it can be part of it), do
+			 * the refcount work for all the subpages too.
+			 *
+			 * NOTE: here the page may not be the head page
+			 * e.g. when start addr is not thp-size aligned.
+			 * try_grab_folio() should have taken care of tail
+			 * pages.
+			 */
+			if (page_increm > 1) {
+				struct folio *folio;
+				/*
+				 * Since we already hold refcount on the
+				 * large folio, this should never fail.
+				 */
+				folio = try_grab_folio(page, page_increm - 1,
+						 foll_flags); // 这里进行 pin 操作
+
+				...
+			}
+			for (j = 0; j < page_increm; j++) {
+				subpage = nth_page(page, j);
+				pages[i + j] = subpage;
+				flush_anon_page(vma, subpage, start + j * PAGE_SIZE);
+				flush_dcache_page(subpage);
+			}
+		}
+		i += page_increm;
+		start += page_increm * PAGE_SIZE;
+		nr_pages -= page_increm;
+	} while (nr_pages);
+out:
+	if (ctx.pgmap)
+		put_dev_pagemap(ctx.pgmap);
+	return i ? i : ret;
+}
+```
+
+##### 关键函数 try_grab_folio
+
+```c
+/**
+ * try_grab_folio() - Attempt to get or pin a folio.
+ * @page: pointer to page to be grabbed
+ * @refs: the value to (effectively) add to the folio's refcount
+ * @flags: gup flags: these are the FOLL_* flag values.
+ *
+ * "grab" names in this file mean, "look at flags to decide whether to use
+ * FOLL_PIN or FOLL_GET behavior, when incrementing the folio's refcount.
+ *
+ * Either FOLL_PIN or FOLL_GET (or neither) must be set, but not both at the
+ * same time. (That's true throughout the get_user_pages*() and
+ * pin_user_pages*() APIs.) Cases:
+ *
+ * FOLL_GET: folio's refcount will be incremented by @refs.
+ *
+ * FOLL_PIN on large folios: folio's refcount will be incremented by
+ * @refs, and its pincount will be incremented by @refs.
+ *
+ * FOLL_PIN on single-page folios: folio's refcount will be incremented by
+ * @refs * GUP_PIN_COUNTING_BIAS.
+ *
+ * Return: The folio containing @page (with refcount appropriately
+ * incremented) for success, or NULL upon failure. If neither FOLL_GET
+ * nor FOLL_PIN was set, that's considered failure, and furthermore,
+ * a likely bug in the caller, so a warning is also emitted.
+ */
+struct folio *try_grab_folio(struct page *page, int refs, unsigned int flags)
+{
+	struct folio *folio;
+	if (WARN_ON_ONCE((flags & (FOLL_GET | FOLL_PIN)) == 0)) // 就是用来 get/pin page 的
+		return NULL;
+	...
+
+	if (flags & FOLL_GET)
+		return try_get_folio(page, refs);
+
+	/* FOLL_PIN is set */
+	/*
+	 * Don't take a pin on the zero page - it's not going anywhere
+	 * and it is used in a *lot* of places.
+	 */
+	if (is_zero_page(page))
+		return page_folio(page);
+	folio = try_get_folio(page, refs); // 和 get 是同一个函数？
+	if (!folio)
+		return NULL;
+
+	...
+
+	/*
+	 * When pinning a large folio, use an exact count to track it.
+	 *
+	 * However, be sure to *also* increment the normal folio
+	 * refcount field at least once, so that the folio really
+	 * is pinned. That's why the refcount from the earlier
+	 * try_get_folio() is left intact.
+	 */
+	if (folio_test_large(folio))
+		atomic_add(refs, &folio->_pincount);
+	else
+		folio_ref_add(folio, // 就是给 _refcount 加上经过计算的 GUP_PIN_COUNTING_BIAS
+				refs * (GUP_PIN_COUNTING_BIAS - 1));
+	/*
+	 * Adjust the pincount before re-checking the PTE for changes.
+	 * This is essentially a smp_mb() and is paired with a memory
+	 * barrier in folio_try_share_anon_rmap_*().
+	 */
+	smp_mb__after_atomic();
+	node_stat_mod_folio(folio, NR_FOLL_PIN_ACQUIRED, refs);
+	return folio;
+}
+```
+
+`#define GUP_PIN_COUNTING_BIAS (1U << 10)` 就是用来表示特殊的 page。
+
+##### 关键函数 __pkvm_host_donate_guest
+
+这里目前只清楚大致的页表更新流程，其中还有很多细节没有搞明白。
+
+```c
+int __pkvm_host_donate_guest(struct pkvm_hyp_vcpu *vcpu, u64 pfn, u64 gfn,
+			 u64 nr_pages)
+{
+	int ret;
+	u64 host_addr = hyp_pfn_to_phys(pfn);
+	u64 guest_addr = hyp_pfn_to_phys(gfn);
+	struct pkvm_hyp_vm *vm = pkvm_hyp_vcpu_to_hyp_vm(vcpu); // 这个是在虚拟机创建的时候构造的
+	struct pkvm_mem_transition donation = { // 这个结构体很重要，需要记住 initiator/completer
+		.nr_pages	= nr_pages,
+		.initiator	= {
+			.id	= PKVM_ID_HOST,
+			.addr	= host_addr,
+			.host	= {
+				.completer_addr = guest_addr,
+			},
+		},
+		.completer	= {
+			.id	= PKVM_ID_GUEST,
+			.guest	= {
+				.hyp_vm = vm,
+				.mc = &vcpu->vcpu.arch.stage2_mc,
+				.phys = host_addr,
+			},
+		},
+	};
+	ret = do_donate(&donation);
+	...
+	return ret;
+}
+```
+
+##### 关键函数 __do_donate
+
+`__pkvm_host_donate_guest` -> `do_donate` -> `__do_donate`
+
+这是一个功能强大的函数，可以实现不同系统之间的内存 donate，这里我们分析 host->guest。
+
+注释写的很清楚，所谓 donate，就是 page onwer 的变换。
+
+```c
+/*
+ * do_donate():
+ *
+ * The page owner transfers ownership to another component, losing access
+ * as a consequence.
+ *
+ * Initiator: OWNED	=> NOPAGE
+ * Completer: NOPAGE	=> OWNED
+ */
+static int __do_donate(struct pkvm_mem_transition *tx)
+{
+	u64 completer_addr;
+	int ret;
+	switch (tx->initiator.id) {
+	case PKVM_ID_HOST:
+		ret = host_initiate_donation(&completer_addr, tx);
+		break;
+	case PKVM_ID_HYP: // 什么情况会跑到这个分支
+		ret = hyp_initiate_donation(&completer_addr, tx);
+		break;
+	default:
+		ret = -EINVAL;
+	}
+	if (ret)
+		return ret;
+	switch (tx->completer.id) {
+	case PKVM_ID_HOST:
+		ret = host_complete_donation(completer_addr, tx);
+		break;
+	case PKVM_ID_HYP:
+		ret = hyp_complete_donation(completer_addr, tx);
+		break;
+	case PKVM_ID_GUEST:
+		ret = guest_complete_donation(completer_addr, tx);
+		break;
+	default:
+		ret = -EINVAL;
+	}
+	return ret;
+}
+```
+
+##### 关键函数 __host_stage2_set_owner_locked
+
+解除 host 的映射，然后把 state 配置为 `PKVM_NOPAGE`。
+
+```c
+| host_initiate_donation
+|	-> host_stage2_set_owner_locked
+|		-> __host_stage2_set_owner_locked
+```
+
+```c
+// addr: host_addr(HPA)
+// size:
+// owner_id: PKVM_ID_GUEST
+static int __host_stage2_set_owner_locked(phys_addr_t addr, u64 size, u8 owner_id, bool is_memory,
+					 enum pkvm_page_state nopage_state, bool update_iommu)
+{
+	kvm_pte_t annotation;
+	enum kvm_pgtable_prot prot;
+	int ret;
+	if (owner_id == PKVM_ID_HOST) {
+		prot = default_host_prot(addr_is_memory(addr));
+		ret = host_stage2_idmap_locked(addr, size, prot, false);
+	} else {
+		annotation = kvm_init_invalid_leaf_owner(owner_id); // 将 pte 对应物理页的 owner 配置为 guestos
+		ret = host_stage2_try(kvm_pgtable_stage2_annotate,
+				 &host_mmu.pgt, // 在 __pkvm_init 中配置的
+				 addr, size, &host_s2_pool, annotation); // 后续应该是通过这个 annotation 来区分共享，独占还是其他
+	}
+
+    ...
+
+	/* Don't forget to update the vmemmap tracking for the host */
+	if (owner_id == PKVM_ID_HOST)
+		__host_update_page_state(addr, size, PKVM_PAGE_OWNED);
+	else // hypervisor 还维护了一个线性映射区，hyp_vmemmap，然后 hyp_page 用来记录 state 和 refcount
+		__host_update_page_state(addr, size, PKVM_NOPAGE | nopage_state);
+	return 0;
+}
+```
+
+对于内存是否共享，这里介绍的很清楚。
+
+```c
+/*
+ * Bits 0-1 are reserved to track the memory ownership state of each page:
+ * 00: The page is owned exclusively by the page-table owner.
+ * 01: The page is owned by the page-table owner, but is shared
+ * with another entity.
+ * 10: The page is shared with, but not owned by the page-table owner.
+ * 11: This is an MMIO page that is mapped in the host IOMMU.
+ */
+enum pkvm_page_state {
+	PKVM_PAGE_OWNED			= 0ULL,
+	PKVM_PAGE_SHARED_OWNED		= BIT(0),
+	PKVM_PAGE_SHARED_BORROWED	= BIT(1),
+	PKVM_PAGE_MMIO_DMA		= BIT(0) | BIT(1),
+	/* Special non-meta state that only applies to host pages. Will not go in PTE SW bits. */
+	PKVM_MODULE_OWNED_PAGE		= BIT(2),
+	PKVM_NOPAGE			= BIT(3),
+	/*
+	 * Meta-states which aren't encoded directly in the PTE's SW bits (or
+	 * the hyp_vmemmap entry for the host)
+	 */
+	PKVM_PAGE_RESTRICTED_PROT	= BIT(4),
+	PKVM_MMIO			= BIT(5),
+};
+```
+
+##### 关键函数 kvm_pgtable_stage2_annotate
+
+```c
+// mc: 居然就是 host_s2_pool，我说要创建这个 pool 干啥呢
+int kvm_pgtable_stage2_annotate(struct kvm_pgtable *pgt, u64 addr, u64 size,
+				void *mc, kvm_pte_t annotation)
+{
+	int ret;
+	struct stage2_map_data map_data = {
+		.phys		= KVM_PHYS_INVALID,
+		.mmu		= pgt->mmu,
+		.memcache	= mc,
+		.force_pte	= true,
+		.annotation	= annotation,
+	};
+	struct kvm_pgtable_walker walker = {
+		.cb		= stage2_map_walker,
+		.flags		= KVM_PGTABLE_WALK_TABLE_PRE |
+				 KVM_PGTABLE_WALK_LEAF,
+		.arg		= &map_data,
+	};
+	if (annotation & PTE_VALID)
+		return -EINVAL;
+	ret = kvm_pgtable_walk(pgt, addr, size, &walker);
+	return ret;
+}
+```
+
+##### 关键函数 __kvm_pgtable_visit
+
+在分析前应该考虑一下，更改 pte 应该怎样操作？为什么这里会实现的这么复杂？
+
+在我的认知中，更改 pte 应该就是一级级的页表查找，直到找到 addr 对应的 pte，然后直接写入就行，里面可能涉及到锁的操作可能复杂一点。
+
+分析下来，其实**逻辑是一样的，只不过这里用递归来遍历，然后更改页表的时候遵循 BBM 原则**。
+
+```c
+| kvm_pgtable_stage2_annotate
+|	-> kvm_pgtable_walk
+|		-> _kvm_pgtable_walk
+|			-> __kvm_pgtable_walk
+|				-> __kvm_pgtable_visit
+```
+
+```C
+static inline int __kvm_pgtable_visit(struct kvm_pgtable_walk_data *data,
+				 struct kvm_pgtable_mm_ops *mm_ops,
+				 struct kvm_pgtable_pte_ops *pte_ops,
+				 kvm_pteref_t pteref, u32 level) // 这个 level 是怎样起作用的
+{
+	enum kvm_pgtable_walk_flags flags = data->walker->flags;
+	kvm_pte_t *ptep = kvm_dereference_pteref(data->walker, pteref);
+	struct kvm_pgtable_visit_ctx ctx = {
+		.ptep	= ptep,
+		.old	= READ_ONCE(*ptep),
+		.arg	= data->walker->arg,
+		.mm_ops	= mm_ops,
+		.start	= data->start,
+		.pte_ops = pte_ops,
+		.addr	= data->addr,
+		.end	= data->end,
+		.level	= level,
+		.flags	= flags,
+	};
+	int ret = 0;
+	bool reload = false;
+	kvm_pteref_t childp;
+	bool table = kvm_pte_table(ctx.old, level); // 如果不是有效的 pte，也就是之前没有访问过，那么返回 false
+
+    // pte 里有信息
+	if (table && (ctx.flags & KVM_PGTABLE_WALK_TABLE_PRE)) {
+
+    // 这个 cb 为 stage2_map_walker
+		ret = kvm_pgtable_visitor_cb(data, &ctx, KVM_PGTABLE_WALK_TABLE_PRE);
+		reload = true;
+	}
+
+    // pte 无效，没有信息
+	if (!table && (ctx.flags & KVM_PGTABLE_WALK_LEAF)) {
+		ret = kvm_pgtable_visitor_cb(data, &ctx, KVM_PGTABLE_WALK_LEAF);
+		reload = true;
+	}
+
+	...
+
+	childp = (kvm_pteref_t)kvm_pte_follow(ctx.old, mm_ops);
+	ret = __kvm_pgtable_walk(data, mm_ops, pte_ops, childp, level + 1); // 这是一个递归，一级级的找
+	if (!kvm_pgtable_walk_continue(data->walker, ret))
+		goto out;
+	if (ctx.flags & KVM_PGTABLE_WALK_TABLE_POST)
+		ret = kvm_pgtable_visitor_cb(data, &ctx, KVM_PGTABLE_WALK_TABLE_POST);
+out:
+	if (kvm_pgtable_walk_continue(data->walker, ret))
+		return 0;
+	return ret;
+}
+```
+
+##### 关键函数 stage2_map_walker_try_leaf
+
+这里建立新页表根据 break-before-make 原则。
+
+```c
+static int stage2_map_walker_try_leaf(const struct kvm_pgtable_visit_ctx *ctx,
+				 struct stage2_map_data *data)
+{
+	kvm_pte_t new;
+	u64 phys = stage2_map_walker_phys_addr(ctx, data);
+	u64 granule = kvm_granule_size(ctx->level);
+	struct kvm_pgtable *pgt = data->mmu->pgt;
+	struct kvm_pgtable_mm_ops *mm_ops = ctx->mm_ops;
+	struct kvm_pgtable_pte_ops *pte_ops = pgt->pte_ops;
+	bool old_is_counted;
+
+	if (!stage2_leaf_mapping_allowed(ctx, data))
+		return -E2BIG;
+	if (kvm_phys_is_valid(phys))
+    // pa 转化成 pte，并初始化 pte 中的有效位等
+		new = kvm_init_valid_leaf_pte(phys, data->attr, ctx->level);
+	else
+		new = data->annotation;
+	...
+
+    // 这里就是把 pte 配置为 KVM_INVALID_PTE_LOCKED
+    // 更新了页表也要进行 tlbi 操作
+	if (!stage2_try_break_pte(ctx, data->mmu))
+		return -EAGAIN;
+
+	/* Perform CMOs before installation of the guest stage-2 PTE */
+    // CMO 就是 cache 维护指令，clean/invalidate 等
+	if (!kvm_pgtable_walk_skip_cmo(ctx) && mm_ops->dcache_clean_inval_poc &&
+	 stage2_pte_cacheable(pgt, new))
+		mm_ops->dcache_clean_inval_poc(kvm_pte_follow(new, mm_ops),
+					 granule);
+
+    if (!kvm_pgtable_walk_skip_cmo(ctx) && mm_ops->icache_inval_pou &&
+	 stage2_pte_executable(new))
+		mm_ops->icache_inval_pou(kvm_pte_follow(new, mm_ops), granule);
+	stage2_make_pte(ctx, new, data->mmu);
+	return 0;
+}
+```
+
+##### 关键函数 stage2_make_pte
+
+这里的操作就是写入新的 pte。
+
+```c
+static void stage2_make_pte(const struct kvm_pgtable_visit_ctx *ctx,
+			 kvm_pte_t new, struct kvm_s2_mmu *mmu)
+{
+	struct kvm_pgtable_mm_ops *mm_ops = ctx->mm_ops;
+	struct kvm_pgtable_pte_ops *pte_ops = ctx->pte_ops;
+
+	WARN_ON(!stage2_pte_is_locked(*ctx->ptep));
+
+    // 还是不明白这个 pte_is_counted 是啥意思
+	if (pte_ops->pte_is_counted_cb(new, ctx->level))
+		mm_ops->get_page(ctx->ptep);
+	else
+		stage2_unmap_clear_pte(ctx, mmu);
+	smp_store_release(ctx->ptep, new);
+}
+```
+
+##### 关键函数 guest_complete_donation
+
+上面的种种操作只是完成了将 hostos 的页表配置为 NOPAGE，下面要建立 guestos 对该块内存的访问权限。
+
+```c
+static int guest_complete_donation(u64 addr, const struct pkvm_mem_transition *tx)
+{
+    // 配置上了 PAGE_OWNED 就表示页表的所有者能够访问该内存
+	enum kvm_pgtable_prot prot = pkvm_mkstate(KVM_PGTABLE_PROT_RWX, PKVM_PAGE_OWNED);
+	struct pkvm_hyp_vm *vm = tx->completer.guest.hyp_vm; // hyp_vm 是在创建虚拟机的时候初始化的
+	struct kvm_hyp_memcache *mc = tx->completer.guest.mc;
+	phys_addr_t phys = tx->completer.guest.phys;
+	u64 size = tx->nr_pages * PAGE_SIZE;
+	int err;
+
+	...
+
+	/*
+	 * If this fails, we effectively leak the pages since they're now
+	 * owned by the guest but not mapped into its stage-2 page-table.
+	 */
+ // 这里要操作的页表已经是 guestos 的 pgt 了
+	return kvm_pgtable_stage2_map(&vm->pgt, addr, size, phys, prot, mc, 0);
+
+    ...
+}
+```
+
+```c
+int kvm_pgtable_stage2_map(struct kvm_pgtable *pgt, u64 addr, u64 size,
+			 u64 phys, enum kvm_pgtable_prot prot,
+			 void *mc, enum kvm_pgtable_walk_flags flags)
+{
+	int ret;
+	struct kvm_pgtable_pte_ops *pte_ops = pgt->pte_ops;
+	struct stage2_map_data map_data = {
+		.phys		= ALIGN_DOWN(phys, PAGE_SIZE),
+		.mmu		= pgt->mmu,
+		.memcache	= mc,
+		.force_pte	= pte_ops->force_pte_cb && // 始终不清楚这个回调函数是干嘛的
+			pte_ops->force_pte_cb(addr, addr + size, prot),
+	};
+	struct kvm_pgtable_walker walker = {
+		.cb		= stage2_map_walker,
+		.flags		= flags |
+				 KVM_PGTABLE_WALK_TABLE_PRE |
+				 KVM_PGTABLE_WALK_LEAF |
+				 KVM_PGTABLE_WALK_TABLE_POST,
+		.arg		= &map_data,
+	};
+	if (pte_ops->force_pte_cb)
+		map_data.force_pte = pte_ops->force_pte_cb(addr, addr + size, prot);
+	if (WARN_ON((pgt->flags & KVM_PGTABLE_S2_IDMAP) && (addr != phys)))
+		return -EINVAL;
+    // 配置访问，device/normal memory 权限等
+	ret = stage2_set_prot_attr(pgt, prot, &map_data.attr);
+	if (ret)
+		return ret;
+    // 和 host_donate 流程一样
+    // 执行 stage2_map_walker 一级级的遍历
+    // 最后写入 pte
+	ret = kvm_pgtable_walk(pgt, addr, size, &walker);
+	dsb(ishst);
+	return ret;
+}
+```
+
+##### 关键函数 __pkvm_host_share_guest
+
+`__pkvm_host_share_guest` -> `do_share` -> `__do_share`
+
+```c
+static int __do_share(struct pkvm_mem_transition *tx,
+		 const struct pkvm_checked_mem_transition *checked_tx)
+{
+	int ret;
+	switch (tx->initiator.id) {
+	case PKVM_ID_HOST:
+		ret = host_initiate_share(checked_tx);
+		break;
+	case PKVM_ID_GUEST:
+		ret = guest_initiate_share(checked_tx);
+		break;
+	default:
+		ret = -EINVAL;
+	}
+	if (ret)
+		return ret;
+	switch (tx->completer.id) {
+	case PKVM_ID_HOST:
+		ret = host_complete_share(checked_tx, tx->completer.prot);
+		break;
+	case PKVM_ID_HYP:
+		ret = hyp_complete_share(checked_tx, tx->completer.prot);
+		break;
+	case PKVM_ID_FFA:
+		/*
+		 * We're not responsible for any secure page-tables, so there's
+		 * nothing to do here.
+		 */
+		ret = 0;
+		break;
+	case PKVM_ID_GUEST:
+		ret = guest_complete_share(checked_tx, tx->completer.prot);
+		break;
+	default:
+		ret = -EINVAL;
+	}
+	return ret;
+}
+```
+
+这里的逻辑和上面 donate 是一样的，只不过页表的 prot 配置为 `PKVM_PAGE_SHARED_OWNED`。
+
+#### X86 EPT 页表的构建
 
 没有虚拟机的情况下，页表是通过处理 page fault 来构建的，ept 页表也是这样构建的，下面就来分析一下这个过程。
 

@@ -165,7 +165,7 @@ struct page {
 		 * If the page can be mapped to userspace, encodes the number
 		 * of times this page is referenced by a page table.
 		 */
-		atomic_t _mapcount; // 页面被进程映射的个数，即已经映射了多少个用户 PTE
+		atomic_t _mapcount; // 页面被进程映射的个数，即已经映射了多少个用户 PTE，在 RMAP 时维护
 
 		/*
 		 * If the page is neither PageSlab nor mappable to userspace,
@@ -209,11 +209,38 @@ struct page {
 #define pfn_to_page(pfn)	(mem_map + (pfn)) // 页框号不就是 page 的地址么。好吧，应该不是，所有的页描述符存放在 												  // mem_map 数组中，所以 mem_map 中存放的才是 page 地址
 ```
 
+这里有一点需要注意，page 和 page frame，一个是描述内核地址空间的，一个是描述物理内存的，
+
+- page 线性地址被分成以固定长度为单位的组，称为页，比如典型的 4K 大小，页内部连续的线性地址被映射到连续的物理地址中；
+- page frame 内存被分成固定长度的存储区域，称为页框，也叫**物理页**。每一个页框会包含一个页，页框的长度和一个页的长度是一致的，在内核中使用 `struct page` 来关联物理页。
+
+看这个图就明白了，
+
+![img](https://raw.githubusercontent.com/UtopianFuture/UtopianFuture.github.io/81305767754ca8df95d18da10465dd730bc093be/image/mem_section.svg)
+
+总结一下，首先客观存在的是物理内存，4G/16G 等等，为了管理这些物理内存，内核使用 page 这个结构体，这个结构体里面记录了某块 4K 的是用情况。但 page 毕竟只是一个数据结构，怎样和物理地址联系起来，不能在里面增加一个地址指针吧，那太 low 了！内核的做法是在虚拟地址空间抠出一块来，vmemmap 空间，因为是 64bits 地址，肯定够用。这块空间一般来说是 2048GB，很难有机器有这么大的 DDR 吧，那就是用 vmemmap+n 表示第 n 个物理页，n 是 4KB 粒度，**这个 n 也就是物理地址**。然后 vmemmap+n 就是指向内核中用来管理这 4KB 物理内存的 page 数据结构地址。
+
+这就是所谓的线性映射。内核中都是是用 page 来操作物理内存，这样内核访问物理内存直接通过 page 的指针加 offset 就行，十分高效。现在能够理解 `virt_to_page` 和 ` pfn_to_page` 在干嘛了吧！其他接口 `phys_to_virt` 等都是类似的。
+
+这里对 _refcount 和 _mapcount 做进一步的解释：
+
+- `_refcount`：用于跟踪页面的引用计数，表示内核中有多少个指针指向该页面；
+ - alloc_pages 分配成功会 +1；
+ - page 添加到 lru 链表时会 +1；
+ - 加入到 address_space 时（？）；
+ - page 被映射到其他用户进程 PTE 时，会 +1；
+ - 对于 PG_swapable 页面，_add_to_swap_cache 会 +1；
+ - 还有[其他](https://blog.csdn.net/GetNextWindow/article/details/131905827)内存路径也会 +1;
+- `_mapcount`：用于跟踪页面在页表中的映射计数，表示有多少个页表项映射到该页面；
+ - 该变量在建立 rmap 映射时 +1，在解除 rmap 映射时 -1；
+
 #### 内存管理区
 
 由于 NUMA 模型的存在，kernel 将物理内存分为几个节点（node），每个节点有一个类型为 `pg_date_t` 的描述符。
 
 ##### pglist_data
+
+在 `bootmem_init` 中会初始化 node_zones 变量，而 node_zonelists 变量要等到 `mm_core_init->build_all_zonelists` 才会赋值。
 
 ```c
 /*
@@ -253,9 +280,13 @@ extern struct pglist_data *pgdat_list;
 
 在 UMA 模型中，内核的节点数为 1。
 
+pg_data_t 在 `bootmem_init` 时就会完成初始化。
+
 **由于实际的计算机体系结构的限制**（ISA 总线只能寻址 16 MB 和 32 位计算机只能寻址 4G），每个节点的物理内存又分为 3 个管理区。
 
 - ZONE_DMA：低于 16MB 的内存页框；
+
+- ZONE_DMA32：在 64 位机器上为低 4G 地址范围；
 
 - ZONE_NORMAL：高于 16MB 低于 896MB 的内存页框，
 
@@ -274,7 +305,7 @@ extern struct pglist_data *pgdat_list;
 
 ##### zone
 
-zone 为管理区描述符。
+zone 为管理区描述符，在 `bootmem_init` 中初始化。
 
 ```c
 /*
@@ -445,8 +476,10 @@ EXPORT_SYMBOL(alloc_pages);
    							nodemask_t *nodemask)
    {
    	struct page *page;
-   	unsigned int alloc_flags = ALLOC_WMARK_LOW; // 表示页面分配的行为和属性，这里初始化为 ALLOC_WMARK_LOW
-       											// 表示允许分配内存的判断条件为 WMARK_LOW
+    // 表示页面分配的行为和属性，这里初始化为 ALLOC_WMARK_LOW
+    // 表示允许分配内存的判断条件为 WMARK_LOW
+    // 只有内存水位低于 LOW 的时候，才会进入到慢速路径
+   	unsigned int alloc_flags = ALLOC_WMARK_LOW;
    	gfp_t alloc_gfp; /* The gfp_t that was actually used for allocation */ // 分配掩码，确定页面属性等
    	struct alloc_context ac = { }; // 用于保存相关参数
 
@@ -502,7 +535,7 @@ EXPORT_SYMBOL(alloc_pages);
    EXPORT_SYMBOL(__alloc_pages); // 该函数可被驱动使用
    ```
 
-​	这其中涉及一些概念需要理解清楚。
+这其中涉及一些概念需要理解清楚。
 
 - 分配掩码
 
@@ -642,15 +675,19 @@ EXPORT_SYMBOL(alloc_pages);
 
    		...
 
-   		mark = wmark_pages(zone, alloc_flags & ALLOC_WMARK_MASK); // 计算 zone 中某个水位的页面大小（？）
-   		if (!zone_watermark_fast(zone, order, mark, // 计算当前 zone 的空闲页面是否满足 WMARK_LOW
-   				       ac->highest_zoneidx, alloc_flags, // 同时根据 order 计算是否有足够大的空闲内存块
-   				       gfp_mask)) { // 对内存管理进一步分析之后，水位描述符是为了防止内存碎片化
+        	// 计算 zone 中某个水位的页面大小（？）
+        	// 计算当前 zone 的空闲页面是否满足 WMARK_LOW
+        	// 同时根据 order 计算是否有足够大的空闲内存块
+        	// 对内存管理进一步分析之后，水位描述符是为了防止内存碎片化
+   		mark = wmark_pages(zone, alloc_flags & ALLOC_WMARK_MASK);
+   		if (!zone_watermark_fast(zone, order, mark,
+   				       ac->highest_zoneidx, alloc_flags,
+   				       gfp_mask)) {
    			int ret;
 
                ...
 
-               // 返回 false，进行处理
+            	// 返回 false，进行处理
    			/* Checked here to keep the fast path fast */
    			BUILD_BUG_ON(ALLOC_NO_WATERMARKS < NR_WMARK);
    			if (alloc_flags & ALLOC_NO_WATERMARKS)
@@ -694,6 +731,7 @@ EXPORT_SYMBOL(alloc_pages);
    			return page;
    		}
            ...
+
    	}
 
    	/*
@@ -2479,26 +2517,37 @@ fail:
 
 ### vmap
 
-vmap 函数完成的工作是，在 vmalloc 虚拟地址空间中找到一个空闲区域，然后将 page 页面数组对应的物理内存映射到该区域，最终返回映射的虚拟起始地址。
+vmap 函数完成的工作是，**在 vmalloc 虚拟地址空间中找到一个空闲区域**，然后将 page 页面数组对应的物理内存映射到该区域，最终返回映射的虚拟起始地址。
+
+vmalloc 和 vmap 的操作，大部分的逻辑操作是一样的，比如从 `VMALLOC_START ~ VMALLOC_END` 区域之间查找并分配 `vmap_area`， 比如对虚拟地址和物理页框进行映射关系的建立。**不同之处在于 vmap 建立映射时，page 是函数传入进来的，而 vmalloc 是通过调用 `alloc_page` 接口向 buddy 申请的**，一个建立映射，一个是申请内存。
+
+```c
+| vmap
+|	-> get_vm_area_caller
+|		-> __get_vm_area_node
+|			-> alloc_vmap_area
+|				-> __alloc_vmap_area // 从 VMALLOC 区域申请内存，使用 rb tree 管理 VMALLOC 虚拟地址空间
+|			-> setup_vmalloc_vm // 写入到 vm_struct 中
+|	-> vmap_pages_range
+|		-> vmap_pages_range_noflush
+|			-> __vmap_pages_range_noflush
+|				-> vmap_range_noflush // 最终会调用到 vmap_pte_range，同样执行 set_pte_at 函数
+|		-> flush_cache_vmap // 正常来说解映射之后需要 clean cache，防止后续 dirty data 导致 DDR 中数据被踩，但这里是空函数
+```
 
 ### zsmalloc
 
 ### CMA[^7]
 
-CMA(Contiguous Memory Allocator)负责**物理地址连续的内存分配**。一般系统会在启动过程中，从整个 memory 中配置一段连续内存用于 CMA，然后内核其他的模块可以通过 CMA 的接口 API 进行连续内存的分配。CMA 的核心并不是设计精巧的算法来管理地址连续的内存块，实际上它的**底层还是依赖内核伙伴系统这样的内存管理机制**，或者说 CMA 是处于需要连续内存块的其他内核模块（例如 DMA mapping framework）和内存管理模块之间的一个中间层模块，主要功能包括：
-
-- 解析 DTS 或者命令行中的参数，确定 CMA 内存的区域，这样的区域我们定义为 CMA area；
-- 提供 cma_alloc 和 cma_release 两个接口函数用于分配和释放 CMA pages；
-- 记录和跟踪 CMA area 中各个 pages 的状态；
-- 调用伙伴系统接口，进行真正的内存分配。
+CMA(Contiguous Memory Allocator)负责**物理地址连续的内存分配**。一般系统会在启动过程中，从整个 memory 中配置一段连续内存用于 CMA，然后内核其他的模块可以通过 CMA 的接口 API 进行连续内存的分配。CMA 的核心并不是设计精巧的算法来管理地址连续的内存块，实际上它的**底层还是依赖内核伙伴系统这样的内存管理机制**。
 
 Linux 内核中已经提供了各种内存分配的接口，为何还要建立 CMA 这种连续内存分配的机制呢？
 
-各种各样的驱动有连续内存分配的需求，例如现在大家的手机都有视频功能，camera 功能，这类驱动都需要非常大块的内存，而且有 DMA 用来进行外设和大块内存之间的数据交换。**对于嵌入式设备，一般不会有 IOMMU**，而且 DMA 也不具备 scatter-getter 功能，这时，**驱动分配的大块内存（DMA buffer）必须是物理地址连续的**。
+最主要原因是功能上需要。很多嵌入式设备没有 IOMMU/SMMU，也不支持 scatter-getter，因此这类设备的驱动程序需要操作连续的物理内存空间才能提供服务。早期，这些设备包括相机、硬件音视频解码器和编码器等，它们通常服务于多媒体业务。当前虽然很多设备已经配置了 IOMMU/SMMU，但是依然有诸多嵌入式设备没有 IOMMU/SMMU，需要使用物理地址连续的内存。
 
-顺便说一句，huge page 的连续内存需求和驱动 DMA buffer 还是有不同的，例如在对齐要求上，一个 2M 的 huge page，其底层的 2M 的物理页面的首地址需要对齐在 2M 上，一般而言，DMA buffer 不会有这么高的对齐要求。因此，这里描述的 CMA 主要是为设备驱动准备的，huge page 相关的内容之后描述。
+此外，物理地址连续的内存 cache 命中率更高，访问速度更优，对业务性能有优势。
 
-举个例子，一台手机像素是 1300W，一个像素需要 3B，那么拍摄一幅图片需要的内存大概是 1300W x 3B ＝ 26MB。通过内存管理系统分配 26M 的内存，压力不小。当然，在系统启动之处，伙伴系统中的大块内存比较大，也许分配 26M 很容易，但是随着系统的运行，内存不断的分配、释放，大块内存不断的裂解，再裂解，这时候，内存碎片化导致分配地址连续的大块内存就不是那么容易。
+在系统启动之初，伙伴系统中的大块内存比较大，也许分配大块很容易，但是随着系统的运行，内存不断的分配、释放，大块内存不断的裂解，再裂解，这时候，内存碎片化导致分配地址连续的大块内存就不是那么容易。
 
 在 CMA 被提出来之前有两个选择：
 
@@ -2507,60 +2556,78 @@ Linux 内核中已经提供了各种内存分配的接口，为何还要建立 C
 
 Michal Nazarewicz 的 CMA 补丁能够解决这一问题。对于 CMA 内存，**当前驱动没有分配使用的时候，这些 memory 可以内核的被其他的模块使用（当然有一定的要求）**，而当驱动分配 CMA 内存后，那些被其他模块使用的内存需要吐出来，形成物理地址连续的大块内存，给具体的驱动来使用。
 
-配置 CMA 内存区有两种方法，一种是通过 dts 的 reserved memory，另外一种是通过 command line 参数和内核配置参数。
-
-device tree 中可以包含 reserved-memory node，在该节点的 child node 中，可以定义各种保留内存的信息。**compatible 属性是 shared-dma-pool 的那个节点是专门用于建立 global CMA area 的**，而其他的 child node 都是 for per device CMA area 的。
-
-Global CMA area 的初始化可以参考定义如下：
-
-```c
-RESERVEDMEM_OF_DECLARE(cma, "shared-dma-pool", rmem_cma_setup);
-```
-
-具体的 setup 过程倒是比较简单，从 device tree 中可以获取该 memory range 的起始地址和大小，调用 cma_init_reserved_mem 函数即可以注册一个 CMA area。需要补充说明的是：**CMA 对应的 reserved memory 节点必须有 reusable 属性，不能有 no-map 的属性**。具有 reusable 属性的 reserved memory 有这样的特性，即**在驱动不使用这些内存的时候，OS 可以使用这些内存（当然有限制条件）**，而当驱动从这个 CMA area 分配 memory 的时候，OS 可以回收这些内存，让驱动可以使用它。no-map 属性和地址映射相关，**如果没有 no-map 属性，那么 OS 会为这段 memory 创建地址映射，像其他普通内存一样**。但是有 no-map 属性的往往是专用于某个设备驱动，在驱动中会进行 ioremap，如果 OS 已经对这段地址进行了 mapping，而驱动又一次 mapping，这样就有**不同的虚拟地址 mapping 到同一个物理地址上去**，在某些 ARCH 上（ARMv6 之后的 cpu），会造成不可预知的后果。而 CMA 这个场景，reserved memory 必须要 mapping 好，这样才能用于其他内存分配场景，例如 page cache。
-
-通过命令行参数也可以建立 cma area。这种方式用的少，不再介绍。
-
 #### CMA 初始化
 
-**CMA area 的内存最终还是要并入伙伴系统进行管理**，因此 CMA 模块的初始化必须要在适当的时机，以适当的方式插入到内存管理（包括 memblock 和伙伴系统）初始化过程中。
+##### dts 配置
 
-内存管理子系统进行初始化的时候，首先是 memblock 掌控全局的，这时候需要确定整个系统的的内存布局，简单说就是了解整个 memory 的分布情况，哪些是 memory block 是 memory type，哪些 memory block 是 reserved type。CMA area 对应的是 reserved type。最先进行的是 memory type 的内存块的建立，可以参考如下代码：
+配置 CMA 内存区有两种方法，一种是通过 dts 的 reserved memory，另外一种是通过 command line 参数和内核配置参数。
 
-setup_arch--->setup_machine_fdt--->early_init_dt_scan--->early_init_dt_scan_nodes--->memblock_add
-
-随后会建立 reserved type 的 memory block，可以参考如下代码：
-
-setup_arch--->arm64_memblock_init--->early_init_fdt_scan_reserved_mem--->__fdt_scan_reserved_mem--->memblock_reserve
-
-完成上面的初始化之后，memblock 模块已经通过 device tree 构建了整个系统的内存全貌：**哪些是普通内存区域，哪些是保留内存区域**。对于那些 reserved memory，我们还需要进行初始化，代码如下：
-
-setup_arch--->arm64_memblock_init--->early_init_fdt_scan_reserved_mem--->fdt_init_reserved_mem->__reserved_mem_init_node
-
-memblock 始终是初始化阶段的内存管理模块，最终我们还是要转向伙伴系统，具体的代码如下：
-
-start_kernel--->mm_init--->mem_init--->free_all_bootmem--->free_low_memory_core_early--->__free_memory_core
-
-在上面的过程中，free memory 被释放到伙伴系统中，而 reserved memory 不会进入伙伴系统，对于 CMA area，我们之前说过，最终被伙伴系统管理，因此，在初始化的过程中，CMA area 的内存会全部导入伙伴系统（方便其他应用可以通过伙伴系统分配内存）。具体代码如下：
-
-core_initcall(cma_init_reserved_areas);
-
-我们来分析一下这个 CMA 是怎样转入 buddy 系统进行管理的，
+device tree 中可以包含 reserved-memory node，在该节点的 child node 中，可以定义各种预留内存的信息。可以参考如下示例来配置 cma 内存，
 
 ```c
+        default_cma: linux,cma {
+            compatible = "shared-dma-pool";
+            reg = <0X0 0X0 0X0 0Xxxx>; // base + size
+            reusable;
+            linux,cma-default;
+        };
+        test_cma1: test_cma1 {
+            compatible = "shared-dma-pool";
+            alloc-ranges = <0X0 0X0 0XFFFFFFFF 0XFFFFFFFF>;
+            size = <0X0 0Xxxx>; // size
+            reusable;
+        };
+```
+
+配置 cma 内存必须要有 `compatible = "shared-dma-pool"` 和 `reusable` 属性，不能有 `no-map` 属性，具有 `linux, cma-default` 属性的节点会成为默认的 cma 内存，之后 `cma_alloc` 都是走该节点申请内存。不具有 `linux,cma-default` 可以成为 for per device CMA area。
+
+通过命令行参数也可以建立 cma area，这种方式用的少，不再介绍。
+
+##### 内核初始化
+
+初始化阶段可以分成：解析 dts、预留内存初始化和 buddy 初始化，在 [Memblock](./Memblock.md) 中我们分析了前两步，这里我们继续分析内存怎样从 cma 到 buddy。
+
+```c
+| setup_arch
+| 	-> mm_init
+|		-> mem_init
+| 			-> free_all_bootmem
+| 				-> free_low_memory_core_early
+| 					-> __free_memory_core
+```
+
+CMA 是一块连续的物理内存，用户是通过 cma heap 的方式来使用它的，具体使用流程可以参考[这篇](https://utopianfuture.github.io/mm/DMA-heap.html)文章。在上面的过程中，free memory 被释放到伙伴系统中，而 reserved memory 不会进入伙伴系统，对于 CMA area，我们之前说过，最终被伙伴系统管理，因此，在初始化的过程中，CMA area 的内存会全部导入伙伴系统（方便其他应用可以通过伙伴系统分配内存）。具体代码如下：
+
+```c
+| start_kernel
+| 	-> arch_call_rest_init
+| 		-> rest_init
+|			-> kernel_init
+| 				-> kernel_init_freeable
+| 					-> do_basic_setup
+| 						-> do_initcalls
+| 							-> do_initcall_level // 遍历 initcall_levels
+| 								-> do_one_initcall // 该函数会调用到 core_initcall
+```
+
+最终执行 `cma_init_reserved_areas` 将 CMA 转入 buddy 系统管理，
+
+```c
+core_initcall(cma_init_reserved_areas);
 static int __init cma_init_reserved_areas(void)
 {
 	int i;
 
+    // 这里 cma_area_count 是在 rmem_cma_setup 中调用 cma_init_reserved_mem 进行初始化的
+    // 即在 arm64_memblock_init 进行 memblock 初始化的时候
 	for (i = 0; i < cma_area_count; i++)
 		cma_activate_area(&cma_areas[i]); // 每个 cma_area 都初始化，这是一个全局变量
 
 	return 0;
 }
-core_initcall(cma_init_reserved_areas); // initcall 在内核初始化时执行
 ```
 
-cma_activate_area 主要检查该 CMA 是否所有 page 都在一个 zone 以及调用 `init_cma_reserved_pageblock` 将所有的内存以 page 为单位释放给 buddy。
+`cma_activate_area` 主要检查该 CMA 是否所有 page 都在一个 zone 以及调用 `init_cma_reserved_pageblock` 将所有的内存以 page 为单位释放给 buddy。
 
 ```c
 static void __init cma_activate_area(struct cma *cma)
@@ -2568,7 +2635,9 @@ static void __init cma_activate_area(struct cma *cma)
 	unsigned long base_pfn = cma->base_pfn, pfn;
 	struct zone *zone;
 
-	...
+    // 在通过 cma_alloc 申请时，需要通过 bitmap 管理
+    // 但是通过 buddy 申请时，又没有改变 bitmap，不会有问题么
+	cma->bitmap = bitmap_zalloc(cma_bitmap_maxno(cma), GFP_KERNEL);
 
 	/*
 	 * alloc_contig_range() requires the pfn range specified to be in the
@@ -2584,18 +2653,17 @@ static void __init cma_activate_area(struct cma *cma)
 	}
 
 	for (pfn = base_pfn; pfn < base_pfn + cma->count;
-	     pfn += pageblock_nr_pages)
+	 pfn += pageblock_nr_pages) // pageblock_nr_pages == 512
 		init_cma_reserved_pageblock(pfn_to_page(pfn));
-
 	spin_lock_init(&cma->lock);
 
-    ...
+ ...
 
 	return;
 }
 ```
 
-备注写的很清楚，关于为什么需要将 page type 设置为 `MIGRATE_CMA` 后面有介绍，
+注释写的很清楚，关于**为什么需要将 page type 设置为 `MIGRATE_CMA`** 后面有介绍，
 
 ```c
 /* Free whole pageblock and set its migration type to MIGRATE_CMA. */
@@ -2605,18 +2673,18 @@ void __init init_cma_reserved_pageblock(struct page *page)
 	struct page *p = page;
 
 	do {
-		__ClearPageReserved(p);
+		__ClearPageReserved(p); // 将页面已经设置的 reserved 标志位清除掉
 		set_page_count(p, 0);
 	} while (++p, --i);
 
-	set_pageblock_migratetype(page, MIGRATE_CMA);
-
+	set_pageblock_migratetype(page, MIGRATE_CMA); // 将 migratetype 设置为 MIGRATE_CMA
 	if (pageblock_order >= MAX_ORDER) {
 		i = pageblock_nr_pages;
 		p = page;
+
 		do {
 			set_page_refcounted(p);
-			__free_pages(p, MAX_ORDER - 1);
+			__free_pages(p, MAX_ORDER - 1); // 将 CMA 区域中所有的页面都释放到 buddy 系统中
 			p += MAX_ORDER_NR_PAGES;
 		} while (i -= MAX_ORDER_NR_PAGES);
 	} else {
@@ -2624,18 +2692,18 @@ void __init init_cma_reserved_pageblock(struct page *page)
 		__free_pages(page, pageblock_order);
 	}
 
-	adjust_managed_page_count(page, pageblock_nr_pages);
-	page_zone(page)->cma_pages += pageblock_nr_pages;
+	adjust_managed_page_count(page, pageblock_nr_pages); // 更新伙伴系统管理的内存数量
+	page_zone(page)->cma_pages += pageblock_nr_pages; // 这里涉及到 pageblock 和 zone，是个好的切入点
 }
 ```
 
-至此，所有的 CMA area 的内存进入伙伴系统。
+至此，所有的 CMA area 的内存进入伙伴系统[^9]。
 
-注意，上面的 `RESERVEDMEM_OF_DECLARE(cma, "shared-dma-pool", rmem_cma_setup);` 是 CMA 的初始化，这里是将 CMA 导入到 buddy 系统。
+**注意，上面的 `RESERVEDMEM_OF_DECLARE(cma, "shared-dma-pool", rmem_cma_setup);` 是 CMA 的初始化，这里是将 CMA 导入到 buddy 系统。**
 
 #### CMA 使用
 
-当从伙伴系统请求内存的时候，我们需要提供了一个 gfp_mask 的参数。它有多种类型，不过在 CMA 这个场景，它用来指定请求页面的迁移类型（migrate type）。migrate type 有很多中，其中有一个是 MIGRATE_MOVABLE 类型，被标记为 MIGRATE_MOVABLE 的 page 说明该页面上的数据是可以迁移的。
+当从伙伴系统请求内存的时候，我们需要提供了一个 gfp_mask 的参数。它有多种类型，不过**在 CMA 这个场景，它用来指定请求页面的迁移类型（migrate type）**。migrate type 有很多中，其中有一个是 `MIGRATE_MOVABLE` 类型，被标记为 `MIGRATE_MOVABLE` 的 page 说明该页面上的数据是**可以迁移的**。
 
 ```c
 enum migratetype {
@@ -2654,72 +2722,60 @@ enum migratetype {
 };
 ```
 
-伙伴系统不会跟踪每一个 page frame 的迁移类型，实际上它是按照 pageblock 为单位进行管理的，memory zone 中会有一个 bitmap，指明该 zone 中每一个 pageblock 的 migrate type。在处理内存分配请求的时候，一般会首先从和请求相同 migrate type（gfp_mask）的 pageblocks 中分配页面。如果分配不成功，不同 migrate type 的 pageblocks 中也会考虑，甚至可能改变 pageblock 的 migrate type。这意味着一个 non-movable 页面请求也可以从 migrate type 是 movable 的 pageblock 中分配。这一点 CMA 是不能接受的，所以引入了一个新的 migrate type：MIGRATE_CMA。这种迁移类型具有一个重要性质：**只有可移动的页面可以从 MIGRATE_CMA 的 pageblock 中分配**。
+伙伴系统不会跟踪每一个 page frame 的迁移类型，实际上它是按照 pageblock 为单位进行管理的，memory zone 中会有一个 bitmap，指明该 zone 中每一个 pageblock 的 migrate type。在处理内存分配请求的时候，一般会首先从和请求相同 migrate type（gfp_mask）的 pageblock 中分配页面。如果分配不成功，不同 migrate type 的 pageblock 中也会考虑（这点在 alloc_pages 函数中很明确）。这意味着一个 unmovable 页面请求也可以从 migrate type 是 movable 的 pageblock 中分配。这一点 CMA 是不能接受的，所以引入了一个新的 migrate type：MIGRATE_CMA。这种迁移类型具有一个重要性质：**只有可移动的页面可以从 MIGRATE_CMA 的 pageblock 中分配**。
 
 ##### 分配连续内存
 
-cma_alloc 用来从指定的 CMA area 上分配 count 个连续的 page frame，按照 align 对齐。具体的代码就不再分析了，比较简单，实际上就是从 bitmap 上搜索 free page 的过程，一旦搜索到，就调用 alloc_contig_range 向伙伴系统申请内存。需要注意的是，**CMA 内存分配过程是一个比较“重”的操作，可能涉及页面迁移、页面回收等操作，因此不适合用于 atomic context**。
+设备可以通过如下三种途径申请 cma 内存：
 
-但设备往往不是直接调用 cma_alloc 的，而是调用如下三个封装函数：
+- dma heap：cma heap, carveout heap 等都是通过 cma_alloc 申请 cma 内存；
+- dma_alloc_coherent：正常的设备可以使用该函数来申请 CMA 内存，其有三条路径，我们下面来详细分析一下这个函数；
+- buddy 系统 fallback 到 cma 内存；
 
-- cma_heap_allocate：这个函数是 dma-heap 申请分配内存的接口，其也是通过 cma_alloc 来分配；
-- dma_alloc_contiguous：正常的设备可以使用该函数来申请 CMA 内存，我们下面来详细分析一下这个函数；
-- dma_alloc_from_contiguous：这个函数的功能和 dma_alloc_contiguous 一样，但从代码上来看，它还是一个内部函数，其他函数来调用它；
+**dma heap**
 
-**dma_alloc_contiguous**
-
-这个函数没有使用 EXPORT_SYMBOL 导出来，所以在现行 google GKI 的限制下，我们无法使用到它。
+以 cma heap 为例，
 
 ```c
-/**
- * dma_alloc_contiguous() - allocate contiguous pages
- * @dev:   Pointer to device for which the allocation is performed.
- * @size:  Requested allocation size.
- * @gfp:   Allocation flags.
- *
- * tries to use device specific contiguous memory area if available, or it
- * tries to use per-numa cma, if the allocation fails, it will fallback to
- * try default global one.
- *
- * Note that it bypass one-page size of allocations from the per-numa and
- * global area as the addresses within one page are always contiguous, so
- * there is no need to waste CMA pages for that kind; it also helps reduce
- * fragmentations.
- */
-struct page *dma_alloc_contiguous(struct device *dev, size_t size, gfp_t gfp)
+static struct dma_buf *cma_heap_allocate(struct dma_heap *heap,
+					 unsigned long len,
+					 unsigned long fd_flags,
+					 unsigned long heap_flags)
 {
-#ifdef CONFIG_DMA_PERNUMA_CMA
-	int nid = dev_to_node(dev);
-#endif
+	...
 
-	/* CMA can be used only in the context which permits sleeping */
-	if (!gfpflags_allow_blocking(gfp)) // __GFP_DIRECT_RECLAIM 需要置 1
-		return NULL;
-	if (dev->cma_area) // 没有设备独占的 cma
-		return cma_alloc_aligned(dev->cma_area, size, gfp);
-	if (size <= PAGE_SIZE)
-		return NULL;
+	if (align > CONFIG_CMA_ALIGNMENT)
+		align = CONFIG_CMA_ALIGNMENT;
 
-#ifdef CONFIG_DMA_PERNUMA_CMA
-	if (nid != NUMA_NO_NODE && !(gfp & (GFP_DMA | GFP_DMA32))) {
-		struct cma *cma = dma_contiguous_pernuma_area[nid];
-		struct page *page;
+	cma_pages = cma_alloc(cma_heap->cma, pagecount, align, false);
+	if (!cma_pages)
+		goto free_buffer;
 
-		if (cma) {
-			page = cma_alloc_aligned(cma, size, gfp);
-			if (page)
-				return page;
-		}
+	...
+
+	buffer->pages = kmalloc_array(pagecount, sizeof(*buffer->pages), GFP_KERNEL);
+	if (!buffer->pages) {
+		ret = -ENOMEM;
+		goto free_cma;
 	}
-#endif
-	if (!dma_contiguous_default_area)
-		return NULL;
 
-	return cma_alloc_aligned(dma_contiguous_default_area, size, gfp);
+	for (pg = 0; pg < pagecount; pg++)
+		buffer->pages[pg] = &cma_pages[pg];
+	buffer->cma_pages = cma_pages;
+	buffer->heap = cma_heap;
+	buffer->pagecount = pagecount;
+
+	...
+
+	return dmabuf;
 }
 ```
 
-和 dma_alloc_contiguous 类似的是 dma_alloc_coherent，它是用于申请 reserved map 形式的内存。从代码上来看，使用这个函数的场景更多（因为它 EXPORT 出来了，驱动可以使用）。
+cma heap 是申请 default cma 内存的，我们也可以创建设备专用的 cma 内存，然后创建一个 heap 给专门的设备/场景使用。
+
+**dma_alloc_coherent**
+
+这部分的详细分析可以看这篇[文档](../mm/Memory-Hierarchy.md)，
 
 ```c
 static inline void *dma_alloc_coherent(struct device *dev, size_t size,
@@ -2730,9 +2786,635 @@ static inline void *dma_alloc_coherent(struct device *dev, size_t size,
 }
 ```
 
+`dma_alloc_attrs` 有 3 条分配路径，对应 3 种使用情况，
+
+```c
+void *dma_alloc_attrs(struct device *dev, size_t size, dma_addr_t *dma_handle,
+		gfp_t flag, unsigned long attrs)
+{
+	const struct dma_map_ops *ops = get_dma_ops(dev);
+	void *cpu_addr;
+
+	WARN_ON_ONCE(!dev->coherent_dma_mask);
+	if (dma_alloc_from_dev_coherent(dev, size, dma_handle, &cpu_addr)) // 私有的 dma 内存
+		return cpu_addr;
+
+	/* let the implementation decide on the zone to allocate from: */
+	flag &= ~(__GFP_DMA | __GFP_DMA32 | __GFP_HIGHMEM);
+	if (dma_alloc_direct(dev, ops)) // default cma
+		cpu_addr = dma_direct_alloc(dev, size, dma_handle, flag, attrs);
+	else if (ops->alloc) // 设置了 iommu_dma_ops 的情况
+		cpu_addr = ops->alloc(dev, size, dma_handle, flag, attrs);
+	else
+		return NULL;
+
+	return cpu_addr;
+}
+EXPORT_SYMBOL(dma_alloc_attrs);
+
+```
+上述 3 条路径中，`dma_direct_alloc` 和 `ops->alloc` 可能会走到 `cma_alloc` 函数，其他情况需要根据情况详细分析。我们来看一下 `cma_alloc` 是怎样从 default cma 中分配连续的物理内存。
+
+##### cma_alloc
+
+cma_alloc 用来从指定的 CMA area 上分配 count 个连续的 page frame，按照 align 对齐。具体过程就是从 bitmap 上搜索 free page 的过程，一旦搜索到，就调用 alloc_contig_range 向伙伴系统申请内存。需要注意的是，**CMA 内存分配过程是一个比较“重”的操作，可能涉及页面迁移、页面回收等操作，因此不适合用于 atomic context**。整个分配过程如下图所示：
+
+```c
+| cma_alloc
+|	-> bitmap_find_next_zero_area_off
+|	-> bitmap_set
+|	-> alloc_contig_range
+|		// 虽然是连续的一段物理内存，但是它们可能在不同 free_list 中
+|		-> start_isolate_page_range
+|			// 先隔离头尾两个 pageblock
+|			// 先是调用 set_migratetype_isolate 配置 MIGRATE_ISOLATE
+|			// 然后对范围内的 page 进行调整，如果这些 page 是一个 page order 的一部分
+|			// 那么需要将这些 page 拆开来
+|			// 对 compound_page 的处理会复杂一点，之后再分析
+|			-> isolate_single_pageblock
+|				-> set_migratetype_isolate
+|					// 如果范围内有 page 是 reserved 等情况，就是不可移动的
+|					// 在这个过程中，大页，复合页都是要特殊处理的，之后有时间再分析
+|					-> has_unmovable_pages
+|					-> set_pageblock_migratetype
+|					-> move_freepages_block
+|						-> move_freepages // 为什么要将这些 pages 移走
+|			-> set_migratetype_isolate // 隔离剩下的 pageblock
+|		// 从注释来看，执行该函数是因为 allocator 和 isolate 之间没有同步操作
+|		// 可能这边把 page 配置为 isolate 了，该 page 又释放了
+|		// 执行该函数可以 flush most of them?
+|		-> drain_all_pages
+|		-> __alloc_contig_migrate_range
+|			-> isolate_migratepages_range
+|				-> isolate_migratepages_block // 处理各种情况的 folios，最后添加到 cc->migratepges 链表中
+|			-> reclaim_clean_pages_from_list
+|				-> shrink_folio_list // 根据各种 folio 的情况，调整 clean_list 中的 folios 位置，确定是否要回收
+|			-> migrate_pages
+|				-> alloc_migration_target
+|				-> migrate_pages_batch/migrate_pages_sync
+|					-> migrate_pages_batch
+|						-> migrate_folio_unmap
+|						-> migrate_folio_move
+|		-> test_pages_isolated
+|		// 这里为什么还要 isolate 一次
+|		// 其实不是 isolate，而是 isolate 完后，将这些 pages 从 buddy 里扣掉
+|		// 这样下次就不会再申请到这些 pages
+|		-> isolate_freepages_range
+|			-> isolate_freepages_block
+|				-> __isolate_free_page
+|					-> del_page_from_free_list
+|		-> undo_isolate_page_range
+|			-> unset_migratetype_isolate
+|	-> cma_clear_bitmap
+```
+
+![img](https://raw.githubusercontent.com/UtopianFuture/UtopianFuture.github.io/81305767754ca8df95d18da10465dd730bc093be/image/cma_alloc.svg)
+
+```c
+/**
+ * cma_alloc() - allocate pages from contiguous area
+ * @cma: Contiguous memory region for which the allocation is performed.
+ * @count: Requested number of pages.
+ * @align: Requested alignment of pages (in PAGE_SIZE order).
+ * @no_warn: Avoid printing message about failed allocation
+ *
+ * This function allocates part of contiguous memory on specific
+ * contiguous memory area.
+ */
+struct page *cma_alloc(struct cma *cma, unsigned long count,
+		 unsigned int align, bool no_warn) // 预留的 cma 内存是 4MB 对齐，cma_alloc 申请是 align 对齐
+{
+	unsigned long mask, offset;
+	unsigned long pfn = -1;
+	unsigned long start = 0;
+	unsigned long bitmap_maxno, bitmap_no, bitmap_count;
+	unsigned long i;
+	struct page *page = NULL;
+
+    ...
+
+    // 获取 bimap 最大的可用 bit 数(bitmap_maxno)，此次分配需要多大的 bitmap(bitmap_count)等
+	mask = cma_bitmap_aligned_mask(cma, align);
+	offset = cma_bitmap_aligned_offset(cma, align);
+	bitmap_maxno = cma_bitmap_maxno(cma);
+	bitmap_count = cma_bitmap_pages_to_bits(cma, count);
+
+	...
+
+	for (;;) {
+		spin_lock_irq(&cma->lock); // 该 spinlock 是用来保护 cma->bitmap 的
+
+        // 从 bitmap 中找到一块 align 对齐，size > count 的空闲块
+        // 遍历是从 start = 0 开始，一直到 bitmap_maxno
+        // 这里 bitmap 只会记录 cma_alloc 分配的内存，不会记录 buddy 分配的 cma 内存
+        // 感觉这样分配势必带来效率低下
+        // 如果 alloc_contig_range 返回失败，说明这块内存被 buddy 分配出去了
+        // 那么后面调用 cma_alloc 也就无需尝试这块内存了
+		bitmap_no = bitmap_find_next_zero_area_off(cma->bitmap,
+				bitmap_maxno, start, bitmap_count, mask,
+				offset);
+		if (bitmap_no >= bitmap_maxno) { // 分配失败
+			if ((num_attempts < max_retries) && (ret == -EBUSY)) {
+				spin_unlock_irq(&cma->lock);
+				if (fatal_signal_pending(current))
+					break;
+				...
+
+				start = 0;
+				ret = -ENOMEM;
+				schedule_timeout_killable(msecs_to_jiffies(100));
+				num_attempts++;
+				continue;
+			} else {
+				spin_unlock_irq(&cma->lock);
+				break;
+			}
+		}
+
+        // 将要分配的页面的对应 bitmap 先置位为 1，表示已经分配了
+		bitmap_set(cma->bitmap, bitmap_no, bitmap_count);
+
+		/*
+		 * It's safe to drop the lock here. We've marked this region for
+		 * our exclusive use. If the migration fails we will take the
+		 * lock again and unmark it.
+		 */
+		spin_unlock_irq(&cma->lock);
+		pfn = cma->base_pfn + (bitmap_no << cma->order_per_bit);
+		mutex_lock(&cma_mutex); // 这里为什么又用 mutex?
+
+        // 关键函数，分配物理内存，下面分析
+        // 这个函数主要是 migrate_page，如果迁移成功，返回 success，说明这块内存可以用，后续直接使用即可
+        // 如果迁移失败，说明无法使用
+		ret = alloc_contig_range(pfn, pfn + count, MIGRATE_CMA,
+				 GFP_KERNEL | (no_warn ? __GFP_NOWARN : 0));
+		mutex_unlock(&cma_mutex);
+		if (ret == 0) { // 分配成功
+			page = pfn_to_page(pfn); // pfn 是从 cma->base_pfn 来的，不是 alloc_contig_range 分配出来的
+			break;
+		}
+
+		cma_clear_bitmap(cma, pfn, count); // 分配失败，清除掉 bitmap
+		if (ret != -EBUSY)
+			break;
+
+		...
+
+	}
+
+	...
+
+	return page;
+}
+EXPORT_SYMBOL_GPL(cma_alloc);
+```
+
+`cma_alloc` 分配过程中可能存在 schedule，不适合用于 atomic context。
+
+**alloc_contig_range**
+
+原来在分配前还要将该块内存配置成 `MIGRATE_ISOLATE` 状态。这里面的 hook 点能否做些文章呢？
+
+```c
+int alloc_contig_range(unsigned long start, unsigned long end,
+		 unsigned migratetype, gfp_t gfp_mask)
+{
+	unsigned long outer_start, outer_end;
+	unsigned int order;
+	int ret = 0;
+	bool skip_drain_all_pages = false;
+
+	...
+
+    // 将目标内存块的 pageblock 的迁移类型由 MIGRATE_CMA 变更为 MIGRATE_ISOLATE
+    // 因为 buddy 系统不会从 MIGRATE_ISOLATE 迁移类型的 pageblock 分配页面
+    // 可以防止在 cma 分配过程中，这些页面又被人从 buddy 分走
+	ret = start_isolate_page_range(pfn_max_align_down(start),
+				 pfn_max_align_up(end), migratetype, 0);
+	trace_android_vh_cma_drain_all_pages_bypass(migratetype,
+						&skip_drain_all_pages); // 这个 hook 点能用来干嘛
+	if (!skip_drain_all_pages)
+		drain_all_pages(cc.zone); // 回收 pcp(?)
+
+    // 将目标内存块已使用的页面进行迁移处理，迁移过程就是将页面内容复制到其他内存区域，并更新对该页面的引用
+	ret = __alloc_contig_migrate_range(&cc, start, end);
+
+    ...
+
+done:
+	undo_isolate_page_range(pfn_max_align_down(start), // 取消 isolate 状态
+				pfn_max_align_up(end), migratetype);
+	return ret;
+}
+EXPORT_SYMBOL(alloc_contig_range);
+```
+
+**start_isolate_page_range**
+
+如何将 page 隔离出来，什么情况下会失败，
+
+```c
+int start_isolate_page_range(unsigned long start_pfn, unsigned long end_pfn,
+			 int migratetype, int flags, gfp_t gfp_flags) // migratetype = MIGRATE_CMA
+{
+	unsigned long pfn;
+	struct page *page;
+
+	/* isolation is done at page block granularity */
+	unsigned long isolate_start = pageblock_start_pfn(start_pfn);
+	unsigned long isolate_end = pageblock_align(end_pfn);
+	int ret;
+	bool skip_isolation = false;
+
+	/* isolate [isolate_start, isolate_start + pageblock_nr_pages) pageblock */
+	ret = isolate_single_pageblock(isolate_start, flags, gfp_flags, false,
+			skip_isolation, migratetype);
+
+	...
+
+	/* isolate [isolate_end - pageblock_nr_pages, isolate_end) pageblock */
+	ret = isolate_single_pageblock(isolate_end, flags, gfp_flags, true,
+			skip_isolation, migratetype);
+
+	...
+
+	/* skip isolated pageblocks at the beginning and end */
+	for (pfn = isolate_start + pageblock_nr_pages;
+	 pfn < isolate_end - pageblock_nr_pages;
+	 pfn += pageblock_nr_pages) {
+		page = __first_valid_page(pfn, pageblock_nr_pages);
+		if (page && set_migratetype_isolate(page, migratetype, flags,
+					start_pfn, end_pfn)) {
+			undo_isolate_page_range(isolate_start, pfn, migratetype);
+			unset_migratetype_isolate(
+				pfn_to_page(isolate_end - pageblock_nr_pages),
+				migratetype);
+
+			return -EBUSY;
+		}
+	}
+
+	return 0;
+}
+```
+
+**isolate_single_pageblock**
+
+```c
+static int isolate_single_pageblock(unsigned long boundary_pfn, int flags,
+			gfp_t gfp_flags, bool isolate_before, bool skip_isolation,
+			int migratetype)
+{
+	unsigned long start_pfn;
+	unsigned long isolate_pageblock;
+	unsigned long pfn;
+	struct zone *zone;
+	int ret;
+
+	VM_BUG_ON(!pageblock_aligned(boundary_pfn));
+
+	if (isolate_before)
+		isolate_pageblock = boundary_pfn - pageblock_nr_pages;
+	else
+		isolate_pageblock = boundary_pfn;
+
+	/*
+	 * scan at the beginning of MAX_ORDER_NR_PAGES aligned range to avoid
+	 * only isolating a subset of pageblocks from a bigger than pageblock
+	 * free or in-use page. Also make sure all to-be-isolated pageblocks
+	 * are within the same zone.
+	 */
+	zone = page_zone(pfn_to_page(isolate_pageblock));
+	start_pfn = max(ALIGN_DOWN(isolate_pageblock, MAX_ORDER_NR_PAGES),
+				 zone->zone_start_pfn);
+	if (skip_isolation) {
+
+		...
+
+	} else { // 为什么是先设置 ISOLATE，下面再拆分，那岂不是可能有些范围外的 page 也给配置上了
+		ret = set_migratetype_isolate(pfn_to_page(isolate_pageblock), migratetype,
+				flags, isolate_pageblock, isolate_pageblock + pageblock_nr_pages);
+	}
+
+	...
+
+	for (pfn = start_pfn; pfn < boundary_pfn;) {
+		struct page *page = __first_valid_page(pfn, boundary_pfn - pfn);
+
+		VM_BUG_ON(!page);
+		pfn = page_to_pfn(page);
+
+		/*
+		 * start_pfn is MAX_ORDER_NR_PAGES aligned, if there is any
+		 * free pages in [start_pfn, boundary_pfn), its head page will
+		 * always be in the range.
+		 */
+		if (PageBuddy(page)) {
+			int order = buddy_order(page);
+			if (pfn + (1UL << order) > boundary_pfn) {
+				/* free page changed before split, check it again */
+				if (split_free_page(page, order, boundary_pfn - pfn)) // 拆开来
+					continue;
+			}
+
+			pfn += 1UL << order;
+			continue;
+		}
+
+		/*
+		 * migrate compound pages then let the free page handling code
+		 * above do the rest. If migration is not possible, just fail.
+		 */
+		if (PageCompound(page)) {
+
+			... // 这种情况很复杂，下次再分析
+
+		}
+
+		pfn++;
+
+	}
+
+	return 0;
+
+failed:
+	/* restore the original migratetype */
+	if (!skip_isolation)
+		unset_migratetype_isolate(pfn_to_page(isolate_pageblock), migratetype);
+
+	return -EBUSY; // 没隔离成功
+}
+```
+
+**set_migratetype_isolate**
+
+```c
+static int set_migratetype_isolate(struct page *page, int migratetype, int isol_flags,
+			unsigned long start_pfn, unsigned long end_pfn)
+{
+	struct zone *zone = page_zone(page);
+	struct page *unmovable;
+	unsigned long flags;
+	unsigned long check_unmovable_start, check_unmovable_end;
+
+	...
+
+	check_unmovable_start = max(page_to_pfn(page), start_pfn);
+	check_unmovable_end = min(pageblock_end_pfn(page_to_pfn(page)),
+				 end_pfn);
+
+	unmovable = has_unmovable_pages(check_unmovable_start, check_unmovable_end,
+			migratetype, isol_flags);
+	if (!unmovable) {
+		unsigned long nr_pages;
+		int mt = get_pageblock_migratetype(page);
+
+		set_pageblock_migratetype(page, MIGRATE_ISOLATE);
+		zone->nr_isolate_pageblock++;
+		nr_pages = move_freepages_block(zone, page, MIGRATE_ISOLATE,
+									NULL);
+		__mod_zone_freepage_state(zone, -nr_pages, mt);
+		spin_unlock_irqrestore(&zone->lock, flags);
+
+		return 0;
+	}
+
+	spin_unlock_irqrestore(&zone->lock, flags);
+	if (isol_flags & REPORT_FAILURE) {
+		/*
+		 * printk() with zone->lock held will likely trigger a
+		 * lockdep splat, so defer it here.
+		 */
+		dump_page(unmovable, "unmovable page");
+	}
+
+	return -EBUSY;
+}
+```
+
+**__alloc_contig_migrate_range**
+
+看一下页面是怎样迁移的。
+
+```c
+/* [start, end) must belong to a single zone. */
+static int __alloc_contig_migrate_range(struct compact_control *cc,
+					unsigned long start, unsigned long end)
+{
+	/* This function is based on compact_zone() from compaction.c. */
+	unsigned int nr_reclaimed;
+	unsigned long pfn = start;
+	unsigned int tries = 0;
+	int ret = 0;
+	struct migration_target_control mtc = {
+		.nid = zone_to_nid(cc->zone),
+		.gfp_mask = GFP_USER | __GFP_MOVABLE | __GFP_RETRY_MAYFAIL,
+	};
+
+    // 将准备添加到 LRU 链表上，却还未加入 LRU 的页面(还待在 LRU 缓存)添加到 LRU 上，并关闭 LRU 缓存功能
+	lru_cache_disable();
+	while (pfn < end || !list_empty(&cc->migratepages)) {
+		if (fatal_signal_pending(current)) {
+			ret = -EINTR;
+			break;
+		}
+
+		if (list_empty(&cc->migratepages)) {
+			cc->nr_migratepages = 0;
+
+            // 隔离要分配区域已经被 buddy 使用的 page，存放到 cc 的链表中
+            // 返回的是最后扫描并处理的页框号
+            // 这里隔离主要是防止后续迁移过程，page 被释放或者被 LRU 回收路径使用
+			ret = isolate_migratepages_range(cc, pfn, end);
+			if (ret && ret != -EAGAIN)
+				break;
+
+			pfn = cc->migrate_pfn;
+			tries = 0;
+		} else if (++tries == 5) {
+			ret = -EBUSY;
+			break;
+		}
+
+        // 对于干净的文件页，直接回收即可
+		nr_reclaimed = reclaim_clean_pages_from_list(cc->zone,
+							&cc->migratepages);
+		cc->nr_migratepages -= nr_reclaimed;
+
+        // 页面迁移在内核态的主要接口，内核中涉及到页面迁移的功能大都会调到
+        // 它把可移动的物理页迁移到一个新分配的页面
+        // 这里应该很复杂，见下面的“页面迁移”章节
+		ret = migrate_pages(&cc->migratepages, alloc_migration_target,
+			NULL, (unsigned long)&mtc, cc->mode, MR_CONTIG_RANGE, NULL);
+	}
+
+	lru_cache_enable();
+
+ ...
+
+	return 0;
+}
+```
+
+**undo_isolate_page_range**
+
+**buddy fallback 使用**
+
+调用 alloc_pages 从 buddy 申请内存时，如果带上了 ALLOC_CMA 标识，可能会从 cma 中分配内存，
+
+```c
+static __always_inline struct page *
+__rmqueue(struct zone *zone, unsigned int order, int migratetype,
+						unsigned int alloc_flags)
+{
+	struct page *page;
+
+	if (IS_ENABLED(CONFIG_CMA)) {
+		/*
+		 * Balance movable allocations between regular and CMA areas by
+		 * allocating from CMA when over half of the zone's free memory
+		 * is in the CMA area.
+		 */
+		if (alloc_flags & ALLOC_CMA &&
+		 zone_page_state(zone, NR_FREE_CMA_PAGES) >
+		 zone_page_state(zone, NR_FREE_PAGES) / 2) {
+
+            // 如果有 ALLOC_CMA 标识位并且 CMA_PAGES > FREE_PAGE / 2，
+            // 尝试从 MIGRATE_CMA 申请，
+            // 上述标志位都没有，才从指定的 migratetype 中申请
+            // 也就是说，如果申请者配置了 ALLOC_CMA 标志位
+            // 就能优先从 cma 中申请内存
+			page = __rmqueue_cma_fallback(zone, order);
+			if (page)
+				return page;
+		}
+	}
+
+retry:
+	page = __rmqueue_smallest(zone, order, migratetype);
+	if (unlikely(!page)) {
+		if (alloc_flags & ALLOC_CMA)
+			page = __rmqueue_cma_fallback(zone, order);
+
+		if (!page && __rmqueue_fallback(zone, order, migratetype,
+								alloc_flags))
+			goto retry;
+	}
+
+	return page;
+}
+```
+
+```c
+static __always_inline struct page *__rmqueue_cma_fallback(struct zone *zone,
+					unsigned int order)
+{
+	return __rmqueue_smallest(zone, order, MIGRATE_CMA);
+}
+
+static __always_inline
+struct page *__rmqueue_smallest(struct zone *zone, unsigned int order,
+						int migratetype)
+{
+	unsigned int current_order;
+	struct free_area *area;
+	struct page *page;
+
+	/* Find a page of the appropriate size in the preferred list */
+	for (current_order = order; current_order <= MAX_ORDER; ++current_order) {
+		area = &(zone->free_area[current_order]);
+		page = get_page_from_free_area(area, migratetype); // 就是从 MIGRATE_CMA 中申请内存
+		if (!page)
+			continue;
+
+		del_page_from_free_list(page, zone, current_order);
+		expand(zone, page, order, current_order, migratetype);
+		set_pcppage_migratetype(page, migratetype);
+		trace_mm_page_alloc_zone_locked(page, order, migratetype,
+				pcp_allowed_order(order) &&
+				migratetype < MIGRATE_PCPTYPES);
+		return page;
+	}
+
+	return NULL;
+}
+```
+
+cma 存在两个问题：
+
+- CMA 区域内存利用率低。假设物理内存中 CMA、Movable、其他（Unmovable 和 Reclaimable）的量分别是 X、Y、Z，通常情况下 X < Y 且 X<Z。显然，当用户通过 buddy 系统先申请 X 数量的 Movable 类型内存，这时申请的是 free_list[MIGRATE_Movable]，再申请 Y+Z 数量的 Unmovable 时，就会出现：CMA 区域内存充足，但 Unmovable 内存申请不到内存的问题，因为 Unmovalbe 类型无法从 CMA 中申请；
+
+ 可以采用 Movable 申请优先从 CMA 内存中申请，但是这样会导致 cma_alloc 变慢，因为需要迁移的 page 变多了。
+
+- 部分 Movable 内存无法迁移导致 cma_alloc 失败。部分 Movable 内存在某些情况下无法迁移，如果这类内存处于 CMA 区域，会导致 cma_alloc 失败。[文章](https://lwn.net/Articles/636234/)中首先提出该问题，该问题是 CMA 区域的 Movable 内存被长期 pin 住，导致这些内存会变得“不可迁移”；
+
 ##### 释放连续内存
 
-分配连续内存的逆过程，除了 bitmap 的操作之外，最重要的就是调用 free_contig_range，将指定的 pages 返回伙伴系统。
+分配连续内存的逆过程，除了 bitmap 的操作之外，最重要的就是调用 `free_contig_range`，将指定的 pages 返回伙伴系统。
+
+```c
+bool cma_release(struct cma *cma, const struct page *pages,
+		 unsigned long count)
+{
+	unsigned long pfn;
+
+	if (!cma_pages_valid(cma, pages, count))
+		return false;
+
+	pr_debug("%s(page %p, count %lu)\n", __func__, (void *)pages, count);
+
+	pfn = page_to_pfn(pages);
+
+	VM_BUG_ON(pfn + count > cma->base_pfn + cma->count);
+
+	free_contig_range(pfn, count); // 这里调用 __free_page 释放回 buddy
+	cma_clear_bitmap(cma, pfn, count);
+	trace_cma_release(cma->name, pfn, pages, count);
+
+	return true;
+}
+EXPORT_SYMBOL_GPL(cma_release);
+```
+
+##### **问题**
+
+- cma 如何初始化；
+  先在 memblock 初始化时通过 RESERVEDMEM_OF_DECLARE(cma, "shared-dma-pool", rmem_cma_setup); 回调到 rmem_cma_setup 进行初始化，然后在 rest_init 函数中通过 core_initcall(cma_init_reserved_areas); 将每一块 CMA 内存释放到 buddy 系统，后续可以从 buddy 中 fallback 申请；
+
+- dts 如何配置，有什么特殊要求；
+  配置 cma 内存必须要有 compatible = "shared-dma-pool" 和 reusable 属性，不能有 no-map 属性，具有 linux, cma-default 属性的节点会成为默认的 cma 内存，之后 cma_alloc 都是走该节点申请内存。不具有 linux,cma-default 可以成为 for per device CMA area。
+
+- cma 初始化时如何和 buddy 关联；
+  在 rest_init 函数中通过 core_initcall(cma_init_reserved_areas); 将每一块 CMA 内存释放到 buddy 系统，后续可以从 buddy 中 fallback 申请；
+
+- cma 内存被 buddy 申请后如何迁移；
+  在 cma_alloc 函数中会调用 migrate_page 进行内存迁移；
+
+- 如何申请使用 cma；
+  - dma heap：cma heap, carveout heap 等都是通过 cma_alloc 申请 cma 内存；
+  - buddy 系统 fallback 到 cma 内存；
+
+- MIGRATE_MOVABLE, MIGRATE_CMA 和 MIGRATE_UNMOVABLE 有什么区别，分别适用于哪种场景；
+  - 在调用 alloc_pages 申请内存时，如果配置了 MIGRATE_MOVABLE 属性，那么在 prepare_alloc_pages 中会将 ALLOC_CMA 也置上；
+  - ALLOC_CMA 又是在什么场景下使用的；
+
+- MIGRATE_CMA 是一个 free_list，alloc_pages 是调用 get_page_from_free_area 从 free_list 中划走，但是 cma__alloc 还维护了一个 bitmap，两者之间信息怎样交互？
+  没有交互，在 bitmap 中到合适的内存块就尝试迁移，如果迁移成功，表示可以使用，否则继续遍历；
+
+- 当前哪些场景使用了 CMA 内存；
+  媒体组件的镜像加载，安全内存场景；
+
+- DEBUG
+  调用 cma_alloc 申请 cma 内存失败，返回 EBUSY，怎么办？
+  首先返回 EBUSY 的情况有以下几种：
+    - 有些 page 是 unmovable 的，无法配置为 MIGRATE_ISOLATE 属性;
+    - 有些 page 已经配置为 MIGRATE_ISOLATE 属性；
+    - 迁移超过 5 次还未将所有的 page 迁移走；
+
+    可以加日志确定是哪种情况导致的失败，然后 cma 内存是有固定范围的，在 memblock 阶段就可以确定下来。我们可以针对不同的情况加打印：
+    - 在所有会配置 unmovable 属性的地方加打印，输出 page_own；
+    - cma_alloc 函数的使用者是已知的，在配置 MIGRATE_ISOLATE 的地方把 PID 打印出来；
+    - 这个情况比较复杂，还需要分析；
 
 ### 进程地址空间
 
@@ -3194,6 +3876,7 @@ static long __get_user_pages(struct mm_struct *mm,
 			vma = find_extend_vma(mm, start); // 查找 VMA
 
 			...
+
 		}
 retry:
 		...
@@ -3204,6 +3887,7 @@ retry:
 			ret = faultin_page(vma, start, &foll_flags, locked); // 人为的触发缺页异常，后面详细分析
 
             ...
+
 		}
         ...
 
@@ -3236,20 +3920,19 @@ out:
 
 简单总结一下 malloc 的操作流程。标准 C 库函数 malloc 最后使用的系统调用是 brk，传入的参数只有 brk 的结束地址，用这个地址和`mm -> brk` 比较，确定是释放内存还是分配内存。而需要分配内存的大小为 `newbrk-oldbrk`，这里 `newbrk` 就是传入的参数，`oldbrk` 是`mm -> brk`。brk 系统调用申请的内存空间貌似都是 `0x21000`。同时根据传入的 brk 在 VMA 的红黑树中寻找是否存在已经分配的内存块，如果有的话那么就不需要从新分配，否则就调用 `do_brk_flags` 分配新的 VMA，然后进行初始化，更新该进程的 `mm`。这样来看就是创建一个 VMA 嘛，物理空间都是发生 #PF 才分配的。
 
-### mmap
+### mmap/munmap[^11]
 
-mmap 就是将文件映射到进程的物理地址空间，使得进程访问文件和正常的访问内存一样。
+mmap 就是将文件映射到进程的物理地址空间，使得进程访问文件和正常的访问内存一样（由于 linux 一切皆文件的思想，这里文件可以指申请的一块内存，一个外设，一个文件，所以 mmap 的使用非常广泛，意味着它要处理非常多的情况）。
 
 ![mmap.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/mmap.png?raw=true)
 
 根据文件关联性和映射区域是否共享等属性，mmap 映射可以分为 4 类：
-
 - 私有匿名映射。匿名映射即没有映射对应的相关文件，内存区域的内容会被初始化为 0；
 - 共享匿名映射。共享匿名映射让相关进程共享一块内存区域，通常用于父、子进程之间的通信；
 - 私有文件映射。该映射的场景是加载动态共享库；
 - 共享文件映射。这种映射有两种使用场景：
-  - 读写文件；
-  - 进程间通讯。进程之间的地址空间是相互隔离的，如果多个进程同时映射到一个文件，就实现了多进程间的共享内存通信。
+ - 读写文件；
+ - 进程间通讯。进程之间的地址空间是相互隔离的，如果多个进程同时映射到一个文件，就实现了多进程间的共享内存通信。
 
 mmap 机制在内核中的实现和 brk 类似，但其和缺页中断机制结合后会复杂很多。如内存漏洞 [Dirty COW](https://blog.csdn.net/hbhgyu/article/details/106245182) 就利用了 mmap 和缺页中断的相关漏洞。
 
@@ -3257,12 +3940,49 @@ mmap 机制在内核中的实现和 brk 类似，但其和缺页中断机制结�
 
 在面试的时候被问到这样一个问题：“mmap 映射文件是怎样和磁盘联系”，所以进一步分析一下 mmap 是怎样完成的。
 
+用户态接口，
+
+```c
+/**
+ * @offset: 该参数表示将 fd 指定的 file 的从 [offset, offset + length) 范围的数据映射到 addr 开始的地址范围，
+ * 默认为 0
+ */
+void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset);
+```
+
+以 dma_buf 中的 cma_heap 为例看一下 mmap 的内核调用流程：
+
+```
+#0 cma_heap_mmap (dmabuf=0xffffff8005504e00, vma=0xffffff80055efb40) at drivers/dma-buf/multi-heap/cma_heap.c:207
+#1 0xffffffc008be5924 in dma_buf_mmap_internal (file=0xffffff8005504e00, vma=0x200000) at drivers/dma-buf/dma-buf.c:168
+#2 0xffffffc00835867c in call_mmap (vma=<optimized out>, file=<optimized out>) at ./include/linux/fs.h:2092
+#3 mmap_region (file=0xffffff8005504e00, addr=547939028992, len=18446743524043845824, vm_flags=251, pgoff=18446743798978460176, uf=0x0) at mm/mmap.c:1791
+#4 0xffffffc008359380 in do_mmap (file=0xffffff800552af00, addr=18446743524043848512, len=18446743799011098624, prot=3, flags=1, pgoff=0, populate=0xffffffc00afebd50, uf=0x7f93b61000) at mm/mmap.c:1575
+#5 0xffffffc00830c9f0 in vm_mmap_pgoff (file=0xffffff8005504e00, addr=0, len=2097152, prot=3, flag=1, pgoff=0) at mm/util.c:551
+#6 0xffffffc008353e98 in ksys_mmap_pgoff (addr=0, len=2097152, prot=3, flags=1, fd=18446743798978460176, pgoff=0) at mm/mmap.c:1624
+#7 0xffffffc008027f18 in __do_sys_mmap (off=<optimized out>, fd=<optimized out>, flags=<optimized out>, prot=<optimized out>, len=<optimized out>,
+ addr=<optimized out>) at arch/arm64/kernel/sys.c:28
+#8 __se_sys_mmap (off=<optimized out>, fd=<optimized out>, flags=<optimized out>, prot=<optimized out>, len=<optimized out>, addr=<optimized out>)
+ at arch/arm64/kernel/sys.c:21
+#9 __arm64_sys_mmap (regs=0xffffff8005504e00) at arch/arm64/kernel/sys.c:21
+#10 0xffffffc008037644 in __invoke_syscall (syscall_fn=<optimized out>, regs=<optimized out>) at arch/arm64/kernel/syscall.c:38
+#11 invoke_syscall (regs=0xffffffc00afebeb0, scno=90110784, sc_nr=179453952, syscall_table=<optimized out>) at arch/arm64/kernel/syscall.c:52
+#12 0xffffffc008037864 in el0_svc_common (sc_nr=<optimized out>, syscall_table=<optimized out>, scno=89148928, regs=<optimized out>)
+ at arch/arm64/kernel/syscall.c:142
+#13 do_el0_svc (regs=0xffffff8005504e00) at arch/arm64/kernel/syscall.c:181
+#14 0xffffffc0095ad568 in el0_svc (regs=0xffffffc00afebeb0) at arch/arm64/kernel/entry-common.c:595
+#15 0xffffffc0095ad960 in el0t_64_sync_handler (regs=0xffffff8005504e00) at arch/arm64/kernel/entry-common.c:613
+#16 0xffffffc0080115cc in el0t_64_sync () at arch/arm64/kernel/entry.S:584
+```
+
 应该是版本问题，执行流程和上面的图略有些不一样，`sys_mmap_pgoff` 是系统调用的处理函数，其会调用 `ksys_mmap_pgoff`，
 
 ```c
+// fd 就是 alloc_fd 中分配的，通过它可以找到 file
+// pgoff 就是 mmap 接口中的 offset 参数
 unsigned long ksys_mmap_pgoff(unsigned long addr, unsigned long len,
-			      unsigned long prot, unsigned long flags,
-			      unsigned long fd, unsigned long pgoff)
+			 unsigned long prot, unsigned long flags,
+			 unsigned long fd, unsigned long pgoff)
 {
 	struct file *file = NULL;
 	unsigned long retval;
@@ -3280,11 +4000,13 @@ unsigned long ksys_mmap_pgoff(unsigned long addr, unsigned long len,
 		}
 	} else if (flags & MAP_HUGETLB) { // 按理来说不是文件映射就是匿名映射，为什么是判断 HUGETLB
 
-        ...
+		...
 
 	}
 
+    // 匿名页不用判断，file 就是 NULL
 	retval = vm_mmap_pgoff(file, addr, len, prot, flags, pgoff);
+
 out_fput:
 	if (file)
 		fput(file);
@@ -3302,18 +4024,20 @@ unsigned long vm_mmap_pgoff(struct file *file, unsigned long addr,
 	unsigned long ret;
 	struct mm_struct *mm = current->mm;
 	unsigned long populate;
-	LIST_HEAD(uf);
 
+	LIST_HEAD(uf);
 	ret = security_mmap_file(file, prot, flag); // 这个不知道是干啥的。主要是检查文件权限是否正确等
 	if (!ret) {
 		if (mmap_write_lock_killable(mm))
 			return -EINTR;
 		ret = do_mmap(file, addr, len, prot, flag, pgoff, &populate, // 这个才是关键函数
-			      &uf);
+			 &uf);
 		mmap_write_unlock(mm);
 		userfaultfd_unmap_complete(mm, &uf);
 		if (populate)
-			mm_populate(ret, populate); // 这个函数也经常遇到，都忘记是干啥的
+            // 如果 mmap 传入了 MAP_POPULATE/MAP_LOCKED 标志，就需要做该操作
+            // 即对 vma 中的每个 page 触发 page fault，提前分配物理内存
+			mm_populate(ret, populate);
 	}
 	return ret;
 }
@@ -3324,7 +4048,7 @@ unsigned long vm_mmap_pgoff(struct file *file, unsigned long addr,
 这个函数的核心功能就是找到空闲的虚拟内存地址，并根据不同的文件打开方式设置不同的 vm 标志位 flag！
 
 ```c
-nsigned long do_mmap(struct file *file, unsigned long addr,
+unsigned long do_mmap(struct file *file, unsigned long addr,
 			unsigned long len, unsigned long prot,
 			unsigned long flags, unsigned long pgoff,
 			unsigned long *populate, struct list_head *uf)
@@ -3332,15 +4056,50 @@ nsigned long do_mmap(struct file *file, unsigned long addr,
 	struct mm_struct *mm = current->mm;
 	vm_flags_t vm_flags;
 	int pkey = 0;
-
 	*populate = 0;
 
-	... // 各种标志位的检查
+	if (!len) // 对于用户态 mmap，len 不能为 0
+		return -EINVAL;
+	/*
+	 * Does the application expect PROT_READ to imply PROT_EXEC?
+	 *
+	 * (the exception is when the underlying filesystem is noexec
+	 * mounted, in which case we dont add PROT_EXEC.)
+	 */
 
+    // 还没遇到过这种情况
+	if ((prot & PROT_READ) && (current->personality & READ_IMPLIES_EXEC))
+		if (!(file && path_noexec(&file->f_path)))
+			prot |= PROT_EXEC;
+
+	/* force arch specific MAP_FIXED handling in get_unmapped_area */
+	if (flags & MAP_FIXED_NOREPLACE)
+		flags |= MAP_FIXED;
+	if (!(flags & MAP_FIXED))
+		addr = round_hint_to_min(addr);
+
+	/* Careful about overflows.. */
+	len = PAGE_ALIGN(len);
+	if (!len)
+		return -ENOMEM;
+
+	/* offset overflow? */
+	if ((pgoff + (len >> PAGE_SHIFT)) < pgoff)
+		return -EOVERFLOW;
+
+    // 原来对于一个进程来说，mmap 的次数是有上限的
+	/* Too many mappings? */
+	if (mm->map_count > sysctl_max_map_count)
+		return -ENOMEM;
 	/* Obtain the address to map to. we verify (or select) it and ensure
 	 * that it represents a valid section of the address space.
 	 */
+
     // 从当前进程的用户空间获取一个未被映射区间的起始地址
+    // 该函数中会调用 get_unmapped_area 回调函数
+    // 不同的映射方式回调函数不同，但做的事情是类似的
+    // 从 mmap 地址空间找一块空闲的内存
+    // 从当前的调用栈来看，大部情况是调用 arch_get_unmapped_area_topdown 函数
 	addr = get_unmapped_area(file, addr, len, pgoff, flags);
 	if (IS_ERR_VALUE(addr)) // 错误地址不应该处理一下么
 		return addr;
@@ -3351,35 +4110,17 @@ nsigned long do_mmap(struct file *file, unsigned long addr,
 			return -EEXIST;
 	}
 
-	if (prot == PROT_EXEC) {
-		pkey = execute_only_pkey(mm);
-		if (pkey < 0)
-			pkey = 0;
-	}
-
-	/* Do simple checking here so the lower-level routines won't have
-	 * to. we assume access permissions have been handled by the open
-	 * of the memory object, so we don't do any here.
-	 */
-	vm_flags = calc_vm_prot_bits(prot, pkey) | calc_vm_flag_bits(flags) |
-			mm->def_flags | VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC;
-
-	if (flags & MAP_LOCKED)
-		if (!can_do_mlock())
-			return -EPERM;
-
-	if (mlock_future_check(mm, vm_flags, len))
-		return -EAGAIN;
+	...
 
 	if (file) {
 		struct inode *inode = file_inode(file);
 		unsigned long flags_mask;
 
+        // 检查 len 和 pgoff 是否符合 file 的长度要求
 		if (!file_mmap_ok(file, inode, pgoff, len))
 			return -EOVERFLOW;
 
 		flags_mask = LEGACY_MAP_MASK | file->f_op->mmap_supported_flags;
-
 		switch (flags & MAP_TYPE) { // 不同的映射类型
 		case MAP_SHARED:
 			/*
@@ -3400,14 +4141,12 @@ nsigned long do_mmap(struct file *file, unsigned long addr,
 				if (IS_SWAPFILE(file->f_mapping->host))
 					return -ETXTBSY;
 			}
-
 			/*
 			 * Make sure we don't allow writing to an append-only
 			 * file..
 			 */
 			if (IS_APPEND(inode) && (file->f_mode & FMODE_WRITE))
 				return -EACCES;
-
 			vm_flags |= VM_SHARED | VM_MAYSHARE;
 			if (!(file->f_mode & FMODE_WRITE))
 				vm_flags &= ~(VM_MAYWRITE | VM_SHARED);
@@ -3420,13 +4159,11 @@ nsigned long do_mmap(struct file *file, unsigned long addr,
 					return -EPERM;
 				vm_flags &= ~VM_MAYEXEC;
 			}
-
 			if (!file->f_op->mmap)
 				return -ENODEV;
 			if (vm_flags & (VM_GROWSDOWN|VM_GROWSUP))
 				return -EINVAL;
 			break;
-
 		default:
 			return -EINVAL;
 		}
@@ -3452,33 +4189,52 @@ nsigned long do_mmap(struct file *file, unsigned long addr,
 		}
 	}
 
-	/*
-	 * Set 'VM_NORESERVE' if we should not account for the
-	 * memory use of this mapping.
-	 */
-	if (flags & MAP_NORESERVE) {
-		/* We honor MAP_NORESERVE if allowed to overcommit */
-		if (sysctl_overcommit_memory != OVERCOMMIT_NEVER)
-			vm_flags |= VM_NORESERVE;
-
-		/* hugetlb applies strict overcommit unless MAP_NORESERVE */
-		if (file && is_file_hugepages(file))
-			vm_flags |= VM_NORESERVE;
-	}
+	...
 
     // 好吧，原来上面种种操作都是设置标志位，这里才是关键
 	addr = mmap_region(file, addr, len, vm_flags, pgoff, uf);
 	if (!IS_ERR_VALUE(addr) &&
-	    ((vm_flags & VM_LOCKED) ||
-	     (flags & (MAP_POPULATE | MAP_NONBLOCK)) == MAP_POPULATE))
+	 ((vm_flags & VM_LOCKED) ||
+	 (flags & (MAP_POPULATE | MAP_NONBLOCK)) == MAP_POPULATE))
 		*populate = len;
+
 	return addr;
+}
+```
+
+#### 关键函数 unmapped_area
+
+该函数是从进程地址空间的 mmap 范围内申请一块空闲的虚拟地址。
+
+```
+| arch_get_unmapped_area_topdown
+| 	-> vm_unmapped_area
+| 		-> arch_get_unmapped_area
+| 			-> vm_unmapped_area
+| 				-> unmapped_area
+```
+
+```c
+/**
+ * unmapped_area() - Find an area between the low_limit and the high_limit with
+ * the correct alignment and offset, all from @info. Note: current->mm is used
+ * for the search.
+ *
+ * @info: The unmapped area information including the range [low_limit -
+ * high_limit), the alignment offset and mask.
+ *
+ * Return: A memory address or -ENOMEM.
+ */
+static unsigned long unmapped_area(struct vm_unmapped_area_info *info)
+{
+	... // 没看懂，之后再分析
+
 }
 ```
 
 #### 关键函数 mmap_region
 
-其核心功能是创建和初始化虚拟内存区域，并加入红黑树节点进行管理，这个看上面的图更容易了解。
+其核心功能是创建 vma 和初始化虚拟内存区域，并加入红黑树节点进行管理，这个看上面的图更容易了解。
 
 ```c
 unsigned long mmap_region(struct file *file, unsigned long addr,
@@ -3494,7 +4250,7 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 	/* Check against address space limit. */
 	if (!may_expand_vm(mm, vm_flags, len >> PAGE_SHIFT)) { // 检查申请的内存空间是否超过限制
 
-        ...
+        ..
 
 	}
 
@@ -3503,6 +4259,7 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
     // 如果有，那么需要将旧的映射关系清除
 	if (munmap_vma_range(mm, addr, len, &prev, &rb_link, &rb_parent, uf))
 		return -ENOMEM;
+
 	/*
 	 * Private writable mapping: check memory availability
 	 */
@@ -3529,34 +4286,34 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 		goto unacct_error;
 	}
 
-    // 初始化
+    // 初始化，每次 mmap 都有一个 vma 对应
 	vma->vm_start = addr;
 	vma->vm_end = addr + len;
 	vma->vm_flags = vm_flags;
 	vma->vm_page_prot = vm_get_page_prot(vm_flags);
 	vma->vm_pgoff = pgoff;
-
 	if (file) { // 文件映射
 		if (vm_flags & VM_SHARED) { // 共享，可写
 			error = mapping_map_writable(file->f_mapping);
 			if (error)
 				goto free_vma;
 		}
-
 		vma->vm_file = get_file(file); // 这里会增加该 file 的引用次数
-		error = call_mmap(file, vma); // 调用该文件系统指定的 mmap 函数，这里还可以进一步分析
+
+        // 调用该文件系统指定的 mmap 函数，这里还可以进一步分析
+        // 这个函数最终就是建立页表
+		error = call_mmap(file, vma);
 		if (error)
 			goto unmap_and_free_vma;
 
 		/* Can addr have changed??
 		 *
 		 * Answer: Yes, several device drivers can do it in their
-		 *         f_op->mmap method. -DaveM
+		 * f_op->mmap method. -DaveM
 		 * Bug: If addr is changed, prev, rb_link, rb_parent should
-		 *      be updated for vma_link()
+		 * be updated for vma_link()
 		 */
 		WARN_ON_ONCE(addr != vma->vm_start);
-
 		addr = vma->vm_start;
 
 		...
@@ -3566,7 +4323,7 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 		error = shmem_zero_setup(vma); // 共享匿名映射
 		if (error)
 			goto free_vma;
-	} else { // 私有匿名映射
+	} else { // 私有匿名映射，vm_ops = NULL
 		vma_set_anonymous(vma);
 	}
 
@@ -3578,12 +4335,169 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 		else
 			goto free_vma;
 	}
-
 	vma_link(mm, vma, prev, rb_link, rb_parent); // 常规操作
 
     ...
+
 }
 ```
+
+mmap 映射时可能会有物理内存来建立映射，如文件页映射，系统已经申请好了文件页，dma-buf 之类的；也可能是匿名页，这时没有分配物理内存，之后访问到这块内存会触发缺页中断，在缺页中断中才会实际分配内存。
+
+#### [cache 问题](https://stackoverflow.com/questions/75277872/mmap-and-instruction-data-cache-coherency-why-can-we-copy-and-run-shared-libr)
+
+在读代码的时候发现一个很奇怪的问题，以文件页映射为例，在 `call_mmap` 中会调用 `file->f_op->mmap`，后续可能会调用到 `remap_pfn_range` 建立映射。而在 `set_pte_at` 中会进行 cache 操作，范围是到 pou，这是为啥？
+
+```c
+| remap_pfn_range
+| 	-> remap_pfn_range_notrack
+|		-> flush_cache_range // 空函数
+|		-> remap_p4d_range
+```
+
+```c
+int remap_pfn_range_notrack(struct vm_area_struct *vma, unsigned long addr,
+		unsigned long pfn, unsigned long size, pgprot_t prot)
+{
+	pgd_t *pgd;
+	unsigned long next;
+	unsigned long end = addr + PAGE_ALIGN(size);
+	struct mm_struct *mm = vma->vm_mm;
+	int err;
+	...
+
+	vm_flags_set(vma, VM_IO | VM_PFNMAP | VM_DONTEXPAND | VM_DONTDUMP);
+	BUG_ON(addr >= end);
+	pfn -= addr >> PAGE_SHIFT;
+	pgd = pgd_offset(mm, addr);
+	flush_cache_range(vma, addr, end); // 空函数，很奇怪
+	do {
+		next = pgd_addr_end(addr, end);
+		err = remap_p4d_range(mm, pgd, addr, next, // 建立 3/4/5 级页表
+				pfn + (addr >> PAGE_SHIFT), prot);
+		if (err)
+			return err;
+	} while (pgd++, addr = next, addr != end);
+	return 0;
+}
+```
+
+最终会调用到 `remap_pte_range` 将页表写入到 DDR 中，
+
+```c
+static int remap_pte_range(struct mm_struct *mm, pmd_t *pmd,
+			unsigned long addr, unsigned long end,
+			unsigned long pfn, pgprot_t prot)
+{
+	pte_t *pte, *mapped_pte;
+	spinlock_t *ptl;
+	int err = 0;
+	mapped_pte = pte = pte_alloc_map_lock(mm, pmd, addr, &ptl); // 分配 pte 的内存
+	if (!pte)
+		return -ENOMEM;
+	arch_enter_lazy_mmu_mode();
+	do {
+		BUG_ON(!pte_none(ptep_get(pte)));
+		if (!pfn_modify_allowed(pfn, prot)) {
+			err = -EACCES;
+			break;
+		}
+		set_pte_at(mm, addr, pte, pte_mkspecial(pfn_pte(pfn, prot)));
+		pfn++;
+	} while (pte++, addr += PAGE_SIZE, addr != end);
+	arch_leave_lazy_mmu_mode();
+	pte_unmap_unlock(mapped_pte, ptl);
+	return err;
+}
+```
+
+```c
+#define set_pte_at(mm, addr, ptep, pte) set_ptes(mm, addr, ptep, pte, 1)
+
+static __always_inline void set_ptes(struct mm_struct *mm, unsigned long addr,
+				pte_t *ptep, pte_t pte, unsigned int nr)
+{
+	pte = pte_mknoncont(pte);
+	if (likely(nr == 1)) {
+		contpte_try_unfold(mm, addr, ptep, __ptep_get(ptep));
+		__set_ptes(mm, addr, ptep, pte, 1);
+		contpte_try_fold(mm, addr, ptep, pte);
+	} else {
+		contpte_set_ptes(mm, addr, ptep, pte, nr);
+	}
+}
+
+static inline void __set_ptes(struct mm_struct *mm,
+			 unsigned long __always_unused addr,
+			 pte_t *ptep, pte_t pte, unsigned int nr)
+{
+	page_table_check_ptes_set(mm, ptep, pte, nr);
+	__sync_cache_and_tags(pte, nr); // 在这里进行 cache 操作
+	for (;;) {
+		__check_safe_pte_update(mm, ptep, pte);
+		__set_pte(ptep, pte);
+		if (--nr == 0)
+			break;
+		ptep++;
+		pte = pte_advance_pfn(pte, 1);
+	}
+}
+
+static inline void __sync_cache_and_tags(pte_t pte, unsigned int nr_pages)
+{
+    // pte 存在才需要 flush cache
+    // 不存在的话说明没人用过这块物理内存，不会存在 cache 问题
+    // pte_user_exec 判断页表项是否允许用户执行（user exec）
+    // pte_special 判断页表项是否是特殊类型（special）
+	if (pte_present(pte) && pte_user_exec(pte) && !pte_special(pte))
+		__sync_icache_dcache(pte);
+
+	/*
+	 * If the PTE would provide user space access to the tags associated
+	 * with it then ensure that the MTE tags are synchronised. Although
+	 * pte_access_permitted() returns false for exec only mappings, they
+	 * don't expose tags (instruction fetches don't check tags).
+	 */
+	if (system_supports_mte() && pte_access_permitted(pte, false) &&
+	 !pte_special(pte) && pte_tagged(pte))
+		mte_sync_tags(pte, nr_pages);
+}
+
+void __sync_icache_dcache(pte_t pte)
+{
+	struct folio *folio = page_folio(pte_page(pte));
+	if (!test_bit(PG_dcache_clean, &folio->flags)) { // 如果没有配置 dcache_clean，则需要 sync
+		sync_icache_aliases((unsigned long)folio_address(folio),
+				 (unsigned long)folio_address(folio) +
+					 folio_size(folio));
+
+        // 同步完置上 dcache_clean 位，表明该 page 在 cache 中也是 clean 的，不需要再 clean cache
+		set_bit(PG_dcache_clean, &folio->flags);
+	}
+}
+
+void sync_icache_aliases(unsigned long start, unsigned long end)
+{
+	if (icache_is_aliasing()) {
+		dcache_clean_pou(start, end);
+		icache_inval_all_pou();
+	} else {
+		/*
+		 * Don't issue kick_all_cpus_sync() after I-cache invalidation
+		 * for user mappings.
+		 */
+		caches_clean_inval_pou(start, end); // Cache.S 中的汇编实现
+	}
+}
+```
+
+借此机会，我们来详细研究一下 [ARM 的 cache 操作](#../mm/Memory-Hierarchy.md/ARM cache)。
+
+但这里都是刷到 pou 点，跟 DMA 设备访存没关系。
+
+**小结**
+
+- mmap 接口有非常多的 flags，需要逐渐理清楚这些标志位的作用；
 
 ### ioremap
 
@@ -3806,17 +4720,67 @@ static int vmap_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
 
 ### 缺页异常处理
 
-前面介绍到 malloc 和 mmap 都是只分配了虚拟地址，但是**没有分配物理内存，也没有建立虚拟地址和物理地址之间的映射**。当进程访问这些还没有建立映射关系的虚拟地址时，CPU 自动触发一个缺页异常。缺页异常的处理是内存管理的重要部分，需要考虑多种情况以及实现细节，包括匿名页面、KSM 页面、页面高速缓存、写时复制（COW）、私有映射和共享映射等等。这里先看看大概的执行流程，然后再详细分析每种情况的实现。
-
+前面介绍到 malloc 和 mmap 都是只分配了虚拟地址，但是**没有分配物理内存，也没有建立虚拟地址和物理地址之间的映射**。当进程访问这些还没有建立映射关系的虚拟地址时，CPU 自动触发一个缺页异常。缺页异常的处理是内存管理的重要部分，需要考虑多种情况以及实现细节，包括匿名页面、KSM 页面、页面高速缓存、写时复制（COW）、私有映射和共享映射等等，需要了解各个标志位的意义。这里先看看大概的执行流程，然后再详细分析每种情况的实现。
 ![page_fault.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/page_fault.png?raw=true)
+从触发缺页异常到 CPU 根据中断号跳转到对应的处理函数这个过程在之前做项目时已经跟踪过，就不再分析，这里主要分析 `handle_mm_fault` 相关的处理函数。先来看看调用栈（该调用栈为 ARM64 架构)，
 
-从触发缺页异常到 CPU 根据中断号跳转到对应的处理函数这个过程在之前做项目时已经跟踪过，就不再分析，这里主要分析 `handle_mm_fault` 相关的处理函数。
+```c
+#0 cma_heap_vm_fault (vmf=0xffffffc00afebcd0) at drivers/dma-buf/multi-heap/cma_heap.c:190
+#1 0xffffffc0083408e8 in __do_fault (vmf=0xffffffc00afebcd0) at mm/memory.c:3871
+#2 0xffffffc008345414 in do_shared_fault (vmf=<optimized out>) at mm/memory.c:4261
+// 接下来的处理流程就是根据页面类型来的
+#3 do_fault (vmf=<optimized out>) at mm/memory.c:4339
+#4 handle_pte_fault (vmf=<optimized out>) at mm/memory.c:4594
+#5 __handle_mm_fault (vma=0xffffffc00afebcd0, address=148, flags=177396832) at mm/memory.c:4729
+#6 0xffffffc008346124 in handle_mm_fault (vma=0xffffff8005576540, address=547919622144, flags=597, regs=0xffffffc00afebeb0) at mm/memory.c:4827
+#7 0xffffffc00804de8c in __do_page_fault (regs=<optimized out>, vm_flags=<optimized out>, mm_flags=<optimized out>, addr=<optimized out>, mm=<optimized out>)
+ at arch/arm64/mm/fault.c:500
+#8 do_page_fault (far=547919622144, esr=2449473606, regs=0xffffffc00afebeb0) at arch/arm64/mm/fault.c:600
+#9 0xffffffc00804e3ac in do_translation_fault (far=18446743799016111312, esr=146815840, regs=0xffffffc00a92b8e0 <__gcov0.arch_local_irq_restore>)
+ at arch/arm64/mm/fault.c:681
+#10 0xffffffc00804e6f4 in do_mem_abort (far=547919622144, esr=2449473606, regs=0xffffffc00afebeb0) at arch/arm64/mm/fault.c:814
+#11 0xffffffc0095ac84c in el0_da (regs=0xffffffc00afebeb0, esr=18446743798978460512) at arch/arm64/kernel/entry-common.c:481
+#12 0xffffffc0095ad938 in el0t_64_sync_handler (regs=0xffffffc00afebcd0) at arch/arm64/kernel/entry-common.c:616
+#13 0xffffffc0080115cc in el0t_64_sync () at arch/arm64/kernel/entry.S:584
+```
 
-- `DEFINE_IDTENTRY_RAW_ERRORCODE(exc_page_fault)`
-  - `unsigned long address = read_cr2();` 在 X86 架构中，cr2 寄存器保存着访存时引发 #PF 异常的线性地址，cr3 寄存器提供页表的基地址（在 `mm_struct` 中也保存有页表基地址，cr3 寄存器中的值应该是在进程切换时从 `mm_struct` 中写入进去的)；
-  - `handle_page_fault`
-    - `do_kern_addr_fault` 内核地址空间引发的中断；
-    - `do_user_addr_fault` 用户地址空间引发的中断；
+#### 关键函数 do_mem_abort
+
+```c
+static const struct fault_info fault_info[] = {
+	{ do_bad,		SIGKILL, SI_KERNEL,	"ttbr address size fault"	},
+	{ do_bad,		SIGKILL, SI_KERNEL,	"level 1 address size fault"	},
+	{ do_bad,		SIGKILL, SI_KERNEL,	"level 2 address size fault"	},
+	{ do_bad,		SIGKILL, SI_KERNEL,	"level 3 address size fault"	},
+	{ do_translation_fault,	SIGSEGV, SEGV_MAPERR,	"level 0 translation fault"	},
+	{ do_translation_fault,	SIGSEGV, SEGV_MAPERR,	"level 1 translation fault"	},
+	{ do_translation_fault,	SIGSEGV, SEGV_MAPERR,	"level 2 translation fault"	},
+    // 若发生在用户态的 translation_fault，则还是调用 do_page_fault
+	{ do_translation_fault,	SIGSEGV, SEGV_MAPERR,	"level 3 translation fault"	},
+	{ do_page_fault,	SIGSEGV, SEGV_ACCERR,	"level 1 access flag fault"	},
+	{ do_page_fault,	SIGSEGV, SEGV_ACCERR,	"level 2 access flag fault"	},
+	{ do_page_fault,	SIGSEGV, SEGV_ACCERR,	"level 3 access flag fault"	},
+
+	...
+
+};
+
+static inline const struct fault_info *esr_to_fault_info(unsigned int esr)
+{
+	return fault_info + (esr & ESR_ELx_FSC); // 这里 fault_info 是全局变量，根据异常类型选择处理函数
+}
+
+void do_mem_abort(unsigned long far, unsigned int esr, struct pt_regs *regs)
+{
+	const struct fault_info *inf = esr_to_fault_info(esr);
+	unsigned long addr = untagged_addr(far);
+
+	if (!inf->fn(far, esr, regs))
+		return;
+	...
+
+}
+```
 
 #### 关键函数 do_user_addr_fault
 
@@ -3947,6 +4911,7 @@ retry_pud:
 		return VM_FAULT_OOM;
 
 	...
+
 	}
 
 	return handle_pte_fault(&vmf); // 最后处理 PTE，为什么要通过 PTE 才能确定后面的一系列操作（上图），
@@ -4142,8 +5107,10 @@ oom:
   		unsigned long addr, int node, bool hugepage)
   {
   	...
+
   	page = __alloc_pages(gfp, order, preferred_nid, nmask);
   	...
+
   }
   ```
 
@@ -4403,9 +5370,9 @@ static vm_fault_t do_fault(struct vm_fault *vmf)
 
 一个物理页面可以被多个进程的虚拟内存通过 PTE 映射。有的页面需要迁移，有的页面长时间不用需要交换到磁盘，在交换之前，必须找出哪些进程使用这个页面，然后解除这些映射的用户 PTE。
 
-在 2.4 版本的内核中，为了确定某个页面是否被某个进程映射，必须遍历每个进程的页表，因此效率很低，在 2.5 版本的内核中，使用了反向映射（Reverse Mapping）。
+在 2.4 版本的内核中，为了确定某个页面是否被某个进程映射，必须遍历每个进程的页表，因此效率很低，在 2.5 版本的内核中，提出了反向映射（Reverse Mapping）的概念。
 
-RMAP 的主要目的是**从物理页面的 page 数据结构中找到有哪些用户进程的 PTE**，这样就可以快速解除所有的 PTE 并回收这个页面。为何要设计的这么复杂，能否直接在 page 中加入一个链表，存储所有的 PTE。粗略的看，占用空间太多？
+RMAP 的主要目的是**从物理页面的 page 数据结构中找到有哪些用户进程的 PTE**，这样就可以快速解除所有的 PTE 并回收这个页面，为了实现这一需求，RMAP 机制使用 `anon_vma` 和 `anon_vma_chain` 结构体构造了一个非常复杂的结构。为何要设计的这么复杂，能否直接在 page 中加入一个链表，存储所有的 PTE。粗略的看，占用空间太多？是的，在 2.6 内核使用过 pte_chain 方案，但是它需要在 struct page 中内置一个成员，当时系统是 32 位的，内存小，page 中加一个成员变量对内存占用大。
 
 #### 数据结构
 
@@ -4417,27 +5384,11 @@ RMAP 的主要目的是**从物理页面的 page 数据结构中找到有哪些�
 struct anon_vma {
 	struct anon_vma *root;		/* Root of this anon_vma tree */
 	struct rw_semaphore rwsem;	/* W: modification, R: walking the list */ // 互斥信号
-	/*
-	 * The refcount is taken on an anon_vma when there is no
-	 * guarantee that the vma of page tables will exist for
-	 * the duration of the operation. A caller that takes
-	 * the reference is responsible for clearing up the
-	 * anon_vma if they are the last user on release
-	 */
 	atomic_t refcount; // 引用计数
-
-	/*
-	 * Count of child anon_vmas and VMAs which points to this anon_vma.
-	 *
-	 * This counter is used for making decision about reusing anon_vma
-	 * instead of forking new one. See comments in function anon_vma_clone.
-	 */
 	unsigned degree;
-
 	struct anon_vma *parent;	/* Parent of this anon_vma */
-
 	/* Interval tree of private "related" vmas */
-	struct rb_root_cached rb_root;
+	struct rb_root_cached rb_root; // 所有相关的 avc 都会插入到该红黑树
 };
 ```
 
@@ -4449,7 +5400,7 @@ struct anon_vma {
 struct anon_vma_chain {
 	struct vm_area_struct *vma; // 可以指向父进程的 VMA，也可以指向子进程的 VMA
 	struct anon_vma *anon_vma; // 可以指向父进程的 anon_vma，也可以指向子进程的 anon_vma
-	struct list_head same_vma;   /* locked by mmap_lock & page_table_lock */ // 链表
+	struct list_head same_vma; /* locked by mmap_lock & page_table_lock */ // 链表
 	struct rb_node rb;			/* locked by anon_vma->rwsem */ // 红黑树
 	unsigned long rb_subtree_last;
 #ifdef CONFIG_DEBUG_VM_RB
@@ -4458,17 +5409,71 @@ struct anon_vma_chain {
 };
 ```
 
-光从两个数据结构还是看不出到底是怎样从物理页面的 page 数据结构中找到有哪些用户进程的 PTE 映射到该 page。先看看流程图以对 RMAP 机制有个整体的了解。
+##### vm_area_struct
 
-![RMAP.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/RMAP.png?raw=true)
+```c
+struct vm_area_struct {
+	...
 
-每个进程的每个 VMA 都有一个 `anon_vma` 结构，即（`AVp` 和 `AVc`），VMA 相关的物理页面 `page->mapping` 都指向 `anon_vma`，av 中的 `rb_root` 指向一颗红黑树，之后 avc 都会插入到该树中（直接看 `anon_vma_chain_link` 代码会更清晰）。同时还有一个 avc 结构，每个 VMA 对应一个 avc，avc 中的 VMA 指向该 VMA，`anon_vma` 指向该 VMA 的 av，然后所有的 avc 组成一个单链表，每个 VMA 中都能访问该链表。然后有一个枢纽 avc，这个 avc 会插入到父进程的 av 红黑树中和子进程的 avc 链表中，但是其 VMA 变量指向的是子进程的 VMA。所有的子进程都有一个 avc 枢纽。
+	struct rb_node vm_rb;
+	struct mm_struct *vm_mm;	/* The address space we belong to. */
+	struct list_head anon_vma_chain; /* Serialized by mmap_lock & page_table_lock */
+    // page->mapping while point to the pointer
+	struct anon_vma *anon_vma;	/* Serialized by page_table_lock */
 
-当需要找到某个 page 对应的所有 VMA 时，只需要**通过 `page->mapping` 找到父进程的 av 结构，然后扫描 av 指向的 av 红黑树**。而子进程的的 VMA 通过插入到父进程的枢纽 avc 也可以遍历到。这里是每个 VMA 都有对应的 av，所以不要遍历所有的 VMA。
+	...
+
+} __randomize_layout;
+```
+
+##### page
+
+```c
+struct page {
+	union {
+		struct {	/* Page cache and anonymous pages */
+			/**
+			 * @lru: Pageout list, eg. active_list protected by
+			 * lruvec->lru_lock. Sometimes used as a generic list
+			 * by the page owner.
+			 */
+			struct list_head lru;
+			/* See page-flags.h for PAGE_MAPPING_FLAGS */
+            // point to anon_vma if it's is anonymous page, point to address_space if it's file page
+            // point to vma->anon_vma
+			struct address_space *mapping;
+			pgoff_t index;		/* Our offset within mapping. */
+			unsigned long private;
+		};
+	};
+
+ ...
+
+	/* Usage count. *DO NOT USE DIRECTLY*. See page_ref.h */
+	atomic_t _refcount;
+
+	...
+
+} _struct_page_alignment;
+```
+
+我们从进程的创建过程来分析 RMAP 机制如何建立起一个能够快速找到所有使用了该 page 的进程的结构。
 
 #### 父进程产生匿名页面
 
+一般来说，一个进程的地址空间内不会把两个虚拟地址 mapping 到一个 page frame 上去，如果有多个 mapping，那么多半是这个 page 被多个进程共享。我们从一个 page 第一次被映射来分析，最简单的例子就是采用 COW 的进程 fork，在进程没有写的动作之前，内核是不会分配新的 page frame 的，因此父子进程共享一个物理页面。当子进程对这个 page 产生一个写请求时，会触发一个匿名/文件页的缺页中断，分配一个新的 page，并建立映射，下面我们以匿名页为例来分析这种情况。
+
 在上文分析[匿名页面缺页中断](#匿名页面缺页中断)的关键函数 `do_anonymous_page` 中涉及到 RMAP 的两个重要函数：`anon_vma_prepare` 和 `page_add_new_anon_rmap`，下面来详细分析一下这两个函数。
+
+```c
+| do_anonymous_page
+| 	-> anon_vma_prepare // 建立下图的结构
+|		-> __anon_vma_prepare
+| 			-> anon_vma_chain_link
+| 	-> page_add_new_anon_rmap // page->mapping == anon_vma
+```
+
+##### do_anonymous_page
 
 ```c
 static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
@@ -4479,9 +5484,9 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
     // 处理 VMA 属性为可写的情况
 	if (unlikely(anon_vma_prepare(vma))) // RMAP 初始化
 		goto oom;
-	page = alloc_zeroed_user_highpage_movable(vma, vmf->address); // 分配物理页面，会调用到 alloc_pages_vma
-	if (!page) // page 就是分配的物理页面
-		goto oom;
+
+    // 分配物理页面，会调用到 alloc_pages_vma
+	page = alloc_zeroed_user_highpage_movable(vma, vmf->address);
 
 	...
 
@@ -4489,7 +5494,6 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 	entry = pte_sw_mkyoung(entry);
 	if (vma->vm_flags & VM_WRITE)
 		entry = pte_mkwrite(pte_mkdirty(entry));
-
 	vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd, vmf->address,
 			&vmf->ptl); // 获取刚刚分配的 PTE
 	if (!pte_none(*vmf->pte)) { // 失败了，出错了
@@ -4500,122 +5504,126 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 	...
 
 	inc_mm_counter_fast(vma->vm_mm, MM_ANONPAGES); // 增加进程匿名页面的数目
-	page_add_new_anon_rmap(page, vma, vmf->address, false); // 添加到 RMAP 系统中（？）
+	page_add_new_anon_rmap(page, vma, vmf->address, false); // 将 page->mapping 指向 av
 	lru_cache_add_inactive_or_unevictable(page, vma); // 将匿名页面添加到 LRU 链表中
 
-    ...
+     ...
+
 }
 ```
 
-1. `anon_vma_prepare` -> `__anon_vma_prepare`
+##### anon_vma_prepare
 
-   这个函数功能很简单，就是为 VMA 分配一个 `anon_vma`，同时创建一个新的 `anon_vma_chain_alloc`。
+`anon_vma_prepare` -> `__anon_vma_prepare`，这个函数功能很简单，就是为 VMA 分配一个 `anon_vma`，同时创建一个新的 `anon_vma_chain_alloc`。
 
-   ```c
-   int __anon_vma_prepare(struct vm_area_struct *vma)
-   {
-   	struct mm_struct *mm = vma->vm_mm;
-   	struct anon_vma *anon_vma, *allocated;
-   	struct anon_vma_chain *avc;
+```c
+int __anon_vma_prepare(struct vm_area_struct *vma)
+{
+	struct mm_struct *mm = vma->vm_mm;
+	struct anon_vma *anon_vma, *allocated;
+	struct anon_vma_chain *avc;
 
-   	might_sleep();
+	might_sleep();
 
-   	avc = anon_vma_chain_alloc(GFP_KERNEL); // 通过 slab 分配机制分配 avc
-   	if (!avc)
-   		goto out_enomem;
+	avc = anon_vma_chain_alloc(GFP_KERNEL); // 通过 slab 分配机制分配 avc
+	anon_vma = find_mergeable_anon_vma(vma); // 寻找是否有可以复用的 av
+	allocated = NULL;
+	if (!anon_vma) { // 没有的话分配一个新的 av
+		anon_vma = anon_vma_alloc(); // 同样通过 slab 机制分配 av
+		if (unlikely(!anon_vma))
+			goto out_enomem_free_avc;
+		allocated = anon_vma;
+	}
 
-   	anon_vma = find_mergeable_anon_vma(vma); // 寻找是否有可以复用的 av
-   	allocated = NULL;
-   	if (!anon_vma) { // 没有的话分配一个新的 av
-   		anon_vma = anon_vma_alloc(); // 同样通过 slab 机制分配 av
-   		if (unlikely(!anon_vma))
-   			goto out_enomem_free_avc;
-   		allocated = anon_vma;
-   	}
+	anon_vma_lock_write(anon_vma);
 
-   	anon_vma_lock_write(anon_vma);
-   	/* page_table_lock to protect against threads */
-   	spin_lock(&mm->page_table_lock); // 自旋锁
-   	if (likely(!vma->anon_vma)) {
-   		vma->anon_vma = anon_vma;
-   		anon_vma_chain_link(vma, avc, anon_vma); // 看下面的代码
-   		/* vma reference or self-parent link for new root */
-   		anon_vma->degree++;
-   		allocated = NULL;
-   		avc = NULL;
-   	}
-   	spin_unlock(&mm->page_table_lock);
-   	anon_vma_unlock_write(anon_vma);
+	/* page_table_lock to protect against threads */
+	spin_lock(&mm->page_table_lock); // 自旋锁
+	if (likely(!vma->anon_vma)) {
+		vma->anon_vma = anon_vma; // 首先进行赋值
+		anon_vma_chain_link(vma, avc, anon_vma); // 看下面的代码
+		/* vma reference or self-parent link for new root */
+		anon_vma->degree++;
+		allocated = NULL;
+		avc = NULL;
+	}
+	spin_unlock(&mm->page_table_lock);
+	anon_vma_unlock_write(anon_vma);
 
-   	...
-   }
-   ```
+	...
 
-   - `anon_vma_chain_link`
+}
+```
 
-     ```c
-     static void anon_vma_chain_link(struct vm_area_struct *vma,
-     				struct anon_vma_chain *avc,
-     				struct anon_vma *anon_vma)
-     {
-     	avc->vma = vma;
-     	avc->anon_vma = anon_vma;
-     	list_add(&avc->same_vma, &vma->anon_vma_chain); // 将 avc 添加到 vma 的 vac 链表中
-     	anon_vma_interval_tree_insert(avc, &anon_vma->rb_root); // 将 avc 插入到 av 内部的红黑树中
-     }
-     ```
+##### anon_vma_chain_link
 
-2. `page_add_new_anon_rmap`
+这个函数是建立 AVC 连接关系的关键函数，注意入参分别表示什么。
 
-   注意，到这里已经通过 `alloc_zeroed_user_highpage_movable` 为该匿名页面缺页中断分配了物理页面 page。
+```c
+static void anon_vma_chain_link(struct vm_area_struct *vma,
+				struct anon_vma_chain *avc,
+				struct anon_vma *anon_vma)
+{
+	avc->vma = vma; // 指向自身的 vma
+	avc->anon_vma = anon_vma; // 指向父进程的 av
+	list_add(&avc->same_vma, &vma->anon_vma_chain); // 将 avc 添加到 vma 的 avc 链表中
+	anon_vma_interval_tree_insert(avc, &anon_vma->rb_root); // 将 avc 插入到 av 内部的红黑树中
+}
+```
 
-   ```c
-   void page_add_new_anon_rmap(struct page *page,
-   	struct vm_area_struct *vma, unsigned long address, bool compound) // address 为发生缺页中断的 vaddr
-   {
-   	__SetPageSwapBacked(page); // 设置 page 的 PG_swapbacked 为，表示这个页面可以交换到磁盘
-       /* increment count (starts at -1) */
-   	atomic_set(&page->_mapcount, 0); // _mapcount 初始化为 -1，这里设置为 1，因为已经开始使用该页了
+##### page_add_new_anon_rmap
 
-       ...
+`page_add_new_anon_rmap`->`__page_set_anon_rmap`，注意，到这里已经通过 `alloc_zeroed_user_highpage_movable` 为该匿名页面缺页中断分配了物理页面 page。
 
-   	__mod_lruvec_page_state(page, NR_ANON_MAPPED, nr); // 增加 page 所在的 zone 的匿名页面计数
-   	__page_set_anon_rmap(page, vma, address, 1); // 设置这个页面为匿名映射
-   }
-   ```
+```c
+static void __page_set_anon_rmap(struct page *page,
+	struct vm_area_struct *vma, unsigned long address, int exclusive)
+{
+	struct anon_vma *anon_vma = vma->anon_vma;
 
-   - `__page_set_anon_rmap`
+	...
 
-     ```c
-     static void __page_set_anon_rmap(struct page *page,
-     	struct vm_area_struct *vma, unsigned long address, int exclusive)
-     {
-     	struct anon_vma *anon_vma = vma->anon_vma;
+    // anon_vma 指针的值加上 PAGE_MAPPING_ANON 后将指针的值赋给 page->mapping
+    // 前面分析 page 数据结构的时候提到 mapping 表示页面所指向的地址空间
+    // 内核中的地址空间通常有两个不同的地址空间，一个用于文件映射页面，如在读取文件时，
+    // 地址空间用于将文件的内容与存储介质区关联起来；另一个用于匿名映射
+    // mapping 的低 2 位用于判断指向匿名映射或 KSM 页面的地址空间（？），
+    // 如果 mapping 成员中的第 0 位不为 0，
+    // 那么 mapping 成员指向匿名页面的地址空间数据结构 anon_vma（好吧，没懂）
+    anon_vma = (void *) anon_vma + PAGE_MAPPING_ANON;
 
-     	...
+    // 在这里将 page->mapping 指向 vma->anon_vma
+    WRITE_ONCE(page->mapping, (struct address_space *) anon_vma);
 
-         // anon_vma 指针的值加上 PAGE_MAPPING_ANON 后将指针的值赋给 page->mapping
-         // 前面分析 page 数据结构的时候提到 mapping 表示页面所指向的地址空间
-         // 内核中的地址空间通常有两个不同的地址空间，一个用于文件映射页面，如在读取文件时，
-         // 地址空间用于将文件的内容与存储介质区关联起来；另一个用于匿名映射
-         // mapping 的低 2 位用于判断指向匿名映射或 KSM 页面的地址空间（？），
-         // 如果 mapping 成员中的第 0 位不为 0，
-         // 那么 mapping 成员指向匿名页面的地址空间数据结构 anon_vma（好吧，没懂）
-     	anon_vma = (void *) anon_vma + PAGE_MAPPING_ANON;
-     	WRITE_ONCE(page->mapping, hi (struct address_space *) anon_vma);
-         // 计算 address 在 vma 的第几个 page，然后将其设置到 page->index，
-         // 这个成员变量之前提到过，但也不懂
-     	page->index = linear_page_index(vma, address);
-     }
-     ```
+    // 计算 address 在 vma 的第几个 page，然后将其设置到 page->index，
+    // 这个成员变量之前提到过，但也不懂
+	page->index = linear_page_index(vma, address);
+}
+```
+
+我们以图的方式来直观的展示这种结构，VMA-P0 表示父进程的 VMA 结构体，`AVC-P0` 表示父进程的 AVC 结构体。
+
+![img](https://raw.githubusercontent.com/UtopianFuture/UtopianFuture.github.io/81305767754ca8df95d18da10465dd730bc093be/image/RMAP-parent-process.svg)
 
 #### 根据父进程创建子进程
 
-父进程通过 fork 系统调用创建子进程时，子进程会复制父进程的 VMA 数据结构，并且会复制父进程的 PTE 内容到子进程的页表中，以实现父子进程共享页表。多个子进程的虚拟页面会映射到同一个物理页面，同时，多个不相干的进程的虚拟页面也可以通过 KSM 机制映射到同一个物理页面。
+父进程通过 fork 系统调用创建子进程时，**子进程会复制父进程的 VMA 数据结构**，并且会复制父进程的 PTE 内容到子进程的页表中，以实现父子进程共享页表，这样，多个子进程的虚拟页面就会映射到同一个物理页面。那么在创建子进程时就需要在父进程的 `anon_vma` 和 `anon_vma_chain` 结构的基础上进行延申，以便通过父进程的 rb_root 指针就可以快速找到所有使用该 page 的进程。
 
-`SYSCALL_DEFINE0(fork)` -> `kernel_clone` -> `copy_process`（这个函数好复杂） -> `copy_mm` -> `dup_mm` -> `dup_mmap`
+创建子进程的过程很复杂，`SYSCALL_DEFINE0(fork)` -> `kernel_clone` -> `copy_process`（这个函数非常复杂） -> `copy_mm` -> `dup_mm` -> `dup_mmap`，我们这里只关注地址空间部分。`dup_mmap` 可以极大的加深对进程地址空间管理的理解，但是也很复杂，这里只分析 RMAP 相关的部分。
 
-`dup_mmap` 可以极大的加深对进程地址空间管理的理解，但是其也很复杂，这里只分析 RMAP 相关的部分。
+```c
+| dup_mmap
+| 	-> anon_vma_fork // for each vma in mm_struct
+| 		-> anon_vma_clone // for each avc in vma, attach the new VMA to the parent VMA's anon_vmas
+| 			-> anon_vma_chain_link
+|		-> anon_vma_alloc // alloc own anon_vma
+| 		-> anon_vma_chain_alloc
+| 		-> anon_vma_chain_link
+```
+
+我们来一步步看各个进程之间是怎样建立联系的。
+
+##### dup_mmap
 
 ```c
 static __latent_entropy int dup_mmap(struct mm_struct *mm,
@@ -4628,159 +5636,175 @@ static __latent_entropy int dup_mmap(struct mm_struct *mm,
 	LIST_HEAD(uf);
 
 	...
+
     // 遍历父进程所有的 VMA
 	for (mpnt = oldmm->mmap; mpnt; mpnt = mpnt->vm_next) {
 
-        ....
+         ....
 
         // 复制父进程 VMA 到 tmp
 		tmp = vm_area_dup(mpnt);
 		tmp->vm_mm = mm;
-
         // 为子进程创建相应的 anon_vma 数据结构
         anon_vma_fork(tmp, mpnt);
-
         // 把 tmp 添加到子进程的红黑树中
         __vma_link_rb(mm, tmp, rb_link, rb_parent);
-
         // 复制父进程的 PTE 到子进程页表中
         copy_page_range(mm, oldmm, mpnt);
 	}
 
     ...
+
 }
 ```
 
-1. `anon_vma_fork`
+##### anon_vma_fork
 
-   将子进程的 VMA 绑定到 `anon_vma` 中。
+该函数首先会调用 `anon_vma_clone`，将子进程的 VMA 绑定到 `anon_vma` 中，然后创建自己的 `anon_vma`。
 
-   ```c
-   int anon_vma_fork(struct vm_area_struct *vma, struct vm_area_struct *pvma) // 子进程 VMA，父进程 VMA
-   {
-   	struct anon_vma_chain *avc;
-   	struct anon_vma *anon_vma;
-   	int error;
+```c
+int anon_vma_fork(struct vm_area_struct *vma, struct vm_area_struct *pvma) // 子进程 VMA，父进程 VMA
+{
+	struct anon_vma_chain *avc;
+	struct anon_vma *anon_vma;
+	int error;
 
-   	/* Don't bother if the parent process has no anon_vma here. */
-   	if (!pvma->anon_vma)
-   		return 0;
+	/* Drop inherited anon_vma, we'll reuse existing or allocate new. */
+	vma->anon_vma = NULL; // 因为复制了父进程的 VMA，所以这个 anon_vma 应该是父进程的
 
-   	/* Drop inherited anon_vma, we'll reuse existing or allocate new. */
-   	vma->anon_vma = NULL; // 因为复制了父进程的 VMA，所以这个 anon_vma 应该是父进程的
+	/*
+	 * First, attach the new VMA to the parent VMA's anon_vmas,
+	 * so rmap can find non-COWed pages in child processes.
+	 */
+	error = anon_vma_clone(vma, pvma); // 将子进程的 VMA 绑定到父进程的 VMA 对应的 anon_vma 中
 
-   	/*
-   	 * First, attach the new VMA to the parent VMA's anon_vmas,
-   	 * so rmap can find non-COWed pages in child processes.
-   	 */
-   	error = anon_vma_clone(vma, pvma); // 将子进程的 VMA 绑定到父进程的 VMA 对应的 anon_vma 中
-   	if (error)
-   		return error;
+	/* An existing anon_vma has been reused, all done then. */
+	if (vma->anon_vma) // 绑定完成，如果没有成功，那么就和创建父进程的 av 是一样的
+		return 0;
 
-   	/* An existing anon_vma has been reused, all done then. */
-   	if (vma->anon_vma) // 绑定完成，如果没有成功，那么就和创建父进程的 av 是一样的
-   		return 0;
+    ...
 
-   	/* Then add our own anon_vma. */
-   	anon_vma = anon_vma_alloc();
-   	if (!anon_vma)
-   		goto out_error;
-   	avc = anon_vma_chain_alloc(GFP_KERNEL);
-   	if (!avc)
-   		goto out_error_free_anon_vma;
+}
+```
 
-   	/*
-   	 * The root anon_vma's rwsem is the lock actually used when we
-   	 * lock any of the anon_vmas in this anon_vma tree.
-   	 */
-   	anon_vma->root = pvma->anon_vma->root;
-   	anon_vma->parent = pvma->anon_vma;
-   	/*
-   	 * With refcounts, an anon_vma can stay around longer than the
-   	 * process it belongs to. The root anon_vma needs to be pinned until
-   	 * this anon_vma is freed, because the lock lives in the root.
-   	 */
-   	get_anon_vma(anon_vma->root);
-   	/* Mark this anon_vma as the one where our new (COWed) pages go. */
-   	vma->anon_vma = anon_vma; // 组装子进程的 av
-   	anon_vma_lock_write(anon_vma);
-       // 将 avc 挂入子进程的 vma->avc 链表和红黑树中
-   	anon_vma_chain_link(vma, avc, anon_vma); // 这个过程和父进程是一样的
-   	anon_vma->parent->degree++;
-   	anon_vma_unlock_write(anon_vma);
+##### anon_vma_clone
 
-   	return 0;
+这里是创建一个”枢纽 avc“，**该 avc 会插入到*父进程每一个 avc->anon_vma->rb_root 中***，同时会插入到该 vma 的 anon_vma_chain 中。
 
-   	...
-   }
-   ```
+```c
+int anon_vma_clone(struct vm_area_struct *dst, struct vm_area_struct *src) // 子进程、父进程
+{
+	struct anon_vma_chain *avc, *pavc;
+	struct anon_vma *root = NULL;
+    // 遍历父进程 VMA 中的 avc 链表寻找 avc 实例，即在上面 __anon_vma_prepare 中创建的 avc
+	list_for_each_entry_reverse(pavc, &src->anon_vma_chain, same_vma) {
+		struct anon_vma *anon_vma;
+    	// 创建一个新的 avc，这里称为 avc 枢纽
+		avc = anon_vma_chain_alloc(GFP_NOWAIT | __GFP_NOWARN);
+ ...
 
-2. `anon_vma_clone`
+		anon_vma = pavc->anon_vma;
+		root = lock_anon_vma_root(root, anon_vma);
+    	// 将 avc 枢纽挂入子进程 VMA 的 avc 链表中，
+   		// 同时将 avc 枢纽添加到父进程 anon_vma->rb_root 红黑树中，
+    	// 使子进程和父进程的 VMA 之间有一个纽带 avc
+		anon_vma_chain_link(dst, avc, anon_vma);
+		/*
+		 * Reuse existing anon_vma if its degree lower than two,
+		 * that means it has no vma and only one anon_vma child.
+		 *
+		 * Do not chose parent anon_vma, otherwise first child
+		 * will always reuse it. Root anon_vma is never reused:
+		 * it has self-parent reference and at least one child.
+		 */
+		if (!dst->anon_vma && src->anon_vma &&
+		 anon_vma != src->anon_vma && anon_vma->degree < 2)
+			dst->anon_vma = anon_vma;
+	}
+	if (dst->anon_vma)
+		dst->anon_vma->degree++;
+	unlock_anon_vma_root(root);
+	return 0;
+ ...
 
-   ```c
-   int anon_vma_clone(struct vm_area_struct *dst, struct vm_area_struct *src) // 子进程、父进程
-   {
-   	struct anon_vma_chain *avc, *pavc;
-   	struct anon_vma *root = NULL;
+}
+```
 
-       // 遍历父进程 VMA 中的 avc 链表寻找 avc 实例，即在上面 __anon_vma_prepare 中创建的 avc
-   	list_for_each_entry_reverse(pavc, &src->anon_vma_chain, same_vma) {
-   		struct anon_vma *anon_vma;
+在使用该 vma 对应的枢纽 anon_vma_chain 建立好该 vma 与各个父进程的 anon_vma 之间的联系之后，还需要构建 vma 自身的 av。
 
-           // 创建一个新的 avc，这里称为 avc 枢纽
-   		avc = anon_vma_chain_alloc(GFP_NOWAIT | __GFP_NOWARN);
+```c
+int anon_vma_fork(struct vm_area_struct *vma, struct vm_area_struct *pvma) // 子进程 VMA，父进程 VMA
+{
+	struct anon_vma_chain *avc;
+	struct anon_vma *anon_vma;
+	int error;
 
-           ...
+	...
 
-   		anon_vma = pavc->anon_vma;
-   		root = lock_anon_vma_root(root, anon_vma);
-           // 将 avc 枢纽挂入子进程 VMA 的 avc 链表中，
-           // 同时将 avc 枢纽添加到父进程 anon_vma->rb_root 红黑树中，
-           // 使子进程和父进程的 VMA 之间有一个纽带 avc
-   		anon_vma_chain_link(dst, avc, anon_vma);
+	/* Then add our own anon_vma. */
+	anon_vma = anon_vma_alloc();
+	avc = anon_vma_chain_alloc(GFP_KERNEL);
 
-   		/*
-   		 * Reuse existing anon_vma if its degree lower than two,
-   		 * that means it has no vma and only one anon_vma child.
-   		 *
-   		 * Do not chose parent anon_vma, otherwise first child
-   		 * will always reuse it. Root anon_vma is never reused:
-   		 * it has self-parent reference and at least one child.
-   		 */
-   		if (!dst->anon_vma && src->anon_vma &&
-   		    anon_vma != src->anon_vma && anon_vma->degree < 2)
-   			dst->anon_vma = anon_vma;
-   	}
-   	if (dst->anon_vma)
-   		dst->anon_vma->degree++;
-   	unlock_anon_vma_root(root);
-   	return 0;
+	/*
+	 * The root anon_vma's rwsem is the lock actually used when we
+	 * lock any of the anon_vmas in this anon_vma tree.
+	 */
+	anon_vma->root = pvma->anon_vma->root;
+	anon_vma->parent = pvma->anon_vma;
 
-    enomem_failure:
-   	/*
-   	 * dst->anon_vma is dropped here otherwise its degree can be incorrectly
-   	 * decremented in unlink_anon_vmas().
-   	 * We can safely do this because callers of anon_vma_clone() don't care
-   	 * about dst->anon_vma if anon_vma_clone() failed.
-   	 */
-   	dst->anon_vma = NULL;
-   	unlink_anon_vmas(dst);
-   	return -ENOMEM;
-   }
-   ```
+	/*
+	 * With refcounts, an anon_vma can stay around longer than the
+	 * process it belongs to. The root anon_vma needs to be pinned until
+	 * this anon_vma is freed, because the lock lives in the root.
+	 */
+	get_anon_vma(anon_vma->root);
+
+	/* Mark this anon_vma as the one where our new (COWed) pages go. */
+	vma->anon_vma = anon_vma; // 组装子进程的 av
+	anon_vma_lock_write(anon_vma);
+
+    // 将 avc 挂入子进程的 vma->avc 链表和红黑树中
+	anon_vma_chain_link(vma, avc, anon_vma); // 这个过程和父进程是一样的
+	anon_vma->parent->degree++;
+	anon_vma_unlock_write(anon_vma);
+
+	return 0;
+}
+```
+
+还是以图的方式来展示这一结构，`VMA-P1` 表示子进程的 VMA 结构体。创建子进程时会遍历父进程 P0 的 anon_vma_chain 链表，然后根据 AVC-P0 构建“枢纽 AVC-link_01"。“枢纽 AVC-link_01"会插入到 P0 的 `AV-P0->rb_root` 指向的红黑树中。
+
+![img](https://raw.githubusercontent.com/UtopianFuture/UtopianFuture.github.io/81305767754ca8df95d18da10465dd730bc093be/image/RMAP-child-process.svg)
+
+
+
+#### 子进程创建孙进程
+
+我们在创建子进程的基础上进一步创建孙进程，构建整个 RMAP 管理结构。创建的过程是一样的，这里主要关注”枢纽 AVC“是怎样连接”父子进程“、”父孙进程”。
+
+`AVC-P1` 表示父进程本身，`AVC-P2` 表示孙进程，创建孙进程会遍历 `VMA-P1->anon_vma_chain` 链表，然后对每一个节点都会创建一个“枢纽 AVC”。对于 `AVC-P1` 节点，创建 AVC_link_12，因为 `AVC-P1->anon_vma = AV-P1`，所以 AVC_link_12 会插入到 `AV-P1->rb_root` 指向的红黑树中。对于 `AVC-link_01` 节点，创建 AVC_link_02，因为 `AVC-link_01->anon_vma = AV-P0`，所以 AVC_link_02 会插入到 `AV-P0->rb_root` 指向的红黑树中。
+
+![img](https://raw.githubusercontent.com/UtopianFuture/UtopianFuture.github.io/81305767754ca8df95d18da10465dd730bc093be/image/RMAP-grandson-process.svg)
+
+当需要找到某个 page 对应的所有 VMA 时，只需要**通过 `page->mapping` 找到父进程的 av 结构，然后扫描 av 指向的 av 红黑树**。而子进程的的 VMA 通过插入到父进程的枢纽 avc 也可以遍历到，如通过 `AV-P0->rb_root` 指向的红黑树可以找到所有共享该 page 的子进程，这样就可以快速解除所有进程的映射。这里是每个 VMA 都有对应的 av，所以不要遍历所有的 VMA。
 
 #### RMAP 的应用
 
 RMAP 的典型应用场景如下：
-
 - kswapd 内核线程为了回收页面，需要断开所有映射到该匿名页面的用户 PTE。
 - 页面迁移时，需要断开所有映射到匿名页面的用户 PTE。
+
+##### try_to_unmap
 
 RMAP 的核心函数是 `try_to_unmap`，内核中其他模块会调用此函数来断开一个 page 的所有引用。
 
 ```c
 void try_to_unmap(struct page *page, enum ttu_flags flags)
 {
+    // rwc 结构体能够根据应用场景配置不同的回调函数
+    // 在 shrink_list 中，配置 page_referenced_one，用来计算 page->_mapcount
+    // 然后决定是否要移到其他 lru 链表上
+    // 这里是配置成 unmap，在内存回收时使用
 	struct rmap_walk_control rwc = { // 统一管理 unmap 操作
 		.rmap_one = try_to_unmap_one, // 断开某个 VMA 上映射的 PTE
 		.arg = (void *)flags,
@@ -4803,8 +5827,10 @@ void rmap_walk(struct page *page, struct rmap_walk_control *rwc)
 	if (unlikely(PageKsm(page)))
 		rmap_walk_ksm(page, rwc);
 	else if (PageAnon(page)) // 判断该 page 是否为匿名页面，就是通过上文讲的 mapping 的最后一位来判断
+        // 匿名页持有 down_read(&anon_vma->root->rwsem); 锁
 		rmap_walk_anon(page, rwc, false);
 	else
+        // 文件页持有 down_read(&mapping->i_mmap_rwsem); 锁，确保 rb_root 中的数据是正确的
 		rmap_walk_file(page, rwc, false);
 }
 ```
@@ -4819,37 +5845,1413 @@ static void rmap_walk_anon(struct page *page, struct rmap_walk_control *rwc,
 	pgoff_t pgoff_start, pgoff_end;
 	struct anon_vma_chain *avc;
 
+    // 这里会调用 down_read(&anon_vma->root->rwsem);
+    // 持有读者锁，由于整个 RMAP 过程耗时，所以此处持有锁可能会导致其他内核路径等待锁
 	if (locked) {
 		anon_vma = page_anon_vma(page); // page->mapping
+
 		/* anon_vma disappear under us? */
 		VM_BUG_ON_PAGE(!anon_vma, page);
 	} else {
 		anon_vma = rmap_walk_anon_lock(page, rwc);
+
 	if (!anon_vma)
 		return;
 
 	pgoff_start = page_to_pgoff(page);
 	pgoff_end = pgoff_start + thp_nr_pages(page) - 1;
+
     // 遍历 anon_vma->rb_root 中的 avc，从 avc 中可以得到对应的 vma
+    // 如果该 page->_mapcount 很大的话，那么 anon_vma->rb_root 中会由很多个节点
+    // 遍历整颗树是个耗时的操作
 	anon_vma_interval_tree_foreach(avc, &anon_vma->rb_root,
 			pgoff_start, pgoff_end) {
 		struct vm_area_struct *vma = avc->vma;
 		unsigned long address = vma_address(page, vma);
-
 		VM_BUG_ON_VMA(address == -EFAULT, vma);
 		cond_resched();
-
 		if (rwc->invalid_vma && rwc->invalid_vma(vma, rwc->arg))
 			continue;
 
-		if (!rwc->rmap_one(page, vma, address, rwc->arg)) // 解除用户 PTE，在这里回调函数为 try_to_unmap_one
+        // 解除用户 PTE，在这里回调函数为 try_to_unmap_one
+        // 有一个进程解除失败就取消解映射
+		if (!rwc->rmap_one(page, vma, address, rwc->arg))
 			break;
+
+        // 检查该 page 是否还有映射
 		if (rwc->done && rwc->done(page))
 			break;
 	}
 
 	if (!locked)
-		anon_vma_unlock_read(anon_vma);
+		anon_vma_unlock_read(anon_vma); // 在遍历完后 unlock
+}
+```
+
+##### try_to_unmap_one
+
+在 vma 中解除对应的 page 成功返回 true，否则返回 false。
+
+```c
+/*
+ * @arg: enum ttu_flags will be passed to this argument
+ */
+static bool try_to_unmap_one(struct page *page, struct vm_area_struct *vma,
+		 unsigned long address, void *arg)
+{
+	struct mm_struct *mm = vma->vm_mm;
+	struct page_vma_mapped_walk pvmw = {
+		.page = page,
+		.vma = vma,
+		.address = address,
+	};
+	pte_t pteval;
+	struct page *subpage;
+	bool ret = true;
+	struct mmu_notifier_range range;
+	enum ttu_flags flags = (enum ttu_flags)(long)arg;
+
+    ...
+
+	while (page_vma_mapped_walk(&pvmw)) { // 检查 page 是否在 vma 管理范围内
+
+    ...
+
+		subpage = page - page_to_pfn(page) + pte_pfn(*pvmw.pte);
+		address = pvmw.address;
+
+		...
+
+		/* Update high watermark before we lower rss */
+		update_hiwater_rss(mm);
+		if (PageHWPoison(page) && !(flags & TTU_IGNORE_HWPOISON)) {
+
+            ...
+
+		} else if (PageAnon(page)) {
+			swp_entry_t entry = { .val = page_private(subpage) };
+			pte_t swp_pte;
+
+			/*
+			 * Store the swap location in the pte.
+			 * See handle_pte_fault() ...
+			 */
+			if (unlikely(PageSwapBacked(page) != PageSwapCache(page))) {
+				WARN_ON_ONCE(1);
+				ret = false;
+
+				/* We have to invalidate as we cleared the pte */
+				mmu_notifier_invalidate_range(mm, address,
+							address + PAGE_SIZE);
+				page_vma_mapped_walk_done(&pvmw);
+				break;
+			}
+
+            ...
+
+			dec_mm_counter(mm, MM_ANONPAGES);
+			inc_mm_counter(mm, MM_SWAPENTS);
+			swp_pte = swp_entry_to_pte(entry);
+			if (pte_soft_dirty(pteval))
+				swp_pte = pte_swp_mksoft_dirty(swp_pte);
+			if (pte_uffd_wp(pteval))
+				swp_pte = pte_swp_mkuffd_wp(swp_pte);
+
+            // 将配置好的 pte 写入到页表中
+			set_pte_at(mm, address, pvmw.pte, swp_pte);
+
+			/* Invalidate as we cleared the pte */
+			mmu_notifier_invalidate_range(mm, address,
+						 address + PAGE_SIZE);
+		} else {
+
+            ...
+
+		}
+
+discard:
+		/*
+		 * No need to call mmu_notifier_invalidate_range() it has be
+		 * done above for all cases requiring it to happen under page
+		 * table lock before mmu_notifier_invalidate_range_end()
+		 *
+		 * See Documentation/vm/mmu_notifier.rst
+		 */
+        // 对 page->_mapcount 减 1，当 _mapcount 为 -1 时，表示此页已经没有页表项映射了
+		page_remove_rmap(subpage, PageHuge(page));
+		put_page(page);
+	}
+
+	return ret;
+}
+```
+
+### MGLRU
+
+内核在 6.1 版本用 MGLRU(Multi generation LRU)替换了 LRU。LRU 回收是内存回收的基础，这里只分析 MGLRU 的实现，其和内存回收的接口下一章节再分析。
+
+提出 MGLRU 替换 LRU 的原因在于：
+> - 当前 LRU 主要是匿名页和文件页的 active lru 和 inactive lru，决策太粗糙；
+> - Page 经常被放到不合适的 LRU 链表上，尤其是在使用 cgroup 后各 cgroup 独立 LRU，很难比较不同 cgroup lru 间页面的冷热程度（为何要比较不同 cgroup lru 的冷热程度呢，cgroup 设计的初衷不就是资源隔离么。那 mglru 是怎样处理不同 cgroup lru 呢）；
+> - 它可以在文件页和匿名页内部进行页面活跃程度的排序，但它**难以评估文件页和匿名页之间谁更冷谁更热**；
+> - 内核长期以来**偏向于优先回收文件页**，这可能会导致一些包含有用的可执行文件的页面被回收而空闲无用的匿名页仍在内存中；
+> - 内存回收扫描成本高。在页表回收时需要通过反向映射（RMAP）找到所有的 PTE，再通过 PTE 中 reference bit 识别页面是否是 young（如果硬件访问过这个页面，reference bit 会被置位，页被标记为 young）。整个过程非常漫长，而且切换进程页表导致的 cache miss 更是让性能成本变更加高；
+> MGLRU 的核心思想在于：
+> 将内存分为若干个 bucket，称为 "generations （世代）"。一个 page 的 generation 值就反映了它的 "年龄"，即距离该 page 被最后一次访问有多长时间了。这些 page 的管理是由 "两个表针的时钟" 的机制完成的。aging 这个指标会扫描 page 的 accessed bit，看它们自上次扫描以来是否被使用过。被使用过的 page 就被标记好等待搬移到最年轻的一个 generation（这个操作在哪里做的）。eviction 指标则实际上会将 page 移到正确的 generation；那些最终进入最古老的 generation 的 page 是最少访问到的，可以考虑进行回收；
+
+#### lru_gen_folio
+
+该结构体为 mglru 的核心数据结构，
+
+```c
+/*
+ * The youngest generation number is stored in max_seq for both anon and file
+ * types as they are aged on an equal footing. The oldest generation numbers are
+ * stored in min_seq[] separately for anon and file types as clean file pages
+ * can be evicted regardless of swap constraints.
+ *
+ * Normally anon and file min_seq are in sync. But if swapping is constrained,
+ * e.g., out of swap space, file min_seq is allowed to advance and leave anon
+ * min_seq behind.
+ *
+ * The number of pages in each generation is eventually consistent and therefore
+ * can be transiently negative when reset_batch_size() is pending.
+ */
+struct lru_gen_folio {
+	/* the aging increments the youngest generation number */
+	unsigned long max_seq;
+	/* the eviction increments the oldest generation numbers */
+	unsigned long min_seq[ANON_AND_FILE];
+	/* the birth time of each generation in jiffies */
+	unsigned long timestamps[MAX_NR_GENS];
+	/* the multi-gen LRU lists, lazily sorted on eviction */
+    // max_seq 和 min_seq 是不断增长的
+    // 而 folios 只有 4 * 2 * 3 个元素
+	struct list_head folios[MAX_NR_GENS][ANON_AND_FILE][MAX_NR_ZONES];
+	/* the multi-gen LRU sizes, eventually consistent */
+	long nr_pages[MAX_NR_GENS][ANON_AND_FILE][MAX_NR_ZONES];
+	/* the exponential moving average of refaulted */
+	unsigned long avg_refaulted[ANON_AND_FILE][MAX_NR_TIERS];
+	/* the exponential moving average of evicted+protected */
+	unsigned long avg_total[ANON_AND_FILE][MAX_NR_TIERS];
+	/* the first tier doesn't need protection, hence the minus one */
+	unsigned long protected[NR_HIST_GENS][ANON_AND_FILE][MAX_NR_TIERS - 1];
+	/* can be modified without holding the LRU lock */
+	atomic_long_t evicted[NR_HIST_GENS][ANON_AND_FILE][MAX_NR_TIERS];
+	atomic_long_t refaulted[NR_HIST_GENS][ANON_AND_FILE][MAX_NR_TIERS];
+	/* whether the multi-gen LRU is enabled */
+	bool enabled;
+#ifdef CONFIG_MEMCG
+	/* the memcg generation this lru_gen_folio belongs to */
+	u8 gen;
+	/* the list segment this lru_gen_folio belongs to */
+	u8 seg;
+	/* per-node lru_gen_folio list for global reclaim */
+	struct hlist_nulls_node list;
+#endif
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
+};
+```
+
+#### ctrl_ops
+
+这个貌似也是 mglru 的核心设计思想，没懂。
+
+```c
+/******************************************************************************
+ * PID controller
+ ******************************************************************************/
+/*
+ * A feedback loop based on Proportional-Integral-Derivative (PID) controller.
+ *
+ * The P term is refaulted/(evicted+protected) from a tier in the generation
+ * currently being evicted; the I term is the exponential moving average of the
+ * P term over the generations previously evicted, using the smoothing factor
+ * 1/2; the D term isn't supported.
+ *
+ * The setpoint (SP) is always the first tier of one type; the process variable
+ * (PV) is either any tier of the other type or any other tier of the same
+ * type.
+ *
+ * The error is the difference between the SP and the PV; the correction is to
+ * turn off protection when SP>PV or turn on protection when SP<PV.
+ *
+ * For future optimizations:
+ * 1. The D term may discount the other two terms over time so that long-lived
+ * generations can resist stale information.
+ */
+struct ctrl_pos {
+	unsigned long refaulted;
+	unsigned long total;
+	int gain;
+};
+```
+
+内核在如下函数中进行了拦截调用 `lru_gen_enabled`，从这些函数中可以一窥 MGLRU 的实现（这种拦截方式未来开发过程中也是可以参考的）。
+- memcontrol.c: mem_cgroup_update_tree, mem_cgroup_soft_limit_reclaim;
+- rmap.c: folio_referenced_one;
+- swap.c: folio_mark_accessed, **folio_add_lru**, lru_deactivate_fn, folio_deactivate;
+- vmscan.c: **shrink_folio_list**, prepare_scan_count, lru_gen_change_state, lru_gen_init_lruvec, shrink_lruvec, **shrink_node**, snapshot_refaults, kswapd_age_node;
+- workingset.c: workingset_eviction, workingset_test_recent, workingset_refault;
+
+既然该机制是用来回收内存的，那么可以从申请/释放两个方面来分析。
+
+#### 申请
+
+申请内存的时候会按照如下步骤将申请到的 folio 添加到 lrugen 中。在 page fault 和 migrate 中路径中都会调用该函数。
+
+```c
+| folio_add_lru
+| 	-> folio_batch_add_and_move
+|		// 为了防止频繁的申请 lruvec->lru_lock 锁(spinlock)，先将 folio 写入到 folio_batch 中
+|		// 相当于 per-cpu cache，等 cache 满了(PAGEVEC_SIZE)再写入到全局的 lruvec 中
+|		// 6.6 上 PAGEVEC_SIZE 为 15，也就说可以放 15 个 folio
+|		// 这个 cache 其实就是一个 folio 指针数组
+|		-> folio_batch_add
+| 		-> folio_batch_move_lru // fbatch 满了，将其中的每个 folio 写入到 lruvec 中
+| 			-> lru_add_fn
+|				-> lruvec_add_folio
+| 					-> lru_gen_add_folio
+| 					-> update_lru_size
+| 					-> list_add
+```
+
+`lru_gen_add_folio` 是将 folio 添加到 `lruvec->lrugen` 中的核心函数，
+
+##### lru_gen_add_folio
+
+该函数的功能是计算传入的 folio 的 gen, type, zone，然后 `list_add(&folio->lru, &lrugen->folios[gen][type][zone]);`；
+
+```c
+static inline bool lru_gen_add_folio(struct lruvec *lruvec, struct folio *folio, bool reclaiming)
+{
+	unsigned long seq;
+	unsigned long flags;
+	int gen = folio_lru_gen(folio);
+	int type = folio_is_file_lru(folio);
+	int zone = folio_zonenum(folio);
+	struct lru_gen_folio *lrugen = &lruvec->lrugen;
+
+	VM_WARN_ON_ONCE_FOLIO(gen != -1, folio);
+
+	if (folio_test_unevictable(folio) || !lrugen->enabled)
+		return false;
+
+	/*
+	 * There are four common cases for this page:
+	 * 1. If it's hot, i.e., freshly faulted in, add it to the youngest
+	 * generation, and it's protected over the rest below.
+	 * 2. If it can't be evicted immediately, i.e., a dirty page pending
+	 * writeback, add it to the second youngest generation.
+	 * 3. If it should be evicted first, e.g., cold and clean from
+	 * folio_rotate_reclaimable(), add it to the oldest generation.
+	 * 4. Everything else falls between 2 & 3 above and is added to the
+	 * second oldest generation if it's considered inactive, or the
+	 * oldest generation otherwise. See lru_gen_is_active().
+	 */
+    // 这 4 种情况注释解释的很清楚
+    // 还是要结合使用场景来理解这些情况
+    // folio_test_xxx 类函数都是读取 folio_flag
+	if (folio_test_active(folio))
+		seq = lrugen->max_seq;
+	else if ((type == LRU_GEN_ANON && !folio_test_swapcache(folio)) ||
+		 (folio_test_reclaim(folio) &&
+		 (folio_test_dirty(folio) || folio_test_writeback(folio))))
+		seq = lrugen->max_seq - 1;
+	else if (reclaiming || lrugen->min_seq[type] + MIN_NR_GENS >= lrugen->max_seq)
+		seq = lrugen->min_seq[type];
+	else
+		seq = lrugen->min_seq[type] + 1;
+
+	gen = lru_gen_from_seq(seq);
+	flags = (gen + 1UL) << LRU_GEN_PGOFF;
+	/* see the comment on MIN_NR_GENS about PG_active */
+	set_mask_bits(&folio->flags, LRU_GEN_MASK | BIT(PG_active), flags);
+
+    // 更新统计信息
+	lru_gen_update_size(lruvec, folio, -1, gen);
+
+	/* for folio_rotate_reclaimable() */
+	if (reclaiming)
+		list_add_tail(&folio->lru, &lrugen->folios[gen][type][zone]);
+	else
+		list_add(&folio->lru, &lrugen->folios[gen][type][zone]); // 这就很好理解了
+
+	return true;
+}
+```
+
+申请的逻辑很简单，先写入到 fbatch 中，如果 fbatch 满了，那么计算 gen, type, zone，写入到对应 lrugen->folios 中。
+
+#### 回收
+
+`shrink_node` 是直接内存回收的关键函数，调用 `shrink_node` 的路径在[触发页面回收](#触发页面回收)。我们从这里开始分析，先看看整体架构。
+
+``` c
+| shrink_node
+| 	-> lru_gen_enabled&root_reclaim
+| 	-> (Y)lru_gen_shrink_node
+|		// 在回收之前需要将 per-cpu cache 即 fbatch 中的 folio
+|		// 调用 folio_batch_move_lru 写回到 lruvec->lrugen 中
+|		// 如果没有写回会有问题么
+|		-> lru_add_drain
+|		-> set_mm_walk // 这里面的 lru_gen_mm_walk 是做什么的
+|		-> set_initial_priority
+|		-> shrink_one/shrink_many
+|			-> try_to_shrink_lruvec
+|				// 是否需要老化是根据每个 gen 中的 folio 数量解决的
+|				// 是否需要回收 folio 是根据所有 gen 中的 total folio 数量是否大于 sc->priority 决定的
+|				-> get_nr_to_scan
+|					// 根据每个链表中的 page 数量以及 min_seq 和 max_seq 之间的距离,
+|					// 判断是否要进行 generation 老化
+|					-> should_run_aging
+|					-> try_to_inc_max_seq // generation 转换
+|						-> should_walk_mmu // 检查 AF 标志位
+|						// lru_gen_mm_list 是用来记录该 memcg 中所有 mm 的
+|						// 如果没有使能 memcg，那么就 mm_list 就只有一个 mm
+|						// 在 fork 的时候会将 mm 添加到 mm_list 中
+|						// 该函数会遍历 mm_list 中所有的 mm
+|						// 但是没看出来画这么大的功夫遍历 pte 目的是啥
+|						-> iterate_mm_list
+|						-> walk_mm
+|						-> inc_max_seq
+|				// 老化完再回收
+|				// 这里会构造一个 list，将需要回收的 folios 添加到该 list 中的
+|				// 用 gdb 调试的时候，申请匿名页把内存占满也没有触发 evict_folios，为啥
+|				-> evict_folios
+|					-> isolate_folios
+|						// 根据 swapiness 决定回收文件页还是匿名页
+|						// 回收的类型也跟 tier 有关
+|						-> get_type_to_scan
+|							// 读取 refaulted 率和 tier
+|							-> read_ctrl_pos
+|						// 在该函数中调用 list_add 将 folio 添加到 list 中
+|						-> scan_folios
+|							// 对不同种类的 folios 调用 lru_gen_del_folio
+|							// 和 lruvec_add_folio 重排
+|							-> sort_folio
+|							// 进行必要的检查就调用 lru_gen_del_folio
+|							// 会将 referenced 和 reclaimed 位都清掉
+|							-> isolate_folio
+|								-> lru_gen_del_folio // 将 folio 从 lrugen 中删除
+|					-> try_to_inc_min_seq // 回收完 min 链表后看是否需要增加计数
+|					// 遍历上面构造的 folio_list，针对各个 folio 的情况（PG_swapbacked, PG_swapbacked 等等）
+|					// 修改 folio 的状态，然后回收
+|					-> shrink_folio_list
+|				-> should_abort_scan // 检查水位是否 OK，决定是否结束回收
+|			-> shrink_slab // 遍历 shrinker_list，执行所有组件注册的 shrink 函数
+|				-> do_shrink_slab
+|	-> (N)shrink_node_memcgs
+|	-> flush_reclaim_state
+|	-> should_continue_reclaim
+```
+
+总结一下，整个回收操作可以分配几步：
+- 检查 lru_gen 的max_seq 和 min_seq 的代差以及其中的 folios 数量是否符合要求；
+- 遍历页表（？）
+- 将需要回收的 folios 隔离出来，添加到一个 list 中；
+- 对 list 中的 folios 进行回收；
+- 执行 `shrink_slab`，调用各个组件注册的 shrink 回调函数；
+
+```c
+static void shrink_node(pg_data_t *pgdat, struct scan_control *sc)
+{
+	unsigned long nr_reclaimed, nr_scanned, nr_node_reclaimed;
+	struct lruvec *target_lruvec;
+	bool reclaimable = false;
+
+	if (lru_gen_enabled() && root_reclaim(sc)) {
+		lru_gen_shrink_node(pgdat, sc); // 需要对比一下该函数和 shrink_node 有什么区别
+		return;
+	}
+
+	...
+
+}
+```
+
+##### 关键函数 try_to_shrink_lruvec
+
+```c
+static bool try_to_shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
+{
+	long nr_to_scan;
+	unsigned long scanned = 0;
+	int swappiness = get_swappiness(lruvec, sc); // 控制匿名页和文件页回收的比例？没搞懂咋控制的
+
+	/* clean file folios are more likely to exist */
+	if (swappiness && !(sc->gfp_mask & __GFP_IO))
+		swappiness = 1;
+	while (true) {
+		int delta;
+
+        // nr_to_scan 可为 -1，0，遍历 lrugen 中每个链表的 folio 的数量
+        // 其有什么作用呢
+		nr_to_scan = get_nr_to_scan(lruvec, sc, swappiness);
+		if (nr_to_scan <= 0)
+			break;
+
+        // 从 lruvec->lrugen 中回收的关键逻辑
+		delta = evict_folios(lruvec, sc, swappiness);
+		if (!delta)
+			break;
+
+        // 回收的 > 扫描的？这个命名有点奇怪啊
+		scanned += delta;
+		if (scanned >= nr_to_scan)
+			break;
+
+        // 是否应该终止回收，条件有哪些
+		if (should_abort_scan(lruvec, sc))
+			break;
+		cond_resched();
+	}
+
+	/* whether this lruvec should be rotated */
+	return nr_to_scan < 0;
+}
+```
+
+##### 关键函数 get_nr_to_scan
+
+```c
+static long get_nr_to_scan(struct lruvec *lruvec, struct scan_control *sc, bool can_swap)
+{
+	unsigned long nr_to_scan;
+
+    // mem_cgroup 中有 mem_cgroup_per_node 变量
+    // mem_cgroup_per_node 中有 struct lruvec *
+    // 通过 container_of 得到 mem_cgroup_per_node 指针
+	struct mem_cgroup *memcg = lruvec_memcg(lruvec);
+	DEFINE_MAX_SEQ(lruvec);
+
+    // memcg 不懂啊
+	if (mem_cgroup_below_min(sc->target_mem_cgroup, memcg))
+		return -1;
+
+    // nr_to_scan 就表示扫描的页面数量
+    // 而这个扫描的页面数量是 lruvec->lrugen 中的总的 page 数量
+    // 或者是总的 page 数量右移 sc->priority 位
+    // 没懂
+	if (!should_run_aging(lruvec, max_seq, sc, can_swap, &nr_to_scan))
+		return nr_to_scan;
+
+	/* skip the aging path at the default priority */
+	if (sc->priority == DEF_PRIORITY)
+		return nr_to_scan;
+
+	/* skip this lruvec as it's low on cold folios */
+    // nr_to_scan 为 -1/0 的话，本次 shrink_one 就直接返回，相当于没有执行回收操作
+	return try_to_inc_max_seq(lruvec, max_seq, sc, can_swap, false) ? -1 : 0;
+}
+```
+
+##### 关键函数 should_run_aging
+
+根据当前各个 generation 的状态判断是否要进行老化，即增加 max_seq，
+
+```c
+static bool should_run_aging(struct lruvec *lruvec, unsigned long max_seq,
+			 struct scan_control *sc, bool can_swap, unsigned long *nr_to_scan)
+{
+	int gen, type, zone;
+	unsigned long old = 0;
+	unsigned long young = 0;
+	unsigned long total = 0;
+	struct lru_gen_folio *lrugen = &lruvec->lrugen;
+	struct mem_cgroup *memcg = lruvec_memcg(lruvec);
+	DEFINE_MIN_SEQ(lruvec);
+
+	/* whether this lruvec is completely out of cold folios */
+    // 如果最老的 gen 和最新的 gen 不足 MIN_NR_GENS（没有 cold folios?）
+    // 那么说明需要老化，后续会在 try_to_inc_max_seq 中增加 max_seq
+    // 同时该 node 不需要做回收
+	if (min_seq[!can_swap] + MIN_NR_GENS > max_seq) {
+		*nr_to_scan = 0;
+		return true;
+	}
+
+	for (type = !can_swap; type < ANON_AND_FILE; type++) {
+		unsigned long seq;
+		for (seq = min_seq[type]; seq <= max_seq; seq++) {
+			unsigned long size = 0;
+			gen = lru_gen_from_seq(seq);
+			for (zone = 0; zone < MAX_NR_ZONES; zone++)
+				size += max(READ_ONCE(lrugen->nr_pages[gen][type][zone]), 0L);
+			total += size; // 表示 lrugen 中总的 page 数量
+			if (seq == max_seq)
+				young += size; // 表示最新的 gen 中的 page 数量
+			else if (seq + MIN_NR_GENS == max_seq)
+				old += size; // 表示最老的 gen 中的 page 数量
+		}
+	}
+
+	/* try to scrape all its memory if this memcg was deleted */
+	if (!mem_cgroup_online(memcg)) {
+		*nr_to_scan = total;
+		return false;
+	}
+    // 为什么要做这个偏移呢
+	*nr_to_scan = total >> sc->priority;
+
+	/*
+	 * The aging tries to be lazy to reduce the overhead, while the eviction
+	 * stalls when the number of generations reaches MIN_NR_GENS. Hence, the
+	 * ideal number of generations is MIN_NR_GENS+1.
+	 */
+    // gen 是足够的，不需要老化
+	if (min_seq[!can_swap] + MIN_NR_GENS < max_seq)
+		return false;
+
+	/*
+	 * It's also ideal to spread pages out evenly, i.e., 1/(MIN_NR_GENS+1)
+	 * of the total number of pages for each generation. A reasonable range
+	 * for this average portion is [1/MIN_NR_GENS, 1/(MIN_NR_GENS+2)]. The
+	 * aging cares about the upper bound of hot pages, while the eviction
+	 * cares about the lower bound of cold pages.
+	 */
+    // 最新的 gen 中的 page 数量太多也要老化
+	if (young * MIN_NR_GENS > total)
+		return true;
+    // 最老的 gen 中的 page 数量太少也要老化
+    // 看来 mglru 的设计思想就是各个 gen 的 folio 数量达到一个均衡的状态
+	if (old * (MIN_NR_GENS + 2) < total)
+		return true;
+	return false;
+}
+```
+
+##### 关键函数 try_to_inc_max_seq
+
+前面判断了需要进行老化，看一下是怎样进行老化的。这里又涉及到另外两个结构体，`lru_gen_mm_list` 和 `lru_gen_mm_state`。
+
+老化势必涉及到 folio 的迁移，这个怎么做的
+
+```c
+static bool try_to_inc_max_seq(struct lruvec *lruvec, unsigned long max_seq,
+			 struct scan_control *sc, bool can_swap, bool force_scan)
+{
+	bool success;
+	struct lru_gen_mm_walk *walk;
+	struct mm_struct *mm = NULL;
+	struct lru_gen_folio *lrugen = &lruvec->lrugen;
+
+	VM_WARN_ON_ONCE(max_seq > READ_ONCE(lrugen->max_seq));
+	/* see the comment in iterate_mm_list() */
+	if (max_seq <= READ_ONCE(lruvec->mm_state.seq)) {
+		success = false;
+		goto done;
+	}
+
+	/*
+	 * If the hardware doesn't automatically set the accessed bit, fallback
+	 * to lru_gen_look_around(), which only clears the accessed bit in a
+	 * handful of PTEs. Spreading the work out over a period of time usually
+	 * is less efficient, but it avoids bursty page faults.
+	 */
+    // 这里会检查 AF 表示位
+    // 没有使能 ARM64_HW_AFDBM 或者 AF 标志位没有置上
+    // 都不会遍历页表
+    // 不遍历页表就执行 iterate_mm_list_nowalk，否则执行 iterate_mm_list
+    // 为什么要有这样的区别呢
+	if (!should_walk_mmu()) {
+		success = iterate_mm_list_nowalk(lruvec, max_seq); // 这个函数属实没看懂
+		goto done;
+	}
+	walk = set_mm_walk(NULL, true);
+	if (!walk) {
+		success = iterate_mm_list_nowalk(lruvec, max_seq);
+		goto done;
+	}
+
+    // 这个 walk 是用来干嘛的
+	walk->lruvec = lruvec;
+	walk->max_seq = max_seq;
+	walk->can_swap = can_swap;
+	walk->force_scan = force_scan;
+	do {
+    	// 该函数不断获取 mm，walk_mm 去遍历
+    	// 涉及到 lru_gen_mm_state，没搞懂
+		success = iterate_mm_list(lruvec, walk, &mm);
+		if (mm)
+			walk_mm(lruvec, mm, walk); // 这个函数也很复杂，没懂
+	} while (mm);
+done:
+	if (success)
+    // 从命名来看，这里只是增加 max_seq 的
+    // 但从代码实现来看，这里会将 min_seq 和 max_seq 都 +1
+    // 然后更新 lru 的统计信息
+		inc_max_seq(lruvec, can_swap, force_scan);
+	return success;
+}
+```
+
+总的来说逻辑很简单，遍历 lruvec->mm_state，然后执行 walk_mm 函数，执行完后就 `inc_max_seq`。
+
+##### 关键函数 walk_mm
+
+为什么要执行该函数呢？
+
+```c
+static void walk_mm(struct lruvec *lruvec, struct mm_struct *mm, struct lru_gen_mm_walk *walk)
+{
+	static const struct mm_walk_ops mm_walk_ops = {
+		.test_walk = should_skip_vma,
+		.p4d_entry = walk_pud_range,
+		.walk_lock = PGWALK_RDLOCK,
+	};
+	int err;
+	struct mem_cgroup *memcg = lruvec_memcg(lruvec);
+
+	walk->next_addr = FIRST_USER_ADDRESS;
+	do {
+		DEFINE_MAX_SEQ(lruvec);
+		err = -EBUSY;
+		/* another thread might have called inc_max_seq() */
+		if (walk->max_seq != max_seq)
+			break;
+		/* folio_update_gen() requires stable folio_memcg() */
+		if (!mem_cgroup_trylock_pages(memcg))
+			break;
+		/* the caller might be holding the lock for write */
+		if (mmap_read_trylock(mm)) {
+			err = walk_page_range(mm, walk->next_addr, ULONG_MAX, &mm_walk_ops, walk);
+			mmap_read_unlock(mm);
+		}
+		mem_cgroup_unlock_pages();
+		if (walk->batched) {
+			spin_lock_irq(&lruvec->lru_lock);
+			reset_batch_size(lruvec, walk);
+			spin_unlock_irq(&lruvec->lru_lock);
+		}
+		cond_resched();
+	} while (err == -EAGAIN);
+}
+```
+
+##### 关键函数 evict_folios
+
+这里面哪个函数是做回收的？
+
+```c
+static int evict_folios(struct lruvec *lruvec, struct scan_control *sc, int swappiness)
+{
+	int type;
+	int scanned;
+	int reclaimed;
+	LIST_HEAD(list);
+	LIST_HEAD(clean);
+	struct folio *folio;
+	struct folio *next;
+	enum vm_event_item item;
+	struct reclaim_stat stat;
+	struct lru_gen_mm_walk *walk;
+	bool skip_retry = false;
+	struct mem_cgroup *memcg = lruvec_memcg(lruvec);
+	struct pglist_data *pgdat = lruvec_pgdat(lruvec);
+
+	spin_lock_irq(&lruvec->lru_lock);
+
+    // 计算好哪些 folio 可以回收
+	scanned = isolate_folios(lruvec, sc, swappiness, &type, &list);
+	scanned += try_to_inc_min_seq(lruvec, swappiness);
+	if (get_nr_gens(lruvec, !swappiness) == MIN_NR_GENS)
+		scanned = 0;
+	spin_unlock_irq(&lruvec->lru_lock);
+	if (list_empty(&list))
+		return scanned;
+
+retry:
+	reclaimed = shrink_folio_list(&list, pgdat, sc, &stat, false);
+	sc->nr_reclaimed += reclaimed; // 这个参数有啥用
+	list_for_each_entry_safe_reverse(folio, next, &list, lru) {
+		if (!folio_evictable(folio)) {
+			list_del(&folio->lru);
+			folio_putback_lru(folio);
+			continue;
+		}
+
+		if (folio_test_reclaim(folio) &&
+		 (folio_test_dirty(folio) || folio_test_writeback(folio))) {
+			/* restore LRU_REFS_FLAGS cleared by isolate_folio() */
+			if (folio_test_workingset(folio))
+				folio_set_referenced(folio);
+			continue;
+		}
+
+		if (skip_retry || folio_test_active(folio) || folio_test_referenced(folio) ||
+		 folio_mapped(folio) || folio_test_locked(folio) ||
+		 folio_test_dirty(folio) || folio_test_writeback(folio)) {
+			/* don't add rejected folios to the oldest generation */
+			set_mask_bits(&folio->flags, LRU_REFS_MASK | LRU_REFS_FLAGS,
+				 BIT(PG_active));
+			continue;
+		}
+
+		/* retry folios that may have missed folio_rotate_reclaimable() */
+		list_move(&folio->lru, &clean);
+		sc->nr_scanned -= folio_nr_pages(folio);
+	}
+	spin_lock_irq(&lruvec->lru_lock);
+	move_folios_to_lru(lruvec, &list);
+	walk = current->reclaim_state->mm_walk;
+	if (walk && walk->batched)
+		reset_batch_size(lruvec, walk);
+	...
+
+	spin_unlock_irq(&lruvec->lru_lock);
+	...
+
+	return scanned;
+}
+```
+
+##### 关键函数 isolate_folios
+
+swappiness数值越大，Swap 的积极程度越高，越倾向回收匿名页；swappiness数值越小，Swap 的积极程度越低，越倾向回收文件页。
+
+```c
+static int isolate_folios(struct lruvec *lruvec, struct scan_control *sc, int swappiness,
+			 int *type_scanned, struct list_head *list)
+{
+	int i;
+	int type;
+	int scanned;
+	int tier = -1;
+	DEFINE_MIN_SEQ(lruvec);
+
+	/*
+	 * Try to make the obvious choice first. When anon and file are both
+	 * available from the same generation, interpret swappiness 1 as file
+	 * first and 200 as anon first.
+	 */
+    // 原来 swappiness 是在这里控制回收文件页还是匿名页
+	if (!swappiness) // 为 0 就全回收文件页
+		type = LRU_GEN_FILE;
+	else if (min_seq[LRU_GEN_ANON] < min_seq[LRU_GEN_FILE]) // 匿名页的老化速度慢了，加快一点
+		type = LRU_GEN_ANON;
+	else if (swappiness == 1) // 1 也是全回收文件页
+		type = LRU_GEN_FILE;
+	else if (swappiness == 200) // 这个值在哪里配置呢
+		type = LRU_GEN_ANON;
+	else
+		type = get_type_to_scan(lruvec, swappiness, &tier); // 这里计算就复杂了，下次再分析
+	for (i = !swappiness; i < ANON_AND_FILE; i++) {
+		if (tier < 0)
+			tier = get_tier_idx(lruvec, type);
+    	// 根据上面确定的 type，这里会遍历该 type 的 min 数组
+    	// 并将能够 isolate 的 folio 添加到 list 中
+    	// 判断能否 isolate 的条件很复杂
+    	// 从这里就能明白，回收只发生在 min_seq 中
+		scanned = scan_folios(lruvec, sc, type, tier, list);
+		if (scanned)
+			break;
+		type = !type;
+		tier = -1;
+	}
+	*type_scanned = type;
+	return scanned;
+}
+```
+
+##### 关键函数 scan_folios
+
+```c
+static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
+		 int type, int tier, struct list_head *list)
+{
+	int i;
+	int gen;
+	enum vm_event_item item;
+	int sorted = 0;
+	int scanned = 0;
+	int isolated = 0;
+	int remaining = MAX_LRU_BATCH;
+	struct lru_gen_folio *lrugen = &lruvec->lrugen;
+	struct mem_cgroup *memcg = lruvec_memcg(lruvec);
+
+	if (get_nr_gens(lruvec, type) == MIN_NR_GENS)
+		return 0;
+	gen = lru_gen_from_seq(lrugen->min_seq[type]);
+
+    // 遍历所有的链表
+	for (i = MAX_NR_ZONES; i > 0; i--) {
+		LIST_HEAD(moved);
+		int skipped = 0;
+		int zone = (sc->reclaim_idx + i) % MAX_NR_ZONES;
+		struct list_head *head = &lrugen->folios[gen][type][zone];
+		while (!list_empty(head)) {
+			struct folio *folio = lru_to_folio(head);
+			int delta = folio_nr_pages(folio);
+			scanned += delta;
+
+			// 如果不符合回收标准，只是调整一下
+			if (sort_folio(lruvec, folio, sc, tier))
+				sorted += delta;
+
+			// 将 folios 从原来的链表中删除
+			// 添加到 list 中
+			else if (isolate_folio(lruvec, folio, sc)) {
+				list_add(&folio->lru, list);
+				isolated += delta;
+			} else {
+			// 这个不知道什么意思
+				list_move(&folio->lru, &moved);
+				skipped += delta;
+			}
+			if (!--remaining || max(isolated, skipped) >= MIN_LRU_BATCH)
+				break;
+		}
+
+		if (skipped) {
+			list_splice(&moved, head);
+			__count_zid_vm_events(PGSCAN_SKIP, zone, skipped);
+		}
+
+		if (!remaining || isolated >= MIN_LRU_BATCH)
+			break;
+	}
+	...
+
+	return isolated || !remaining ? scanned : 0;
+}
+```
+
+##### 关键函数 shrink_folio_list
+
+这个函数本质上还是链表操作，难就难在内存的复杂性，导致要处理多种多样的 folio 情况。
+
+需要深入了解各种 folio 的使用场景及标志位的判断，暂时还做不到。
+
+```c
+/*
+ * shrink_folio_list() returns the number of reclaimed pages
+ */
+static unsigned int shrink_folio_list(struct list_head *folio_list,
+		struct pglist_data *pgdat, struct scan_control *sc,
+		struct reclaim_stat *stat, bool ignore_references)
+{
+	LIST_HEAD(ret_folios);
+	LIST_HEAD(free_folios);
+	LIST_HEAD(demote_folios);
+	unsigned int nr_reclaimed = 0;
+	unsigned int pgactivate = 0;
+	bool do_demote_pass;
+	struct swap_iocb *plug = NULL;
+
+	memset(stat, 0, sizeof(*stat));
+	cond_resched();
+	do_demote_pass = can_demote(pgdat->node_id, sc);
+
+retry:
+    // 整体就是这个循环
+    // folio_list 是前面构造的可以回收的 folio
+    // 直到所有的 folio 都 delete 掉，才结束循环
+	while (!list_empty(folio_list)) {
+		struct address_space *mapping;
+		struct folio *folio;
+		enum folio_references references = FOLIOREF_RECLAIM;
+		bool dirty, writeback;
+		unsigned int nr_pages;
+
+		cond_resched();
+
+		// 内核的链表操作也要学习一下
+		folio = lru_to_folio(folio_list);
+		list_del(&folio->lru);
+		if (!folio_trylock(folio))
+			goto keep;
+
+		// folio_test_active 是怎样跳转到 PAGEFLAG(Active, active, PF_HEAD) 宏的
+		// 走到这个流程的不能是 active folio
+		VM_BUG_ON_FOLIO(folio_test_active(folio), folio);
+		nr_pages = folio_nr_pages(folio);
+
+		/* Account the number of base pages */
+		sc->nr_scanned += nr_pages;
+
+    	// 这里做了很多条件检查
+		// folio 是 unevictable 有两种情况：
+		// folio mapping 被标志为 unevictable，这种情况很少
+		// folio 中的某个 page 在 mlocked VMA 中
+		if (unlikely(!folio_evictable(folio)))
+			goto activate_locked;
+
+		// mapcount >= 0，说明用户还在使用，不能释放
+		if (!sc->may_unmap && folio_mapped(folio))
+			goto keep_locked;
+
+		// 从代码来看，和上面的没去啊
+		// 注释没看懂，folio_update_gen 和这里有什么关系
+		/* folio_update_gen() tried to promote this page? */
+		if (lru_gen_enabled() && !ignore_references &&
+		 folio_mapped(folio) && folio_test_referenced(folio))
+			goto keep_locked;
+
+		/*
+		 * The number of dirty pages determines if a node is marked
+		 * reclaim_congested. kswapd will stall and start writing
+		 * folios if the tail of the LRU is all dirty unqueued folios.
+		 */
+		 // 匿名页没有 dirty 和 writeback 之分
+		 // 都是检查 PAGEFLAG
+		 // 10 多种 pageflag，要考虑全面得多难
+		folio_check_dirty_writeback(folio, &dirty, &writeback);
+		if (dirty || writeback)
+			stat->nr_dirty += nr_pages;
+
+		// 是 dirtry，但是不需要写回，什么情况下会这样
+		if (dirty && !writeback)
+			stat->nr_unqueued_dirty += nr_pages;
+
+		/*
+		 * Treat this folio as congested if folios are cycling
+		 * through the LRU so quickly that the folios marked
+		 * for immediate reclaim are making it to the end of
+		 * the LRU a second time.
+		 */
+		if (writeback && folio_test_reclaim(folio))
+			stat->nr_congested += nr_pages;
+
+		/*
+		 * If a folio at the tail of the LRU is under writeback, there
+		 * are three cases to consider.
+		 *
+		 * 这些细节考验功力
+		 * 1) If reclaim is encountering an excessive number
+		 * of folios under writeback and this folio has both
+		 * the writeback and reclaim flags set, then it
+		 * indicates that folios are being queued for I/O but
+		 * are being recycled through the LRU before the I/O
+		 * can complete. Waiting on the folio itself risks an
+		 * indefinite stall if it is impossible to writeback
+		 * the folio due to I/O error or disconnected storage
+		 * so instead note that the LRU is being scanned too
+		 * quickly and the caller can stall after the folio
+		 * list has been processed.
+		 *
+		 * 2) Global or new memcg reclaim encounters a folio that is
+		 * not marked for immediate reclaim, or the caller does not
+		 * have __GFP_FS (or __GFP_IO if it's simply going to swap,
+		 * not to fs). In this case mark the folio for immediate
+		 * reclaim and continue scanning.
+		 *
+		 * Require may_enter_fs() because we would wait on fs, which
+		 * may not have submitted I/O yet. And the loop driver might
+		 * enter reclaim, and deadlock if it waits on a folio for
+		 * which it is needed to do the write (loop masks off
+		 * __GFP_IO|__GFP_FS for this reason); but more thought
+		 * would probably show more reasons.
+		 *
+		 * 3) Legacy memcg encounters a folio that already has the
+		 * reclaim flag set. memcg does not have any dirty folio
+		 * throttling so we could easily OOM just because too many
+		 * folios are in writeback and there is nothing else to
+		 * reclaim. Wait for the writeback to complete.
+		 *
+		 * In cases 1) and 2) we activate the folios to get them out of
+		 * the way while we continue scanning for clean folios on the
+		 * inactive list and refilling from the active list. The
+		 * observation here is that waiting for disk writes is more
+		 * expensive than potentially causing reloads down the line.
+		 * Since they're marked for immediate reclaim, they won't put
+		 * memory pressure on the cache working set any longer than it
+		 * takes to write them to disk.
+		 */
+		 // 这里通过 PAGEFLAG 宏来检查非常常见，需要搞懂是怎样检查的
+		 // 这些 bit 是在 pte 里面的么
+		 // PG_writeback 该页正在写入磁盘
+		if (folio_test_writeback(folio)) {
+			/* Case 1 above */
+			// 立刻回收
+			if (current_is_kswapd() &&
+			 folio_test_reclaim(folio) &&
+			 test_bit(PGDAT_WRITEBACK, &pgdat->flags)) {
+				stat->nr_immediate += nr_pages;
+				goto activate_locked;
+			/* Case 2 above */
+			} else if (writeback_throttling_sane(sc) ||
+			 !folio_test_reclaim(folio) ||
+			 !may_enter_fs(folio, sc->gfp_mask)) {
+				/*
+				 * This is slightly racy -
+				 * folio_end_writeback() might have
+				 * just cleared the reclaim flag, then
+				 * setting the reclaim flag here ends up
+				 * interpreted as the readahead flag - but
+				 * that does not matter enough to care.
+				 * What we do want is for this folio to
+				 * have the reclaim flag set next time
+				 * memcg reclaim reaches the tests above,
+				 * so it will then wait for writeback to
+				 * avoid OOM; and it's also appropriate
+				 * in global reclaim.
+				 */
+				folio_set_reclaim(folio);
+				stat->nr_writeback += nr_pages;
+				goto activate_locked;
+			/* Case 3 above */
+			} else {
+				folio_unlock(folio);
+				folio_wait_writeback(folio);
+				/* then go back and try same folio again */
+				list_add_tail(&folio->lru, folio_list);
+				continue;
+			}
+		}
+
+    	// 这里会进行 look_around 操作
+    	// 这个 mglru 一个很重要的特性
+    	// 需要调用 rmap 的接口，计算该 folio 的引用次数
+    	// 将 PG_reference 标志位去掉
+    	// 最后会调用到 lru_gen_look_around->folio_activate
+    	// 将该 folio 周围的几个 folios 进行 promote
+    	// 这里 promote 只是更改 flag，实际移动 folio 要等到下一次 evict_folios->shrink_folio_list
+		if (!ignore_references)
+			references = folio_check_references(folio, sc);
+		switch (references) {
+		case FOLIOREF_ACTIVATE:
+			goto activate_locked;
+		case FOLIOREF_KEEP:
+			stat->nr_ref_keep += nr_pages;
+			goto keep_locked;
+		case FOLIOREF_RECLAIM:
+		case FOLIOREF_RECLAIM_CLEAN:
+			; /* try to reclaim the folio below */
+		}
+
+		/*
+		 * Before reclaiming the folio, try to relocate
+		 * its contents to another node.
+		 */
+		if (do_demote_pass &&
+		 (thp_migration_supported() || !folio_test_large(folio))) {
+			list_add(&folio->lru, &demote_folios);
+			folio_unlock(folio);
+			continue;
+		}
+
+        /*
+		 * Anonymous process memory has backing store?
+		 * Try to allocate it some swap space here.
+		 * Lazyfree folio could be freed directly
+		 */
+		if (folio_test_anon(folio) && folio_test_swapbacked(folio)) {
+			if (!folio_test_swapcache(folio)) {
+				if (!(sc->gfp_mask & __GFP_IO))
+					goto keep_locked;
+				if (folio_maybe_dma_pinned(folio))
+					goto keep_locked;
+				if (folio_test_large(folio)) {
+					/* cannot split folio, skip it */
+					if (!can_split_folio(folio, NULL))
+						goto activate_locked;
+					/*
+					 * Split partially mapped folios right away.
+					 * We can free the unmapped pages without IO.
+					 */
+					if (data_race(!list_empty(&folio->_deferred_list)) &&
+					 split_folio_to_list(folio, folio_list))
+						goto activate_locked;
+				}
+
+    			// 将该 page 加入到 swapcache 中
+				if (!add_to_swap(folio)) {
+					int __maybe_unused order = folio_order(folio);
+					if (!folio_test_large(folio))
+						goto activate_locked_split;
+					/* Fallback to swap normal pages */
+					if (split_folio_to_list(folio, folio_list))
+						goto activate_locked;
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+					if (nr_pages >= HPAGE_PMD_NR) {
+						count_vm_event(THP_SWPOUT_FALLBACK);
+					}
+					count_mthp_stat(order, MTHP_STAT_ANON_SWPOUT_FALLBACK);
+#endif
+					if (!add_to_swap(folio))
+						goto activate_locked_split;
+				}
+			}
+		} else if (folio_test_swapbacked(folio) &&
+			 folio_test_large(folio)) {
+			/* Split shmem folio */
+			if (split_folio_to_list(folio, folio_list))
+				goto keep_locked;
+		}
+
+		/*
+		 * If the folio was split above, the tail pages will make
+		 * their own pass through this function and be accounted
+		 * then.
+		 */
+		if ((nr_pages > 1) && !folio_test_large(folio)) {
+			sc->nr_scanned -= (nr_pages - 1);
+			nr_pages = 1;
+		}
+
+		/*
+		 * The folio is mapped into the page tables of one or more
+		 * processes. Try to unmap it here.
+		 */
+		if (folio_mapped(folio)) {
+			enum ttu_flags flags = TTU_BATCH_FLUSH;
+			bool was_swapbacked = folio_test_swapbacked(folio);
+			if (folio_test_pmd_mappable(folio))
+				flags |= TTU_SPLIT_HUGE_PMD;
+			/*
+			 * Without TTU_SYNC, try_to_unmap will only begin to
+			 * hold PTL from the first present PTE within a large
+			 * folio. Some initial PTEs might be skipped due to
+			 * races with parallel PTE writes in which PTEs can be
+			 * cleared temporarily before being written new present
+			 * values. This will lead to a large folio is still
+			 * mapped while some subpages have been partially
+			 * unmapped after try_to_unmap; TTU_SYNC helps
+			 * try_to_unmap acquire PTL from the first PTE,
+			 * eliminating the influence of temporary PTE values.
+			 */
+			if (folio_test_large(folio) && list_empty(&folio->_deferred_list))
+				flags |= TTU_SYNC;
+			try_to_unmap(folio, flags);
+			if (folio_mapped(folio)) {
+				stat->nr_unmap_fail += nr_pages;
+				if (!was_swapbacked &&
+				 folio_test_swapbacked(folio))
+					stat->nr_lazyfree_fail += nr_pages;
+				goto activate_locked;
+			}
+		}
+
+		/*
+		 * Folio is unmapped now so it cannot be newly pinned anymore.
+		 * No point in trying to reclaim folio if it is pinned.
+		 * Furthermore we don't want to reclaim underlying fs metadata
+		 * if the folio is pinned and thus potentially modified by the
+		 * pinning process as that may upset the filesystem.
+		 */
+		if (folio_maybe_dma_pinned(folio))
+			goto activate_locked;
+		mapping = folio_mapping(folio);
+		if (folio_test_dirty(folio)) {
+			/*
+			 * Only kswapd can writeback filesystem folios
+			 * to avoid risk of stack overflow. But avoid
+			 * injecting inefficient single-folio I/O into
+			 * flusher writeback as much as possible: only
+			 * write folios when we've encountered many
+			 * dirty folios, and when we've already scanned
+			 * the rest of the LRU for clean folios and see
+			 * the same dirty folios again (with the reclaim
+			 * flag set).
+			 */
+			if (folio_is_file_lru(folio) &&
+			 (!current_is_kswapd() ||
+			 !folio_test_reclaim(folio) ||
+			 !test_bit(PGDAT_DIRTY, &pgdat->flags))) {
+				/*
+				 * Immediately reclaim when written back.
+				 * Similar in principle to folio_deactivate()
+				 * except we already have the folio isolated
+				 * and know it's dirty
+				 */
+				node_stat_mod_folio(folio, NR_VMSCAN_IMMEDIATE,
+						nr_pages);
+				folio_set_reclaim(folio);
+				goto activate_locked;
+			}
+			if (references == FOLIOREF_RECLAIM_CLEAN)
+				goto keep_locked;
+			if (!may_enter_fs(folio, sc->gfp_mask))
+				goto keep_locked;
+			if (!sc->may_writepage)
+				goto keep_locked;
+
+			/*
+			 * Folio is dirty. Flush the TLB if a writable entry
+			 * potentially exists to avoid CPU writes after I/O
+			 * starts and then write it out here.
+			 */
+			try_to_unmap_flush_dirty();
+			switch (pageout(folio, mapping, &plug)) {
+			case PAGE_KEEP:
+				goto keep_locked;
+			case PAGE_ACTIVATE:
+				goto activate_locked;
+			case PAGE_SUCCESS:
+				stat->nr_pageout += nr_pages;
+				if (folio_test_writeback(folio))
+					goto keep;
+				if (folio_test_dirty(folio))
+					goto keep;
+
+				/*
+				 * A synchronous write - probably a ramdisk. Go
+				 * ahead and try to reclaim the folio.
+				 */
+				if (!folio_trylock(folio))
+					goto keep;
+				if (folio_test_dirty(folio) ||
+				 folio_test_writeback(folio))
+					goto keep_locked;
+				mapping = folio_mapping(folio);
+				fallthrough;
+			case PAGE_CLEAN:
+				; /* try to free the folio below */
+			}
+		}
+
+		/*
+		 * If the folio has buffers, try to free the buffer
+		 * mappings associated with this folio. If we succeed
+		 * we try to free the folio as well.
+		 *
+		 * We do this even if the folio is dirty.
+		 * filemap_release_folio() does not perform I/O, but it
+		 * is possible for a folio to have the dirty flag set,
+		 * but it is actually clean (all its buffers are clean).
+		 * This happens if the buffers were written out directly,
+		 * with submit_bh(). ext3 will do this, as well as
+		 * the blockdev mapping. filemap_release_folio() will
+		 * discover that cleanness and will drop the buffers
+		 * and mark the folio clean - it can be freed.
+		 *
+		 * Rarely, folios can have buffers and no ->mapping.
+		 * These are the folios which were not successfully
+		 * invalidated in truncate_cleanup_folio(). We try to
+		 * drop those buffers here and if that worked, and the
+		 * folio is no longer mapped into process address space
+		 * (refcount == 1) it can be freed. Otherwise, leave
+		 * the folio on the LRU so it is swappable.
+		 */
+		if (folio_needs_release(folio)) {
+			if (!filemap_release_folio(folio, sc->gfp_mask))
+				goto activate_locked;
+			if (!mapping && folio_ref_count(folio) == 1) {
+				folio_unlock(folio);
+				if (folio_put_testzero(folio))
+					goto free_it;
+				else {
+					/*
+					 * rare race with speculative reference.
+					 * the speculative reference will free
+					 * this folio shortly, so we may
+					 * increment nr_reclaimed here (and
+					 * leave it off the LRU).
+					 */
+					nr_reclaimed += nr_pages;
+					continue;
+				}
+			}
+		}
+		if (folio_test_anon(folio) && !folio_test_swapbacked(folio)) {
+			/* follow __remove_mapping for reference */
+			if (!folio_ref_freeze(folio, 1))
+				goto keep_locked;
+
+			/*
+			 * The folio has only one reference left, which is
+			 * from the isolation. After the caller puts the
+			 * folio back on the lru and drops the reference, the
+			 * folio will be freed anyway. It doesn't matter
+			 * which lru it goes on. So we don't bother checking
+			 * the dirty flag here.
+			 */
+			count_vm_events(PGLAZYFREED, nr_pages);
+			count_memcg_folio_events(folio, PGLAZYFREED, nr_pages);
+		} else if (!mapping || !__remove_mapping(mapping, folio, true,
+							 sc->target_mem_cgroup))
+			goto keep_locked;
+		folio_unlock(folio);
+
+free_it:
+		/*
+		 * Folio may get swapped out as a whole, need to account
+		 * all pages in it.
+		 */
+		nr_reclaimed += nr_pages;
+
+		/*
+		 * Is there need to periodically free_folio_list? It would
+		 * appear not as the counts should be low
+		 */
+		if (unlikely(folio_test_large(folio)))
+			destroy_large_folio(folio);
+		else
+			list_add(&folio->lru, &free_folios);
+		continue;
+
+		// 进入到这些分支的都是不回收的
+activate_locked_split:
+		/*
+		 * The tail pages that are failed to add into swap cache
+		 * reach here. Fixup nr_scanned and nr_pages.
+		 */
+		if (nr_pages > 1) {
+			sc->nr_scanned -= (nr_pages - 1);
+			nr_pages = 1;
+		}
+activate_locked:
+		/* Not a candidate for swapping, so reclaim swap space. */
+		if (folio_test_swapcache(folio) &&
+		 (mem_cgroup_swap_full(folio) || folio_test_mlocked(folio)))
+			folio_free_swap(folio); // 这里才是真正的释放
+		VM_BUG_ON_FOLIO(folio_test_active(folio), folio);
+		if (!folio_test_mlocked(folio)) {
+			int type = folio_is_file_lru(folio);
+			folio_set_active(folio);
+			stat->nr_activate[type] += nr_pages;
+			count_memcg_folio_events(folio, PGACTIVATE, nr_pages);
+		}
+keep_locked:
+		folio_unlock(folio);
+keep:
+		list_add(&folio->lru, &ret_folios);
+		VM_BUG_ON_FOLIO(folio_test_lru(folio) ||
+				folio_test_unevictable(folio), folio);
+	}
+
+	/* 'folio_list' is always empty here */
+	/* Migrate folios selected for demotion */
+	nr_reclaimed += demote_folio_list(&demote_folios, pgdat);
+	/* Folios that could not be demoted are still in @demote_folios */
+	if (!list_empty(&demote_folios)) {
+		/* Folios which weren't demoted go back on @folio_list */
+		list_splice_init(&demote_folios, folio_list);
+
+		/*
+		 * goto retry to reclaim the undemoted folios in folio_list if
+		 * desired.
+		 *
+		 * Reclaiming directly from top tier nodes is not often desired
+		 * due to it breaking the LRU ordering: in general memory
+		 * should be reclaimed from lower tier nodes and demoted from
+		 * top tier nodes.
+		 *
+		 * However, disabling reclaim from top tier nodes entirely
+		 * would cause ooms in edge scenarios where lower tier memory
+		 * is unreclaimable for whatever reason, eg memory being
+		 * mlocked or too hot to reclaim. We can disable reclaim
+		 * from top tier nodes in proactive reclaim though as that is
+		 * not real memory pressure.
+		 */
+		if (!sc->proactive) {
+			do_demote_pass = false;
+			goto retry;
+		}
+	}
+
+    pgactivate = stat->nr_activate[0] + stat->nr_activate[1];
+	mem_cgroup_uncharge_list(&free_folios);
+	try_to_unmap_flush();
+    // 添加到 free_folios 中的才是真正要释放的 folios
+	free_unref_page_list(&free_folios);
+	list_splice(&ret_folios, folio_list);
+	count_vm_events(PGACTIVATE, pgactivate);
+	if (plug)
+		swap_write_unplug(plug);
+	return nr_reclaimed;
 }
 ```
 
@@ -4948,6 +7350,7 @@ static inline struct page *rmqueue(struct zone *preferred_zone,
 	}
 
 	...
+
 }
 ```
 
@@ -5173,8 +7576,23 @@ out:
 ##### 关键函数 shrink_node
 
 `balance_pgdat` -> `kswapd_shrink_node` -> `shrink_node`
+该函数用于扫描内存节点中所有可回收的页面，直接内存回收和 kswapd 都会调用该函数回收内存。
+![img](https://raw.githubusercontent.com/UtopianFuture/UtopianFuture.github.io/81305767754ca8df95d18da10465dd730bc093be/image/shrink_node.svg)
+整个操作可以归纳为两种情况：
 
-该函数用于扫描内存节点中所有可回收的页面。
+- 使能了 mglru：
+ - mglru 回收的核心函数，`try_to_shrink_lruvec`，首先执行 `get_nr_to_scan` 判断是否要进行老化，在 `evict_folios` 中将需要回收的 folios 放到 list 中，然后回收这些 folios，`should_abort_scan` 检查 watermark 是否 OK，决定是否结束回收；
+ - 调用 shrink_slab；
+- 没使能 mglru:
+ - 遍历 active 和 inactive lru 进行内存回收，这一操作和 rmap 机制紧密相关，需要借助 rmap 机制来解除某个 page 的所有映射；
+ - shrink_active_list 用于扫描 active lru 链表，包括匿名页和文件页，将最近一直没有访问的页面添加到 inactive lru 链表中。这里调用 `page_referenced` 是为了计算所有共享该页面的进程中，该页面最近访问、引用 PTE 的个数(page->_mapcount)，若个数为 0，说明最近没有访问、引用，可以进行下一步操作；
+ - shrink_inactive_list 用于扫描 inactive lru 链表以尝试回收页面，并返回回收页面的数量。这里调用 `page_check_references` 同样用于计算、维护在所有共享该页面的的进程中的引用 PTE 的用户数(page->_mapcount)，以此确实是否可以回收；
+ - 调用 shrink_slab。`shrinker_list` 是一个全局变量，内核组件可以通过 `register_shrinker` 注册自己的 shrink_slab 回调函数，然后执行 scan_objects 函数，返回回收的页面数量；
+我们进一步分析 shrink_list 以及 shrink_slab 是怎样回收内存的。
+
+##### shrink_active_list&shrink_inactive_list
+
+这个是 lru 的回收方式，现在内核使用的都是 mglru，这个以后有需要再分析吧！
 
 #### 回收页面类型
 
@@ -5401,15 +7819,108 @@ out:
 
 内存规整是为了解决内核碎片化出现的一个功能，当物理设备需要大段的连续的物理内存，而内核无法满足，则会发生内核错误，因此需要**将多个小空闲内存块重新整理以凑出大块连续的物理内存**。
 
-内存规整的核心思想是**将内存页面按照可移动、可回收、不可移动等特性进行分类**。可移动页面通常指用户态进程分配的内存，移动这些页面仅仅需要修改页表映射关系；可回收页面指不可移动但可释放的页面。其运行流程总结起来很好理解（但是实现又是另一回事:joy:）。有两个方向的扫描者：一个从 zone 的头部向 zone 的尾部方向扫描，查找哪些页面是可移动的；另一个从 zone 的尾部向 zone 的头部方向扫描，查找哪些页面是空闲页面。当这两个扫描者在 zone 中间相遇或已经满足分配大块内存的需求（能分配处所需要的大块内存并且满足最低的水位要求）时，就可以退出扫描。
+内存规整的核心思想是**将内存页面按照可移动、可回收、不和移动等特性进行分类。**
+
+内核按照可移动性将内存页分为如下三种类型：
+
+- UNMOVABLE：在内存中的位置固定，不能随意移动。内核态分配的内存基本属于这个类型；
+- RECLAIMABLE：不可移动，但可以删除回收。例如文件页映射内存；
+- MOVABLE：可以随意移动，用户空间的内存基本属于这个类型。
+
+其运行流程总结起来很好理解（但是实现又是另一回事:joy:）。有两个方向的扫描者：一个从 zone 的头部向 zone 的尾部方向扫描，查找哪些页面是可移动的；另一个从 zone 的尾部向 zone 的头部方向扫描，查找哪些页面是空闲页面。当这两个扫描者在 zone 中间相遇或已经满足分配大块内存的需求（能分配处所需要的大块内存并且满足最低的水位要求）时，就可以退出扫描。
 
 ![memory_compact.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/memory_compact.png?raw=true)
 
 内核中触发内存规整有 3 个途径：
 
-- 手动触发。通过写 1 到 /proc/sys/vm/compact_memory 节点，会手动触发内存规整，内核会扫描所有的内存节点上的 zone，对每个 zone 做一次内存规整。
-- kcompactd 内核线程。和页面回收 kswapd 内核线程一样，每个内存节点都会创建一个 `kcompactd%d` 内核线程（何时唤醒？）。
 - 直接内存规整。当伙伴系统发现 zone 的 watermask 无法满足页面分配时，会进入慢路径。在慢路径中，除了唤醒 kswapd 内核线程，还会调用 `__alloc_pages_direct_compact` 尝试整理出大块内存。
+
+- kcompactd 内核线程。和页面回收 kswapd 内核线程一样，每个内存节点都会创建一个 `kcompactd%d` 内核线程（何时唤醒？）。
+
+- 手动触发。通过写 1 到 /proc/sys/vm/compact_memory 节点，会手动触发内存规整，内核会扫描所有的内存节点上的 zone，对每个 zone 做一次内存规整。
+
+#### try_to_compact_pages
+
+直接内存规整，需要分析入参对规整效率的影响
+
+```c
+enum compact_result try_to_compact_pages(gfp_t gfp_mask, unsigned int order,
+		unsigned int alloc_flags, const struct alloc_context *ac,
+		enum compact_priority prio, struct page **capture)
+{
+	int may_perform_io = (__force int)(gfp_mask & __GFP_IO);
+	struct zoneref *z;
+	struct zone *zone;
+	enum compact_result rc = COMPACT_SKIPPED;
+
+	/*
+	 * Check if the GFP flags allow compaction - GFP_NOIO is really
+	 * tricky context because the migration might require IO
+	 */
+	if (!may_perform_io)
+		return COMPACT_SKIPPED;
+	trace_mm_compaction_try_to_compact_pages(order, gfp_mask, prio);
+
+	/* Compact each zone in the list */
+	for_each_zone_zonelist_nodemask(zone, z, ac->zonelist,
+					ac->highest_zoneidx, ac->nodemask) {
+		enum compact_result status;
+		if (prio > MIN_COMPACT_PRIORITY
+					&& compaction_deferred(zone, order)) {
+			rc = max_t(enum compact_result, COMPACT_DEFERRED, rc);
+			continue;
+		}
+
+		status = compact_zone_order(zone, order, gfp_mask, prio,
+				alloc_flags, ac->highest_zoneidx, capture);
+		rc = max(status, rc);
+
+		/* The allocation should succeed, stop compacting */
+		if (status == COMPACT_SUCCESS) {
+			/*
+			 * We think the allocation will succeed in this zone,
+			 * but it is not certain, hence the false. The caller
+			 * will repeat this with true if allocation indeed
+			 * succeeds in this zone.
+			 */
+			compaction_defer_reset(zone, order, false);
+			break;
+		}
+
+		if (prio != COMPACT_PRIO_ASYNC && (status == COMPACT_COMPLETE ||
+					status == COMPACT_PARTIAL_SKIPPED))
+
+			/*
+			 * We think that allocation won't succeed in this zone
+			 * so we defer compaction there. If it ends up
+			 * succeeding after all, it will be reset.
+			 */
+			defer_compaction(zone, order);
+
+		/*
+		 * We might have stopped compacting due to need_resched() in
+		 * async compaction, or due to a fatal signal detected. In that
+		 * case do not try further zones
+		 */
+		if ((prio == COMPACT_PRIO_ASYNC && need_resched())
+					|| fatal_signal_pending(current))
+			break;
+	}
+	return rc;
+}
+```
+
+- gfp_mask：该标识是用来确定迁移类型的，迁移类型在后续 `isolate_migratepages` 中需要作为判断条件，具体可以看 `suitable_migration_source` 函数，这里配置成 GFP_KERNEL；
+
+- order：该路径 order 就是申请的 order，后续规整时，会以该 order 为粒度遍历 zone，如果是用户态触发的，order = -1。后续可以对比一下正常的 order 和 order = -1 有什么区别；
+
+- alloc_flags：分配掩码，会影响后续判断是否适合规整，慢路径设置的是 ALLOC_WMARK_MIN，快路径设置的是 ALLOC_WMARK_LOW。下面几种路径可以加断点跟一下看配置的是什么；
+
+- const struct alloc_context *ac: 需要指定 zonelist, highest_zoneidx 等参数，和 compact_nodes 不同，try_to_compact_pages 之后遍历 ac->zonelist 中的 zone。zonelist 可以通过 `node_zonelist(preferred_nid, gfp_mask);` 获取，其中 preferred_nid 为 0 就行，因为 `node_zonelist` 是直接获取全局变量 `contig_page_data`，不需要 nid；而 `highest_zoneidx` 可以通过 `gfp_zone(gfp_mask)` 获取；
+
+- enum compact_priority prio：决定内存规整的模式，可以配置为 MIGRATE_ASYNC，其他几种场景是怎样配置的可以加断点跟一下；
+
+- struct page **capture：返回值，设置为 NULL；
 
 #### kcompactd 内核线程
 
@@ -5521,6 +8032,505 @@ static int kcompactd(void *p)
 	return 0;
 }
 ```
+
+#### sysctl_compaction_handler
+
+响应 sysctl，逻辑很简单，就是调用 compact_nodes，
+
+```c
+static int sysctl_compaction_handler(struct ctl_table *table, int write,
+			void *buffer, size_t *length, loff_t *ppos)
+{
+	int ret;
+	ret = proc_dointvec(table, write, buffer, length, ppos);
+	if (ret)
+		return ret;
+	if (sysctl_compact_memory != 1)
+		return -EINVAL;
+	if (write)
+		compact_nodes();
+	return 0;
+}
+
+static void compact_nodes(void)
+{
+	int nid;
+	/* Flush pending updates to the LRU lists */
+	lru_add_drain_all();
+	for_each_online_node(nid)
+		compact_node(nid); // 后续就是调用 compact_zone
+}
+```
+
+#### 关键函数 compact_zone
+
+以上三中路径最终都是调用到 `compact_zone`，完成上面描述的扫描 zone （不过最新的内核不再以 zone 为扫描单元，而是以内存节点）的任务，找出可以迁移的页面和空闲页面，最终整理出大块内存。
+
+在分析该函数前，我们需要了解一下规整相关的数据结构以规整模式，
+
+##### compact_control
+
+`struct compact_control` 结构体是规整控制描述符，其中每个变量都对规整过程有影响，
+
+```c
+/*
+ * compact_control is used to track pages being migrated and the free pages
+ * they are being migrated to during memory compaction. The free_pfn starts
+ * at the end of a zone and migrate_pfn begins at the start. Movable pages
+ * are moved to the end of a zone during a compaction run and the run
+ * completes when free_pfn <= migrate_pfn
+ */
+struct compact_control {
+	struct list_head freepages;	/* List of free pages to migrate to */
+	struct list_head migratepages;	/* List of pages being migrated */
+	unsigned int nr_freepages;	/* Number of isolated free pages */
+	unsigned int nr_migratepages;	/* Number of pages to migrate */
+	unsigned long free_pfn;		/* isolate_freepages search base */
+	/*
+	 * Acts as an in/out parameter to page isolation for migration.
+	 * isolate_migratepages uses it as a search base.
+	 * isolate_migratepages_block will update the value to the next pfn
+	 * after the last isolated one.
+	 */
+	unsigned long migrate_pfn;
+	unsigned long fast_start_pfn;	/* a pfn to start linear scan from */
+	struct zone *zone;
+	unsigned long total_migrate_scanned;
+	unsigned long total_free_scanned;
+	unsigned short fast_search_fail;/* failures to use free list searches */
+	short search_order;		/* order to start a fast search at */
+	const gfp_t gfp_mask;		/* gfp mask of a direct compactor */
+	int order;			/* order a direct compactor needs */
+	int migratetype;		/* migratetype of direct compactor */
+    // 直观的来讲，就是该次分配要到什么程度
+    // 其定义在 common/mm/internal.h 中
+    // ALLOC_CMA 就是一种 alloc_flags，表示可以从 CMA 区域分配
+    // ALLOC_NON_BLOCK 表示该次分配不能被阻塞
+	const unsigned int alloc_flags;	/* alloc flags of a direct compactor */
+	const int highest_zoneidx;	/* zone index of a direct compactor */
+	enum migrate_mode mode;		/* Async or sync migration mode */
+	bool ignore_skip_hint;		/* Scan blocks even if marked skip */
+	bool no_set_skip_hint;		/* Don't mark blocks for skipping */
+	bool ignore_block_suitable;	/* Scan blocks considered unsuitable */
+	bool direct_compaction;		/* False from kcompactd or /proc/... */
+	bool proactive_compaction;	/* kcompactd proactive compaction */
+	bool whole_zone;		/* Whole zone should/has been scanned */
+	bool contended;			/* Signal lock contention */
+	bool finish_pageblock;		/* Scan the remainder of a pageblock. Used
+					 * when there are potentially transient
+					 * isolation or migration failures to
+					 * ensure forward progress.
+					 */
+	bool alloc_contig;		/* alloc_contig_range allocation */
+};
+```
+
+##### migrate_mode
+
+内存规整有如下几种模式，
+
+```c
+/*
+ * MIGRATE_ASYNC means never block
+ * MIGRATE_SYNC_LIGHT in the current implementation means to allow blocking
+ *	on most operations but not ->writepage as the potential stall time
+ *	is too significant
+ * MIGRATE_SYNC will block when migrating pages
+ * MIGRATE_SYNC_NO_COPY will block when migrating pages but will not copy pages
+ *	with the CPU. Instead, page copy happens outside the migratepage()
+ *	callback and is likely using a DMA engine. See migrate_vma() and HMM
+ *	(mm/hmm.c) for users of this mode.
+ */
+enum migrate_mode {
+	MIGRATE_ASYNC, // 异步模式，当进程需要调度时，退出内存规整
+	MIGRATE_SYNC_LIGHT, // 同步模式，允许调用者被阻塞
+	MIGRATE_SYNC, // 同步模式，会被阻塞（？）。用户态触发就是这种模式
+	MIGRATE_SYNC_NO_COPY, // HMM 机制使用这种模式
+};
+```
+
+##### compact_result
+
+```c
+enum compact_result {
+	COMPACT_NOT_SUITABLE_ZONE, // 字面意思，没有合适的 ZONE
+	COMPACT_SKIPPED, // 不满足规整条件，退出
+	COMPACT_DEFERRED, // 错误导致退出
+	COMPACT_NO_SUITABLE_PAGE, // 字面意思，没有合适的 PAGE
+	COMPACT_CONTINUE, // 可以在下一个 pageblock 中进行规整
+	COMPACT_COMPLETE, // 完成一轮扫描，但是没能满足页面分配需求
+	COMPACT_PARTIAL_SKIPPED, // 根据直接页面回收机制以及扫描了 zone 中的部分页面，但没有找到可以规整的页面
+	COMPACT_CONTENDED, // 处于某些锁竞争的原因退出规整
+	COMPACT_SUCCESS, // 满足页面分配请求，退出直接内存规整
+};
+```
+
+##### compact_priority
+
+```c
+enum compact_priority {
+	COMPACT_PRIO_SYNC_FULL, // 最高优先级，压缩和迁移以同步的方式完成；
+	MIN_COMPACT_PRIORITY = COMPACT_PRIO_SYNC_FULL,
+	COMPACT_PRIO_SYNC_LIGHT,
+	MIN_COMPACT_COSTLY_PRIORITY = COMPACT_PRIO_SYNC_LIGHT,
+	DEF_COMPACT_PRIORITY = COMPACT_PRIO_SYNC_LIGHT, // 中优先级，压缩以同步方式处理，迁移以异步方式处理；
+	COMPACT_PRIO_ASYNC,
+	INIT_COMPACT_PRIORITY = COMPACT_PRIO_ASYNC // 最低优先级，压缩和迁移以异步方式处理
+};
+```
+
+有个问题，同步和异步在性能上分别有什么影响？
+先看看整体的规整流程图，
+
+![img](https://raw.githubusercontent.com/UtopianFuture/UtopianFuture.github.io/81305767754ca8df95d18da10465dd730bc093be/image/compact.svg)
+
+对于 alloc_flags 需要分如下场景，
+- kcompactd 内核线程，alloc_flags 被初始化为 0，采用最低警戒水位作为判断条件，因为 WMARK_MIN 为 0；
+- 用户态触发，compaction_suitable 返回 COMPACT_CONTINUE（？）；
+- 慢速路径，alloc_flags 为最低警戒水位；
+
+```c
+static enum compact_result
+compact_zone(struct compact_control *cc, struct capture_control *capc)
+{
+	enum compact_result ret;
+	unsigned long start_pfn = cc->zone->zone_start_pfn; // 该 zone 的起始页帧号
+	unsigned long end_pfn = zone_end_pfn(cc->zone); // 结束页帧号
+	unsigned long last_migrated_pfn;
+	const bool sync = cc->mode != MIGRATE_ASYNC; // 是否支持异步模式
+	bool update_cached;
+	unsigned int nr_succeeded = 0;
+
+	/*
+	 * These counters track activities during zone compaction. Initialize
+	 * them before compacting a new zone.
+	 */
+	cc->total_migrate_scanned = 0;
+	cc->total_free_scanned = 0;
+	cc->nr_migratepages = 0;
+	cc->nr_freepages = 0;
+	INIT_LIST_HEAD(&cc->freepages);
+	INIT_LIST_HEAD(&cc->migratepages);
+
+    // 迁移类型，MIGRATE_UNMOVABLE, MEGRATE_MOVABLE 等
+    // MIGRATE_UNMOVABLE 是不能被迁移的
+	cc->migratetype = gfp_migratetype(cc->gfp_mask);
+
+    // order == -1
+    // 为什么要这样判断
+    // 用户态触发的话，order 就是设置为 -1
+    // 为何用户态触发的要这样检查
+	if (!is_via_compact_memory(cc->order)) {
+		unsigned long watermark;
+
+		/* Allocation can already succeed, nothing to do */
+		watermark = wmark_pages(cc->zone,
+					cc->alloc_flags & ALLOC_WMARK_MASK);
+		if (zone_watermark_ok(cc->zone, cc->order, watermark,
+				 cc->highest_zoneidx, cc->alloc_flags))
+			return COMPACT_SUCCESS; // 原来水位达到分配要求（alloc_flags）就可以直接返回 SUCCESS 了
+
+		/* Compaction is likely to fail */
+    	// 简单来说，就是检查 zone 里的 freepages 是否大于要求的 freepages
+		if (!compaction_suitable(cc->zone, cc->order,
+					 cc->highest_zoneidx))
+			return COMPACT_SKIPPED;
+	}
+
+	/*
+	 * Clear pageblock skip if there were failures recently and compaction
+	 * is about to be retried after being deferred.
+	 */
+    // compact_defer 是个很重要的机制
+    // 为什么要设计这种机制？
+    // zone 结构体中有 3 个 compact 相关的成员变量
+    // 需要搞清楚分别是干什么的
+	if (compaction_restarting(cc->zone, cc->order))
+		__reset_isolation_suitable(cc->zone);
+
+	/*
+	 * Setup to move all movable pages to the end of the zone. Used cached
+	 * information on where the scanners should start (unless we explicitly
+	 * want to compact the whole zone), but check that it is initialised
+	 * by ensuring the values are within zone boundaries.
+	 */
+	cc->fast_start_pfn = 0;
+    // 这个很好理解，如果是整个 zone 规整
+    // 那么从头部开始遍历需要迁移的 page
+    // 从尾部开始遍历空闲 page
+	if (cc->whole_zone) {
+		cc->migrate_pfn = start_pfn;
+		cc->free_pfn = pageblock_start_pfn(end_pfn - 1);
+	} else {
+    	// compact_cached_migrate_pfn 记录的是上次扫描中可迁移页面的位置
+    	// 这个方案对规整的性能有多大的改进
+		cc->migrate_pfn = cc->zone->compact_cached_migrate_pfn[sync];
+		cc->free_pfn = cc->zone->compact_cached_free_pfn;
+		if (cc->free_pfn < start_pfn || cc->free_pfn >= end_pfn) {
+			cc->free_pfn = pageblock_start_pfn(end_pfn - 1);
+			cc->zone->compact_cached_free_pfn = cc->free_pfn;
+		}
+		if (cc->migrate_pfn < start_pfn || cc->migrate_pfn >= end_pfn) {
+			cc->migrate_pfn = start_pfn;
+			cc->zone->compact_cached_migrate_pfn[0] = cc->migrate_pfn;
+			cc->zone->compact_cached_migrate_pfn[1] = cc->migrate_pfn;
+		}
+		if (cc->migrate_pfn <= cc->zone->compact_init_migrate_pfn)
+			cc->whole_zone = true;
+	}
+	last_migrated_pfn = 0;
+
+	/*
+	 * Migrate has separate cached PFNs for ASYNC and SYNC* migration on
+	 * the basis that some migrations will fail in ASYNC mode. However,
+	 * if the cached PFNs match and pageblocks are skipped due to having
+	 * no isolation candidates, then the sync state does not matter.
+	 * Until a pageblock with isolation candidates is found, keep the
+	 * cached PFNs in sync to avoid revisiting the same blocks.
+	 */
+    // 这些优化暂时不深究
+	update_cached = !sync &&
+		cc->zone->compact_cached_migrate_pfn[0] == cc->zone->compact_cached_migrate_pfn[1];
+	trace_mm_compaction_begin(cc, start_pfn, end_pfn, sync);
+
+	/* lru_add_drain_all could be expensive with involving other CPUs */
+	lru_add_drain();
+
+    // 内存规整结束的条件有两个
+    // cc->migrate_pfn 和 cc->free_pfn 两个指针相遇
+    // zone 中 order 对那个的迁移类型的空闲链表是否有成员
+    // 如果没有，可以从其他迁移类型“借”一些空闲块（原来在这里借的）
+	while ((ret = compact_finished(cc)) == COMPACT_CONTINUE) {
+		int err;
+		unsigned long iteration_start_pfn = cc->migrate_pfn;
+
+		/*
+		 * Avoid multiple rescans of the same pageblock which can
+		 * happen if a page cannot be isolated (dirty/writeback in
+		 * async mode) or if the migrated pages are being allocated
+		 * before the pageblock is cleared. The first rescan will
+		 * capture the entire pageblock for migration. If it fails,
+		 * it'll be marked skip and scanning will proceed as normal.
+		 */
+		cc->finish_pageblock = false;
+		if (pageblock_start_pfn(last_migrated_pfn) ==
+		 pageblock_start_pfn(iteration_start_pfn)) {
+			cc->finish_pageblock = true;
+		}
+rescan:
+		switch (isolate_migratepages(cc)) {
+		case ISOLATE_ABORT:
+			ret = COMPACT_CONTENDED;
+			putback_movable_pages(&cc->migratepages);
+			cc->nr_migratepages = 0;
+			goto out;
+		case ISOLATE_NONE:
+			if (update_cached) {
+				cc->zone->compact_cached_migrate_pfn[1] =
+					cc->zone->compact_cached_migrate_pfn[0];
+			}
+
+      /*
+			 * We haven't isolated and migrated anything, but
+			 * there might still be unflushed migrations from
+			 * previous cc->order aligned block.
+			 */
+			goto check_drain;
+		case ISOLATE_SUCCESS:
+			update_cached = false;
+			last_migrated_pfn = max(cc->zone->zone_start_pfn,
+				pageblock_start_pfn(cc->migrate_pfn - 1));
+		}
+
+    	// 该函数上面分析过
+		err = migrate_pages(&cc->migratepages, compaction_alloc,
+				compaction_free, (unsigned long)cc, cc->mode,
+				MR_COMPACTION, &nr_succeeded);
+		trace_mm_compaction_migratepages(cc, nr_succeeded);
+
+		/* All pages were either migrated or will be released */
+		cc->nr_migratepages = 0;
+		if (err) {
+			putback_movable_pages(&cc->migratepages); // 迁移失败的话需要将页面放回去
+ ...
+
+		}
+		/* Stop if a page has been captured */
+		if (capc && capc->page) {
+			ret = COMPACT_SUCCESS;
+			break;
+		}
+
+check_drain: // 这块没懂
+		/*
+		 * Has the migration scanner moved away from the previous
+		 * cc->order aligned block where we migrated from? If yes,
+		 * flush the pages that were freed, so that they can merge and
+		 * compact_finished() can detect immediately if allocation
+		 * would succeed.
+		 */
+		if (cc->order > 0 && last_migrated_pfn) {
+			unsigned long current_block_start =
+				block_start_pfn(cc->migrate_pfn, cc->order);
+
+			if (last_migrated_pfn < current_block_start) {
+				lru_add_drain_cpu_zone(cc->zone);
+				/* No more flushing until we migrate again */
+				last_migrated_pfn = 0;
+			}
+		}
+	}
+
+out: // 这块没懂
+	/*
+	 * Release free pages and update where the free scanner should restart,
+	 * so we don't leave any returned pages behind in the next attempt.
+	 */
+	if (cc->nr_freepages > 0) {
+		unsigned long free_pfn = release_freepages(&cc->freepages);
+
+		cc->nr_freepages = 0;
+		VM_BUG_ON(free_pfn == 0);
+
+		/* The cached pfn is always the first in a pageblock */
+		free_pfn = pageblock_start_pfn(free_pfn);
+
+		/*
+		 * Only go back, not forward. The cached pfn might have been
+		 * already reset to zone end in compact_finished()
+		 */
+		if (free_pfn > cc->zone->compact_cached_free_pfn)
+			cc->zone->compact_cached_free_pfn = free_pfn;
+	}
+	...
+
+	return ret;
+}
+````
+
+#### 关键函数 isolate_migratepages
+
+该函数用于扫面 zone 中可迁移的页面，可迁移的 page 会被添加到 cc->migratepages 链表中，
+
+```c
+/*
+ * Isolate all pages that can be migrated from the first suitable block,
+ * starting at the block pointed to by the migrate scanner pfn within
+ * compact_control.
+ */
+static isolate_migrate_t isolate_migratepages(struct compact_control *cc)
+{
+	unsigned long block_start_pfn;
+	unsigned long block_end_pfn;
+	unsigned long low_pfn;
+	struct page *page;
+	const isolate_mode_t isolate_mode = // 表示是否支持异步分离
+		(sysctl_compact_unevictable_allowed ? ISOLATE_UNEVICTABLE : 0) |
+		(cc->mode != MIGRATE_SYNC ? ISOLATE_ASYNC_MIGRATE : 0);
+	bool fast_find_block;
+
+	/*
+	 * Start at where we last stopped, or beginning of the zone as
+	 * initialized by compact_zone(). The first failure will use
+	 * the lowest PFN as the starting point for linear scanning.
+	 */
+	low_pfn = fast_find_migrateblock(cc); // 从上一次分配的地方开始遍历
+	block_start_pfn = pageblock_start_pfn(low_pfn);
+	if (block_start_pfn < cc->zone->zone_start_pfn)
+		block_start_pfn = cc->zone->zone_start_pfn;
+
+	/*
+	 * fast_find_migrateblock() has already ensured the pageblock is not
+	 * set with a skipped flag, so to avoid the isolation_suitable check
+	 * below again, check whether the fast search was successful.
+	 */
+	fast_find_block = low_pfn != cc->migrate_pfn && !cc->fast_search_fail;
+
+	/* Only scan within a pageblock boundary */
+	block_end_pfn = pageblock_end_pfn(low_pfn);
+
+	/*
+	 * Iterate over whole pageblocks until we find the first suitable.
+	 * Do not cross the free scanner.
+	 */
+	for (; block_end_pfn <= cc->free_pfn; // 结束条件之一
+			fast_find_block = false,
+			cc->migrate_pfn = low_pfn = block_end_pfn,
+			block_start_pfn = block_end_pfn,
+			block_end_pfn += pageblock_nr_pages) {
+
+		...
+
+    	// 返回 pageblock 的第一个 page
+		page = pageblock_pfn_to_page(block_start_pfn,
+						block_end_pfn, cc->zone);
+ 		...
+
+		/*
+		 * For async direct compaction, only scan the pageblocks of the
+		 * same migratetype without huge pages. Async direct compaction
+		 * is optimistic to see if the minimum amount of work satisfies
+		 * the allocation. The cached PFN is updated as it's possible
+		 * that all remaining blocks between source and target are
+		 * unsuitable and the compaction scanners fail to meet.
+		 */
+
+    	// 判断是否可以迁移
+    	// 对于异步类型的内存规整，只迁移 MIGRATE_MOVABLE 类型的 pageblock
+    	// 对于同步类型的内存规整，只迁移类型和申请类型相同的 pageblock
+		if (!suitable_migration_source(cc, page)) {
+			update_cached_migrate(cc, block_end_pfn);
+			continue;
+		}
+
+		/* Perform the isolation */
+    	// 巨复杂的函数，功能就是执行分离操作
+    	// 以 2^cc->order 粒度扫描整个 pageblock
+    	// 如果该 page 还在 buddy 系统中，那么不适合迁移
+    	// 混合页面也不适合迁移，如 THP 和 hugetlbfs 页面
+    	// 不在 LRU 链表中的 page 不适合迁移
+    	// 匿名页面锁在内存中，不适合迁移
+    	// 去除上述 page 后，将能够迁移的 page 加到 cc->migratepages 链表中
+		if (isolate_migratepages_block(cc, low_pfn, block_end_pfn,
+						isolate_mode))
+			return ISOLATE_ABORT;
+
+		/*
+		 * Either we isolated something and proceed with migration. Or
+		 * we failed and compact_zone should decide if we should
+		 * continue or not.
+		 */
+		break;
+	}
+	return cc->nr_migratepages ? ISOLATE_SUCCESS : ISOLATE_NONE;
+}
+```
+
+#### 关键函数 isolate_migratepages_block
+
+该函数需要处理内核中的各种 page，之后有需要再详细分析。
+
+去掉不适合规整的 page，适合规整的 page 有如下两种：
+- 传统的 LRU 页面，如匿名页和文件页；
+- 非 LRU 页面，即特殊的可迁移页面，如根据 zsmalloc 机制和 virtio-balloon 机制分配的页面（？）；
+
+### KSM
+
+KSM 指 Kernel SamePage Merging，即内核同页合并，用于合并内容相同的页面。KSM 的出现是**为了优化虚拟化中产生的冗余页面**。KSM 允许合并同一个进程或不同进程之间内容相同的匿名页面，这对应用程序来说是不可见的。把这些相同的页面合并成一个只读的页面，从而释放出多余的物理页面，当应用程序需要改变页面内容时，**会发生写时复制**。
+
+### SWAP
+
+在外存中分配一块内存作为 swap 分区，在内存不足时，将使用频率较低的匿名页先写入到 swapcache，然后再交换 swap 分区，从而达到节省内存的目的。工作流程可以分为两步：
+
+#### swapout
+
+内核中的内存回收流程，最终都会走到 `shrink_page_list` 中，该函数对 page_list 链表中的内存依次处理，回收满足条件的内存。匿名页回收如下图所示，其回收需要经过两次 shrink。
+- 第一次 shrink 时，内存页会通过 add_to_swap 分配到对应的 swap slot，设置为脏页并进行回写，最后将该 page 加入到 swapcache 中，但不进行回收；
+- 第二次 shrink 时，若脏页已经回写完成，则将该 page 从 swapcache 中删除并回收。
+
+#### swapin
+
+当换出的内存产生缺页异常时，会通过 `do_swap_page` 函数查找到磁盘上的 slot，并将数据读回。
 
 #### 关键函数 compact_zone
 
@@ -5666,6 +8676,7 @@ retry_cpuset:
 			goto got_pg;
 
 		...
+
 	}
 
 retry:
@@ -5808,15 +8819,293 @@ got_pg:
 
 ![zone_wmark.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/zone_wmark.png?raw=true)
 
+### THP
+
+### Mem cgroup[^12]
+
+memcg 是 control group 的 subsys 之一，也是容器底层技术基石之一，其实现了内存资源的隔离与限制功能。这里主要分析 memcg 的计数(charge/uncharge)，进程迁移，softlimit reclaim，memcg reclaim的内核实现。
+
+#### 数据结构
+
+##### mem_cgroup
+
+```c
+/*
+ * The memory controller data structure. The memory controller controls both
+ * page cache and RSS per cgroup. We would eventually like to provide
+ * statistics based on the statistics developed by Rik Van Riel for clock-pro,
+ * to help the administrator determine what knobs to tune.
+ */
+struct mem_cgroup {
+	struct cgroup_subsys_state css;
+	/* Private memcg ID. Used to ID objects that outlive the cgroup */
+	struct mem_cgroup_id id;
+	/* Accounted resources */
+	struct page_counter memory;		/* Both v1 & v2 */
+	union {
+		struct page_counter swap;	/* v2 only */
+		struct page_counter memsw;	/* v1 only */
+	};
+	/* Range enforcement for interrupt charges */
+	struct work_struct high_work;
+#if defined(CONFIG_MEMCG_KMEM) && defined(CONFIG_ZSWAP)
+	unsigned long zswap_max;
+#endif
+	unsigned long soft_limit;
+	/* vmpressure notifications */
+	struct vmpressure vmpressure;
+	/*
+	 * Should the OOM killer kill all belonging tasks, had it kill one?
+	 */
+	bool oom_group;
+	/* protected by memcg_oom_lock */
+	bool		oom_lock;
+	int		under_oom;
+	int	swappiness;
+	/* OOM-Killer disable */
+	int		oom_kill_disable;
+	/* memory.events and memory.events.local */
+	struct cgroup_file events_file;
+	struct cgroup_file events_local_file;
+	/* handle for "memory.swap.events" */
+	struct cgroup_file swap_events_file;
+	/* protect arrays of thresholds */
+	struct mutex thresholds_lock;
+	/* thresholds for memory usage. RCU-protected */
+	struct mem_cgroup_thresholds thresholds;
+	/* thresholds for mem+swap usage. RCU-protected */
+	struct mem_cgroup_thresholds memsw_thresholds;
+	/* For oom notifier event fd */
+	struct list_head oom_notify;
+	/*
+	 * Should we move charges of a task when a task is moved into this
+	 * mem_cgroup ? And what type of charges should we move ?
+	 */
+	unsigned long move_charge_at_immigrate;
+	/* taken only while moving_account > 0 */
+	spinlock_t		move_lock;
+	unsigned long		move_lock_flags;
+	CACHELINE_PADDING(_pad1_);
+	/* memory.stat */
+	struct memcg_vmstats	*vmstats;
+	/* memory.events */
+	atomic_long_t		memory_events[MEMCG_NR_MEMORY_EVENTS];
+	atomic_long_t		memory_events_local[MEMCG_NR_MEMORY_EVENTS];
+	/*
+	 * Hint of reclaim pressure for socket memroy management. Note
+	 * that this indicator should NOT be used in legacy cgroup mode
+	 * where socket memory is accounted/charged separately.
+	 */
+	unsigned long		socket_pressure;
+	/* Legacy tcp memory accounting */
+	bool			tcpmem_active;
+	int			tcpmem_pressure;
+	...
+
+	CACHELINE_PADDING(_pad2_);
+	/*
+	 * set > 0 if pages under this cgroup are moving to other cgroup.
+	 */
+	atomic_t		moving_account;
+	struct task_struct	*move_lock_task;
+	struct memcg_vmstats_percpu __percpu *vmstats_percpu;
+	/* List of events which userspace want to receive */
+	struct list_head event_list;
+	spinlock_t event_list_lock;
+	...
+
+#ifdef CONFIG_LRU_GEN
+	/* per-memcg mm_struct list */
+	struct lru_gen_mm_list mm_list; // 分析 mglru 的时候经常遇到这个变量
+#endif
+	struct mem_cgroup_per_node *nodeinfo[];
+};
+```
+
+##### memory_cgrp_subsys
+
+```c
+struct cgroup_subsys memory_cgrp_subsys = {
+	.css_alloc = mem_cgroup_css_alloc,
+	.css_online = mem_cgroup_css_online,
+	.css_offline = mem_cgroup_css_offline,
+	.css_released = mem_cgroup_css_released,
+	.css_free = mem_cgroup_css_free,
+	.css_reset = mem_cgroup_css_reset,
+	.css_rstat_flush = mem_cgroup_css_rstat_flush,
+	.can_attach = mem_cgroup_can_attach,
+	.attach = mem_cgroup_attach,
+	.cancel_attach = mem_cgroup_cancel_attach,
+	.post_attach = mem_cgroup_move_task,
+	.dfl_cftypes = memory_files,
+	.legacy_cftypes = mem_cgroup_legacy_files,
+	.early_init = 0,
+};
+```
+
+每个 `cgroup_subsys` 都会在 `cgroup_init_early->cgroup_init_subsys` 中调用 `css_alloc` 回调函数进行初始化。在 `mem_cgroup_css_alloc` 函数中会调用 `mem_cgroup_alloc` 创建 `mem_cgroup` 变量，对应的在 `mem_cgroup_css_free` 中释放。创建的 mem_cgroup 变量后续可以通过 `cgroup_subsys_state` 和 `container_of` 来获取到。
+
+#### charge/uncharge
+
+```c
+static int try_charge_memcg(struct mem_cgroup *memcg, gfp_t gfp_mask,
+			unsigned int nr_pages)
+{
+	unsigned int batch = max(MEMCG_CHARGE_BATCH, nr_pages);
+	int nr_retries = MAX_RECLAIM_RETRIES;
+	struct mem_cgroup *mem_over_limit;
+	struct page_counter *counter;
+	unsigned long nr_reclaimed;
+	bool passed_oom = false;
+	unsigned int reclaim_options = MEMCG_RECLAIM_MAY_SWAP;
+	bool drained = false;
+	bool raised_max_event = false;
+	unsigned long pflags;
+
+	...
+
+    // PSI 是统计系统运行信息的机制
+    // 也就是说，每次触发 try_charge 都会回收内存
+	psi_memstall_enter(&pflags);
+	nr_reclaimed = try_to_free_mem_cgroup_pages(mem_over_limit, nr_pages,
+						 gfp_mask, reclaim_options);
+	psi_memstall_leave(&pflags);
+	if (mem_cgroup_margin(mem_over_limit) >= nr_pages)
+		goto retry;
+
+	...
+
+	/*
+	 * keep retrying as long as the memcg oom killer is able to make
+	 * a forward progress or bypass the charge if the oom killer
+	 * couldn't make any progress.
+	 */
+	if (mem_cgroup_oom(mem_over_limit, gfp_mask,
+			 get_order(nr_pages * PAGE_SIZE))) {
+		passed_oom = true;
+		nr_retries = MAX_RECLAIM_RETRIES;
+		goto retry;
+	}
+	...
+
+	return 0;
+}
+```
+可以在这个函数上加断点，看哪些路径会调用到这里。
+
+#### 进程迁移
+
+#### softlimit reclaim
+
+#### memcg reclaim
+
 ### 其他内存管理知识
+
+#### PSI
+
+Pressure Stall Information 提供了一种评估系统资源压力的方法。系统有三个基础资源：CPU、Memory 和 IO，无论这些资源配置如何增加，似乎永远无法满足软件的需求。一旦产生资源竞争，就有可能带来延迟增大，使用户体验到卡顿。
+
+Android PSI 由三部分组成，lmkd、epoll 和 PSI 模块。
+整个框架从系统启动开始流程为：
+
+- PSI模块初始化。
+- lmkd初始化 --- 上图中 ① 创建 epoll 队列；
+- lmkd初始化 --- 上图中 ②③④ 组合循环三次注册三个阈值；
+- lmkd初始化 --- ⑤ 等待事件通知；
+初始化完成后 PSI 模块自行运作，内存相关信息的更新时机为调用 `psi_memstall_enter` 接口，如上图中灰色部分，主要在回收、规整、迁移流程中调用。
 
 #### Huge page
 
+页的默认大小一般为 4K，随着应用程序越来越庞大，使用的内存越来越多，内存的分配与地址翻译对性能的影响越加明显。试想，每次访问新的 4K 页面都会触发 Page Fault，**2M 的页面就需要触发 512 次才能完成分配**。
+
+另外 TLB cache 的大小有限，过多的映射关系势必会产生 cacheline 的冲刷，被冲刷的虚拟地址下次访问时又会产生 TLB miss，又需要遍历页表才能获取物理地址。
+
+对此，**Linux 内核提供了大页机制**。其采用 PMD entry 直接映射物理页，一次 Page Fault 可以直接分配并映射 2M 的大页，并且只需要一个 TLB entry 即可存储这 2M 内存的映射关系，**这样可以大幅提升内存分配与地址翻译的速度**。
+
+因此，**一般推荐占用大内存应用程序使用大页机制分配内存**。当然大页也会有弊端：比如初始化耗时高，进程内存占用可能变高等。
+
+可以使用 perf 工具对比进程使用大页前后的 PageFault 次数的变化：
+
+```
+perf stat -e page-faults -p-- sleep 5
+```
+
+目前内核提供了两种大页机制，一种是需要提前预留的静态大页形式，另一种是透明大页(THP, Transparent Huge Page) 形式。
+
 ##### 静态大页
+
+首先来看静态大页，也叫做 HugeTLB。静态大页可以设置 cmdline 参数在系统启动阶段预留，比如指定大页 size 为 2M，一共预留 512 个这样的大页：
+
+```
+hugepagesz=2M hugepages=512
+```
+
+还可以在系统运行时动态预留，但该方式可能因为系统中没有足够的连续内存而预留失败。
+
+```
+echo 20 > /proc/sys/vm/nr_hugepages // 预留默认 size（可以通过 cmdline 参数 default_hugepagesz=指定size）的大页
+echo 5 > /sys/kernel/mm/hugepages/hugepages-*/nr_hugepages // 预留特定 size 的大页
+echo 5 > /sys/devices/system/node/node*/hugepages/hugepages-*/nr_hugepages // 预留特定 node 上的大页
+```
+
+当预留的大页个数小于已存在的个数，则会释放多余大页（前提是未被使用）。编程中可以使用 mmap(MAP_HUGETLB) 申请内存。详细使用可以参考[内核文档](https://www.kernel.org/doc/Documentation/admin-guide/mm/hugetlbpage.rst)。这种大页的优点是一旦预留成功，就可以满足进程的分配请求，还避免该部分内存被回收；缺点是：
+- 需要用户显式地指定预留的大小和数量；
+- 需要应用程序适配，比如：
+ - mmap、shmget 时指定 MAP_HUGETLB；
+ - 挂载 hugetlbfs，然后 open 并 mmap；
+- 预留太多大页内存后，free 内存大幅减少，容易触发系统内存回收甚至 OOM；
 
 ##### 透明大页
 
-#### mmap_lock 锁
+透明大页机制在 THP always 模式下，会在 Page Fault 过程中，为符合要求的 vma 尽量分配大页进行映射。如果此时分配大页失败，比如整机物理内存碎片化严重，无法分配出连续的大页内存，那么就会 fallback 到普通的 4K 进行映射，但会记录下该进程的地址空间 mm_struct；**然后 THP 会在后台启动 khugepaged 线程，定期扫描这些记录的 mm_struct，并进行合页操作**。因为此时可能已经能分配出大页内存了，那么就可以将此前 fallback 的 4K 小页映射转换为大页映射，以提高程序性能。**整个过程完全不需要用户进程参与，对用户进程是透明的，因此称为透明大页**。
+
+虽然透明大页使用起来非常方便、智能，但也有一定的代价：
+- 进程内存占用可能远大所需，因为每次Page Fault 都尽量分配大页，即使此时应用程序只读写几KB；
+- 可能造成性能抖动：
+ - 在第 1 种进程内存占用可能远大所需的情况下，可能造成系统 free 内存更少，更容易触发内存回收，系统内存也更容易碎片化；
+ - khugepaged 线程合页时，容易触发页面规整甚至内存回收，该过程费时费力，容易造成 sys cpu 上升；
+ - mmap lock 本身是目前内核的一个性能瓶颈，应当尽量避免 write lock 的持有，但 THP 合页等操作都会持有写锁，且耗时较长（数据拷贝等），容易激化 mmap lock 锁竞争，影响性能；
+
+因此 THP 还支持 madvise 模式，该模式需要**应用程序指定使用大页的地址范围，内核只对指定的地址范围做 THP 相关的操作**。这样可以更加针对性、更加细致地优化特定应用程序的性能，又不至于造成反向的负面影响。
+
+可以通过 cmdline 参数和 sysfs 接口设置 THP 的模式：
+
+cmdline 参数：
+
+```
+transparent_hugepage=madvise
+```
+
+sysfs 接口：
+
+```
+echo madvise > /sys/kernel/mm/transparent_hugepage/enabled
+```
+
+详细使用可以参考[内核文档](https://www.kernel.org/doc/Documentation/admin-guide/mm/transhuge.rst)。
+HugeTLB 和 THP 最大的区别是 HugeTLB 是预分配的方式，而 THP 则是动态分配的方式。[Compound page](#Compound Page) 小结介绍了一些 compound page 的基础知识，接下来看一下如何利用 compound page 机制来实现 THP。
+
+#### mmap_lock 锁[^5]
+
+锁是内存管理中的一把知名的大锁，保护了诸如 mm_struct 结构体成员、 vm_area_struct 结构体成员、页表释放等很多变量与操作。
+
+**mmap_lock 的实现是读写信号量，** 当写锁被持有时，所有的其他读锁与写锁路径都会被阻塞。Linux 内核已经尽可能减少了写锁的持有场景以及时间，但不少场景还是不可避免的需要持有写锁，比如 mmap 以及 munmap 路径、mremap 路径和 THP 转换大页映射路径等场景。
+
+**应用程序应该避免频繁的调用会持有 mmap_lock 写锁的系统调用 (syscall)**， 比如有时可以使用 madvise（MADV_DONTNEED）释放物理内存，该参数下，madvise 相比 munmap 只持有 mmap_lock 的读锁，并且只释放物理内存，不会释放 VMA 区域，因此可以再次访问对应的虚拟地址范围，而不需要重新调用 mmap 函数。
+
+**另外对于 MADV_DONTNEED，再次访问还是会触发 Page Fault 分配物理内存并填充页表，该操作也有一定的性能损耗。** 如果想进一步减少这部分损耗，可以改为 MADV_FREE 参数，该参数也只会持有 mmap_lock 的读锁，区别在于不会立刻释放物理内存，会等到内存紧张时才进行释放，如果在释放之前再次被访问则无需再次分配内存，进而提高内存访问速度。
+
+一般 mmap_lock 锁竞争激烈会导致很多 D 状态进程（TASK_UNINTERRUPTIBLE），这些 D 进程都是进程组的其他线程在等待写锁释放。因此可以打印出所有 D 进程的调用栈，看是否有大量 mmap_lock 的等待。
+
+```bash
+for i in `ps -aux | grep " D" | awk '{ print $2}'`; do echo $i; cat /proc/$i/stack; done
+```
+
+内核社区专门封装了 mmap_lock 相关函数，并在其中[增加了 tracepoint](https://link.juejin.cn?target=https%3A%2F%2Fgithub.com%2Ftorvalds%2Flinux%2Fcommit%2F2b5067a8143e34aa3fa57a20fb8a3c40d905f942)，这样可以使用 bpftrace 等工具统计持有写锁的进程、调用栈等，方便排查问题，确定优化方向。
+
+```ini
+bpftrace -e 'tracepoint:mmap_lock:mmap_lock_start_locking /args->write == true/{ @[comm, kstack] = count();}'
+```
 
 #### 跨 numa 内存访问
 
@@ -5825,7 +9114,6 @@ got_pg:
 #### zRAM[^8]
 
 当系统内存紧张的时候，会将文件页丢弃或写回磁盘（如果是脏页），还可能会触发 LMK 杀进程进行内存回收。这些被回收的内存如果再次使用都需要重新从磁盘读取，而这个过程涉及到较多的 IO 操作。频繁地做 IO 操作，会影响 flash 使用寿命和系统性能。内存压缩能够尽量减少由于内存紧张导致的 IO，提升性能。
-
 目前内核主流的内存压缩技术主要有 3 种：zSwap, zRAM, zCache，这里主要介绍 zRAM。
 
 ##### 原理
@@ -5833,46 +9121,202 @@ got_pg:
 zRAM 是 memory reclaim 的一部分，它的本质是时间环空间，通过 CPU 压缩、解压缩的开销换取更大的可用空间。
 
 在如下时机会进行内存压缩：
-
 - Kswapd 场景；
 - Direct reclaim 场景：内存分配过程进入 slowpath，进行直接行内存回收。
 
+#### Compound Page
 
+复合页（Compound Page）就是将物理上连续的两个或多个页看成一个独立的大页，它可以用来创建 hugetlbfs 中使用的大页（hugepage）， 也可以用来创建透明大页（transparent huge page）子系统。但是它不能用在页缓存（page cache）中，这是因为页缓存中管理的都是单个页。
+
+##### 使用
+
+当 `alloc_pages` 或 `__get_free_pages` 等 buddy 系统分配内存接口的分配标志 `gfp_flags` 指定了 `__GFP_COMP`，那么内核必须将这些页组合成复合页 compound page。compound page 的尺寸要远大于当前分页系统支持的页面大小。并且一定是 `2^order * PAGE_SIZE` 大小。Compound page 的信息都存储在 `struct page` 中，
+
+```c
+struct page {
+	unsigned long flags;		/* Atomic flags, some possibly
+					 * updated asynchronously */
+	union {
+		...
+
+		struct {	/* Tail pages of compound page */
+			unsigned long compound_head;	/* Bit zero is set */
+			/* First tail page only */
+			unsigned char compound_dtor;
+			unsigned char compound_order; // order
+			atomic_t compound_mapcount;
+			unsigned int compound_nr; /* 1 << compound_order */
+		};
+		struct {	/* Second tail page of compound page */
+			unsigned long _compound_pad_1;	/* compound_head */
+			atomic_t hpage_pinned_refcount;
+			/* For both global and memcg */
+			struct list_head deferred_list;
+		};
+		struct {	/* Page table pages */
+			unsigned long _pt_pad_1;	/* compound_head */
+			pgtable_t pmd_huge_pte; /* protected by page->ptl */
+			unsigned long _pt_pad_2;	/* mapping */
+			union {
+				struct mm_struct *pt_mm; /* x86 pgds only */
+				atomic_t pt_frag_refcount; /* powerpc */
+			};
+#if ALLOC_SPLIT_PTLOCKS
+			spinlock_t *ptl;
+#else
+			spinlock_t ptl;
+#endif
+		};
+	...
+
+	};
+	atomic_t _refcount;
+};
+```
+
+`struct page` 中的 flag 标记用来识别复合页。在复合页中，打头的第一个普通页称为“head page”，用 `PG_head` 标记，而后面的所有页被称为“tail pages”，在 `compound_head` 变量中表示，同时这个 `compound_head` 还是一个指向 "head page" 的指针。
+
+```c
+void prep_compound_page(struct page *page, unsigned int order)
+{
+	int i;
+	int nr_pages = 1 << order;
+	__SetPageHead(page); // 用 gdb 看汇编代码，这里置上的是 0x10000 位，即 PG_head
+	for (i = 1; i < nr_pages; i++) {
+		struct page *p = page + i;
+		p->mapping = TAIL_MAPPING;
+		set_compound_head(p, page); // 剩余的 page 都是 tail page
+	}
+	set_compound_page_dtor(page, COMPOUND_PAGE_DTOR);
+	set_compound_order(page, order);
+	atomic_set(compound_mapcount_ptr(page), -1);
+	if (hpage_pincount_available(page))
+		atomic_set(compound_pincount_ptr(page), 0);
+}
+
+static __always_inline void set_compound_head(struct page *page, struct page *head)
+{
+    // compound_head 表示 head page，+1 是为了后面判断该 page 是否为 tail page
+	WRITE_ONCE(page->compound_head, (unsigned long)head + 1);
+}
+```
+
+可以使用 `PageCompound` 函数来检测一个页是否是复合页，另外函数 `PageHead` 和函数 `PageTail` 用来检测一个页是否是页头或者页尾。在每个尾页的 `struct page` 中都包含一个指向头页的指针 - first_page，可以使用 `compound_head` 宏获得。
+
+```c
+#define compound_head(page)	((typeof(page))_compound_head(page))
+static inline unsigned long _compound_head(const struct page *page)
+{
+	unsigned long head = READ_ONCE(page->compound_head);
+	if (unlikely(head & 1))
+		return head - 1; // 在 set_compound_head 中 +1 了，为了获取正确的值，这里 -1，表示 head page 的地址
+	return (unsigned long)page;
+}
+
+static __always_inline int PageTail(struct page *page)
+{
+	return READ_ONCE(page->compound_head) & 1; // 判断该 page 是否为 tail page
+}
+
+static __always_inline int PageCompound(struct page *page)
+{
+	return test_bit(PG_head, &page->flags) || PageTail(page); // 判断该 page 是否为 compound page
+}
+```
+
+hugetlb（经典大页）就是通过 compound page 来实现的，我们可以看一下怎么使用的，
+
+```c
+static bool prep_compound_gigantic_page(struct page *page, unsigned int order)
+{
+	int i, j;
+	int nr_pages = 1 << order;
+	struct page *p = page + 1;
+	/* we rely on prep_new_huge_page to set the destructor */
+	set_compound_order(page, order); // 设置 compound_order
+	__ClearPageReserved(page);
+	__SetPageHead(page); // 第一个 page 为 head page
+	for (i = 1; i < nr_pages; i++, p = mem_map_next(p, page, i)) {
+		__ClearPageReserved(p);
+		if (!page_ref_freeze(p, 1)) {
+			pr_warn("HugeTLB page can not be used due to unexpected inflated ref count\n");
+			goto out_error;
+		}
+		set_page_count(p, 0);
+		set_compound_head(p, page); // 和上面的一样
+	}
+	atomic_set(compound_mapcount_ptr(page), -1);
+	atomic_set(compound_pincount_ptr(page), 0);
+
+	return true;
+	...
+
+}
+```
+
+##### 释放
+
+compound page 的释放很简单，因为 `struct page` 中用 `compound_order` 记录了页面梳理，所以调用 `compound_order` 函数即可，
+
+```c
+void free_compound_page(struct page *page)
+{
+	mem_cgroup_uncharge(page); // memcg 计数
+	free_the_page(page, compound_order(page)); // buddy 的内存释放接口
+}
+
+static inline unsigned int compound_order(struct page *page)
+{
+	if (!PageHead(page))
+		return 0; // 不是 compound page
+	return page[1].compound_order;
+}
+```
 
 ### 疑问
 
-1. `vm_area_alloc` 创建新的 VMA 为什么还会调用到 slab 分配器？
+- `vm_area_alloc` 创建新的 VMA 为什么还会调用到 slab 分配器？
 
-   上面已经解释过了，分配 `vm_area_alloc` 对象。
+  上面已经解释过了，分配 `vm_area_alloc` 对象；
 
-2. vmalloc 中的`vm_struct` 和 `vmap_area` 分别用来干嘛？
+- vmalloc 中的 `vm_struct` 和 `vmap_area` 分别用来干嘛？
 
-3. 为什么 vmalloc 最后申请空间也要调用到 slab 分配器？（这样看来 `slab_alloc_node` 才是真核心啊）？
+- 为什么 vmalloc 最后申请空间也要调用到 slab 分配器？（这样看来 `slab_alloc_node` 才是真核心啊）？
 
-4. 在处理匿名页面缺页异常时，为什么当需要分配的页面是只读属性时会将创建的 PTE 指向系统零页？
+  使用 slab 申请小块的内存；
 
-   因为这是匿名映射，没有指定对应的文件，所有没有内容，当进程再对该页进行写操作时，触发匿名页面的写操作异常，这时再通过 `alloc_zeroed_user_highpage_movable` 调用伙伴系统的接口分配新的页面。
+- 在处理匿名页面缺页异常时，为什么当需要分配的页面是只读属性时会将创建的 PTE 指向系统零页？
 
-5. 以 `filemap_map_pages` 为切入点，应该就可以进一步分析文件管理部分的内容，这个之后再分析。
+  因为这是匿名映射，没有指定对应的文件，所有没有内容，当进程再对该页进行写操作时，触发匿名页面的写操作异常，这时再通过 `alloc_zeroed_user_highpage_movable` 调用伙伴系统的接口分配新的页面。
 
-5. 页面回收为何如此复杂？
+- 以 `filemap_map_pages` 为切入点，应该就可以进一步分析文件管理部分的内容，这个之后再分析。
+
+- 页面回收为何如此复杂？
+
+- 如果在回收没有需要将 per-cpu cache 即 fbatch 中的 folio 调用 `folio_batch_move_lru` 写回到 lruvec->lrugen 中会有问题么？
+
+  猜想是没问题的，在 `try_to_shrink_lruvec` 中也会调用，所以其他地方不调用应该问题不大。
+
+### 内核编程技巧
+
+- 获取不到资源就再尝试一次，说不定就可以了，在 alloc_pages, spin_lock, mutex 等核心模块都有这样干；
 
 ### Reference
 
-[1] 奔跑吧 Linux 内核，卷 1：基础架构
-
-[2] 内核版本：5.15-rc5，commitid: f6274b06e326d8471cdfb52595f989a90f5e888f
-
-[3] https://zhuanlan.zhihu.com/p/65298260
-
-[4] https://biscuitos.github.io/blog/MMU-Linux4x-VMALLOC/
-
+[^1]: 奔跑吧 Linux 内核，卷 1：基础架构
+[^2]: 内核版本：5.15-rc5，commitid: f6274b06e326d8471cdfb52595f989a90f5e888f
+[^3]: https://zhuanlan.zhihu.com/p/65298260
+[^4]: https://biscuitos.github.io/blog/MMU-Linux4x-VMALLOC/
 [^5]: https://mp.weixin.qq.com/s/S0sc2aysc6aZ5kZCcpMVTw
-[^6]:https://blog.csdn.net/tanzhe2017/article/details/81001507
-[^7]:[CMA](http://www.wowotech.net/memory_management/cma.html)
-[^8]:[zRAM](http://www.wowotech.net/memory_management/zram.html)
+[^6]: https://blog.csdn.net/tanzhe2017/article/details/81001507
+[^7]: [CMA](http://www.wowotech.net/memory_management/cma.html)
+[^8]: [zRAM](http://www.wowotech.net/memory_management/zram.html)
+[^9]: [cma alloc](https://zhuanlan.zhihu.com/p/613016541)
+[^10]: [arm64 memory](https://www.kernel.org/doc/Documentation/arm64/memory.rst)
+[^11]: [mmap](https://www.cnblogs.com/binlovetech/p/17754173.html)
+[^12]: [memcg](https://blog.csdn.net/bin_linux96/article/details/84328294)
 
 ### 些许感想
 
-1. 内存管理的学习是循序渐进的，开始可能只能将书中的内容稍加精简记录下来，随着看的内容越多，难免对前面的内容产生疑惑，这时再回过头去理解，同时补充自己的笔记。这样多来几次也就理解、记住了。所以最开始“抄”的过程对于我来说无法跳过。
-2. 内存管理实在的复杂，要对这一模块进行优化势必要对其完全理解，不然跑着跑着一个 bug 都摸不到头脑，就像我现在调试 TLB 一样，不过要做到这一点何其困难。
+1. 内存管理的学习是循序渐进的，开始可能只能将书中的内容稍加精简记录下来，随着看的内容越多，难免对前面的内容产生疑惑，这时再回过头去理解，同时补充自己的笔记。这样多来几次也就理解、记住了。所以最开始“抄”的过程对于我来说无法跳过；
+2. 内存管理实在的复杂，要对这一模块进行优化势必要对其完全理解，不然跑着跑着一个 bug 都摸不到头脑，就像我现在调试 TLB 一样，不过要做到这一点何其困难；

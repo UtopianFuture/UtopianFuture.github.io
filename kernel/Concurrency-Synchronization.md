@@ -37,7 +37,7 @@
 
 ### 锁机制
 
-临界区是指访问和操作共享数据的代码段，其中的资源无法同时被多个执行线程访问，访问临界区的执行线程或代码路径称为并发源，在内核中产生并发访问的并发源主要有如下 4 种：
+**临界区是指访问和操作共享数据的代码段**，其中的资源无法同时被多个执行线程访问，访问临界区的执行线程或代码路径称为并发源，在内核中产生并发访问的并发源主要有如下 4 种：
 
 - 中断和异常：中断发生后，中断处理程序和被中断的进程之间可能产生并发访问；
 - 软中断和 tasklet：因为它们的优先级比进程高，所以会打断当前正在执行的进程上下文；
@@ -53,7 +53,7 @@
 
 真实的场景是这样的，如**在进程上下文中操作某个临界区的资源时发生了中断，而在中断处理程序中也访问了这个资源**，如果不使用内核同步机制，那么可能会触发 bug。
 
-实际的项目中，真正的困难是如何发现内核代码存在并发访问的可能并采取保护措施。因此在编写代码时，需要考虑哪些资源位于临界区，应该采取哪些保护措施。任何可能从多个内核代码路径访问的数据都需要保护，保护对象包括静态全局变量、全局变量、共享的数据结构、缓存、链表、红黑树等各种形式锁隐含的数据。因此在编写内核和驱动代码时，需要对数据作如下考虑：
+实际的项目中，真正的困难是**第三**。因此在编写代码时，需要考虑哪些资源位于临界区，应该采取哪些保护措施。任何可能从多个内核代码路径访问的数据都需要保护，保护对象包括静态全局变量、全局变量、共享的数据结构、缓存、链表、红黑树等各种形式锁隐含的数据。因此在编写内核和驱动代码时，需要对数据作如下考虑：
 
 - 除了从当前代码路径外，是否还可能从其他内核代码路径访问这些数据？如中断处理程序、 worker、tasklet、软中断等等，也许写代码的时候在可能出问题的地方加上一段代码，检测所有的访问入口（BPF 在这种地方能派上用场）。
 - 若当前内核代码访问数据时发生被抢占，被调度、执行的进程会不会访问这些数据？
@@ -94,8 +94,8 @@ typedef struct {
 #### 內联原子操作函数
 
 - {}_relaxed：不内联内存屏障原语；
-- {}_acquire：内联加载-获取内存屏障原语；
-- {}_release：内联存储-释放内存屏障原语；
+- {}_acquire：内联加载-获取内存屏障原语，不允许它后面的操作重排到它前面；
+- {}_release：内联存储-释放内存屏障原语，不允许它前面的操作重排到它后面；
 
 ### 内存屏障
 
@@ -119,6 +119,7 @@ typedef struct {
 | __smp_mb__before_atomic/__smp_mb__after_atomic | 在原子操作中插入一个通用内存屏障（还可以这样？）             |
 
 ```c
+// X86
 /* Optimization barrier */
 /* The "volatile" is due to gcc bugs */
 #define barrier() __asm__ __volatile__("": : :"memory")
@@ -256,7 +257,15 @@ void __lockfunc _raw_spin_lock(raw_spinlock_t *lock)
 
 static inline void __raw_spin_lock(raw_spinlock_t *lock)
 {
-	preempt_disable(); // 关闭内核抢占，为什么是调用 barrier，而且什么时候开启呢？
+    // 关闭内核抢占，为什么是调用 barrier，而且什么时候开启呢？
+    // 在 spin_unlock 的时候允许抢占
+    // 内核抢占指用户程序在执行系统调用期间可以被抢占
+    // 该进程暂时挂起，使新华性的高优先级进程能够运行
+    // 如果不关闭内核抢占，会出现如下情况
+    // 进程 a 持有 spinlock，进程 b 优先级更高
+    // 抢占了 CPU，运行过程中也申请 spinlock，忙等
+    // 但 spinlock 被 a 持有，没有释放，于是死锁
+	preempt_disable();
 	spin_acquire(&lock->dep_map, 0, 0, _RET_IP_);
 	LOCK_CONTENDED(lock, do_raw_spin_trylock, do_raw_spin_lock);
 }
@@ -586,7 +595,7 @@ void osq_unlock(struct optimistic_spin_queue *lock)
 
 ### 排队自旋锁
 
-上面介绍的 MCS 锁能够解决 cache 颠簸问题，但是其会使 spinlock 数据结构变大，而 spinlock 在内核中的应用十分广泛，有些地方对数据结构的大小十分敏感，所以 MCS 机制一直没有应用到 spinlock 中，spinlock 也一直没有解决 cache 颠簸问题，直到排队自旋锁出现。
+上面介绍的 MCS 锁能够解决 cache 颠簸问题（在每个 CPU 自己的变量上自旋），但是其会使 spinlock 数据结构变大，而 spinlock 在内核中的应用十分广泛，有些地方对数据结构的大小十分敏感，所以 MCS 机制一直没有应用到 spinlock 中，spinlock 也一直没有解决 cache 颠簸问题，直到排队自旋锁出现。
 
 #### qspinlock
 
@@ -625,7 +634,7 @@ typedef struct qspinlock {
 | 0 - 7   | locked 域，表示持有锁                                        |
 | 8       | pending 域，表示第一顺位继承者，自旋等待锁释放，pending 是 8 bit，但只有第一位使用了 |
 | 9 - 15  | 保留位                                                       |
-| 16 - 17 | tail_idx 域，用来获取 q_nodes，目前支持 4 种上下文的 msc_nodes —— 进程上下文、软中断上下文、硬中断上下文和不可屏蔽中断上下文（不懂） |
+| 16 - 17 | tail_idx 域，用来获取 q_nodes，目前支持 4 种上下文的 msc_nodes —— 进程上下文、软中断上下文、硬中断上下文和不可屏蔽中断上下文（电源掉电、总线奇偶位出错，触发出错中断等） |
 | 18 - 31 | tail_cpu 域，用来标识等待队列末尾的 CPU                      |
 
 内核使用一个三元组 {x, y, z} 来表示锁的状态，`x` 表示 tail，`y` 表示 pending，`z` 表示 locked。
@@ -639,19 +648,36 @@ static __always_inline void queued_spin_lock(struct qspinlock *lock)
 {
 	int val = 0;
 
-    // 自旋锁没有被持有，返回 true
-    // 并将 lock->val 的 _Q_LOCKED_VAL 位置为 1
+    // 原子的比较和交换
+    // 如果 lock->val = val = 0，两者相等，说明自旋锁没有被持有，可以赋值
+    // 这时将 lock->val 置成 _Q_LOCKED_VAL
+    // 如果 local->val != val，说明自旋锁被持有了，无法赋值
+    // 这是 val 表示 lock->val 的值
     // 这就是快速路径，不然就是慢速路径
+    // _Q_LOCKED_VAL = 1
 	if (likely(atomic_try_cmpxchg_acquire(&lock->val, &val, _Q_LOCKED_VAL))) // _Q_LOCKED_VAL = 0
 		return;
 
 	queued_spin_lock_slowpath(lock, val);
 }
+
+static __always_inline bool
+arch_atomic_try_cmpxchg_acquire(atomic_t *v, int *old, int new)
+{
+	int r, o = *old;
+    // 如果比较后相等，r 就是 0
+    // 如果比较后不相等，r 就是 lock->val 当前值
+	r = arch_atomic_cmpxchg_acquire(v, o, new);
+	if (unlikely(r != o))
+		*old = r; // 不相等的话返回的 val 就是 lock->val 当前值，后面慢路径会使用
+	return likely(r == o);
+}
+#define arch_atomic_try_cmpxchg_acquire arch_atomic_try_cmpxchg_acquire
 ```
 
 我们以一个实际的场景来分析 `qspinlock` 的使用，假设 CPU0，CPU1，CPU2，CPU3 都在进程上下文中争用一个自旋锁。
 
-在开始时，没有 CPU 持有锁，那么 CPU0 通过 `queued_spin_lock` 去申请该锁，这时在 `lock->val` 中，locked = 1，pending = 0，tail = 0，即三元组为 {0, 0, 1}。
+在开始时，没有 CPU 持有锁，那么 CPU0 通过 `queued_spin_lock` 去申请该锁，这时在 `lock->val` 中，locked = 1，pending = 0，tail = 0，即**三元组为 {0, 0, 1}**。
 
 ![qspinlock.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/qspinlock.png?raw=true)
 
@@ -695,18 +721,35 @@ void queued_spin_lock_slowpath(struct qspinlock *lock, u32 val)
 	 *
 	 * 0,1,0 -> 0,0,1
 	 */
-    // 上面介绍过，pending 域表示第一顺位继承者，自旋等待锁释放
-	if (val == _Q_PENDING_VAL) { // _Q_PENDING_VAL = 8
+ 	// 如果当前 spinlock 只有 pending 域被置位了，说明 spinlock 正处于一个临时状态
+ 	// 即锁持有者正在释放锁，但是 pending owner 还没有拾取锁
+	// 存在这种情况，只一个竞争者在等待锁，三元组为 {0,1,1}
+ 	// 这时如果锁的持有者释放了锁，三元组变成了 {0,1,0}
+ 	// 这时 pending owner 还没有获取锁，又有其他的竞争者来申请锁
+ 	// 新来到的竞争者不能直接成为 pending owner，而是要等待上一位 pending owner
+ 	// 获取锁，它才能成为 pending owner
+ 	// 这种情况需要重读 spinlock，重读会进行 _Q_PENDING_LOOPS 次
+ 	// 如果还没有获取到，那么放弃读
+ 	// 大量并发的场景下存在这种情况
+	if (val == _Q_PENDING_VAL) { // _Q_PENDING_VAL = 1 << 8
 		int cnt = _Q_PENDING_LOOPS;
 		val = atomic_cond_read_relaxed(&lock->val,
-					       (VAL != _Q_PENDING_VAL) || !cnt--);
+					 (VAL != _Q_PENDING_VAL) || !cnt--);
 	}
+ 	// 为何这里我们要这么执着的等待 pending owner 线程将其状态从 pending 迁移到 locked 状态呢？
+ 	// 因为我们不想排队。如果带着 pending bit 往下走，在下面 if (val & ~_Q_LOCKED_MASK) 就会直接接入排队过程
+ 	// 一旦进入排队过程，我们就需要在 mcs lock 上
+ 	// 如果 pending owner 获取了锁，它会 clear pending 位
+ 	// 这样我们就成为第一个等锁线程，也就不需要排队，变成 pending owner 线程
+ 	// 理论上 owner 释放锁和 pending owner 获取锁应该很快
+ 	// 但是当竞争比较激烈的时候，难免会出现长时间的 pending bit 被设定的情况（这是什么场景？）
+ 	// 因此这里也不适合死等，我们设置 _Q_PENDING_LOOPS 等于 1，即重读一次就 OK 了
 
 	/*
 	 * If we observe any contention; queue.
 	 */
-    // _Q_LOCKED_MASK = 0xff，判断 pending 和 tail 域是否为 1
-    // 如果 pending 为 1，说明已经有第一顺位继承者，只能排队等待
+ 	// _Q_LOCKED_MASK = 0xff，判断 pending 和 tail 域是否为 1
+ 	// 如果 pending 为 1，说明已经有第一顺位继承者，只能排队等待
 	if (val & ~_Q_LOCKED_MASK)
 		goto queue; // 排队
 
@@ -715,6 +758,7 @@ void queued_spin_lock_slowpath(struct qspinlock *lock, u32 val)
 	 *
 	 * 0,0,* -> 0,1,* -> 0,0,1 pending, trylock
 	 */
+ 	// 此时三元组从 {0,0,1} 变成 {0,1,1}
 	val = queued_fetch_set_pending_acquire(lock); // 第一顺位继承者在这里设置 pending 域
 
 	/*
@@ -724,9 +768,26 @@ void queued_spin_lock_slowpath(struct qspinlock *lock, u32 val)
 	 * n,0,0 -> 0,0,0 transition fail and it will now be waiting
 	 * on @next to become !NULL.
 	 */
-	if (unlikely(val & ~_Q_LOCKED_MASK)) { // 为什么这里还要判断一次？
+ 	// 为什么这里还要判断一次？
+ 	// 上面返回的 val 是 lock 中的旧值，这里再判断一次是因为可能有多个申请者并发申请这个锁
+ 	// 其他的申请者已经设置了 pending 域
+ 	// 这种情况下，我们需要去排队或 undo pending
+ 	// 然后重新去排队
+ 	// 正常来说，set_pending 之前，三元组应该是 {0,0,1}
+ 	// 这里 tail 或 pending 位不为 0
+ 	// 说明已经被其他申请者修改了
+ 	// 要么 pending 位是 1，表示有 CPU 在自旋等待在锁上
+ 	// 要么 pending 位是 0，但是 tail 不是 0，表示还有 CPU 在自旋等待
+ 	// 在这之前肯定还有一个 CPU 抢到过 pending 位，但现在释放了
+ 	// 但是 lock 是 atomic 变量，按理来说不应该发生这种情况啊？
+ 	// 或者用一个 cmpxchg 命令来做，就不会出现这种情况了
+ 	// 那哪里会更改 pending 位呢？
+	if (unlikely(val & ~_Q_LOCKED_MASK)) {
 
 		/* Undo PENDING if we set it. */
+ 	// pending 位是 0 的话，说明这个 pending 位被当前 CPU 误“抢”了
+ 	// 原来的状态是(n, 0, *)，队列不为空，为了保证自旋锁的次序，本 CPU 不能“抢” pending 位
+ 	// 所以要将 pending 位重新置为 0
 		if (!(val & _Q_PENDING_MASK)) // 这里判断锁是否已经被占用
 			clear_pending(lock);
 
@@ -744,20 +805,22 @@ void queued_spin_lock_slowpath(struct qspinlock *lock, u32 val)
 	 * clear_pending_set_locked() implementations imply full
 	 * barriers.
 	 */
-    // 自旋等待，一直原子的加载和判断条件是否成立，即 locked 域是否清 0
+ 	// 自旋等待，一直原子的加载和判断条件是否成立，即 locked 域是否清 0
+ 	// 这里自旋并不是轮询，而是通过 WFE 指令让 CPU 停下来，降低功耗
+ 	// WFI(Wait for interrupt)和 WFE(Wait for event)是两个让 ARM 核进入 low-power standby 模式的指令
+ 	// 由 ARM architecture 定义，ARM core 实现
 	if (val & _Q_LOCKED_MASK)
-		atomic_cond_read_acquire(&lock->val, !(VAL & _Q_LOCKED_MASK));
+		atomic_cond_read_acquire(&lock->val, !(VAL & _Q_LOCKED_MASK)); // CPU1 自旋等待 CPU0 释放锁
 
 	/*
 	 * take ownership and clear the pending bit.
-	 *
 	 * 0,1,0 -> 0,0,1
 	 */
-	clear_pending_set_locked(lock);
-	lockevent_inc(lock_pending); // CPU1 成功持有该锁
+	clear_pending_set_locked(lock); // CPU1 成功持有该锁
+	lockevent_inc(lock_pending);
 	return;
 
-    ...
+ ...
 }
 ```
 
@@ -767,7 +830,7 @@ void queued_spin_lock_slowpath(struct qspinlock *lock, u32 val)
 
 #### 慢速申请通道
 
-慢速通道的场景是 CPU0 持有锁，CPU1 设置 pending 域并自旋等待，这时 CPU2 也申请该自旋锁，这时就是跳转到 queue 处，
+慢速通道的场景是 **CPU0 持有锁，CPU1 设置 pending 域并自旋等待，这时 CPU2 也申请该自旋锁**，这时就是跳转到 queue 处，
 
 ```c
 void queued_spin_lock_slowpath(struct qspinlock *lock, u32 val)
@@ -783,29 +846,45 @@ void queued_spin_lock_slowpath(struct qspinlock *lock, u32 val)
 	 * queuing.
 	 */
 queue:
-	lockevent_inc(lock_slowpath);
+	lockevent_inc(lock_slowpath); // 记录慢路径次数
 pv_queue:
+    // 获取各个 CPU 的 mcs 队列
+    // 这里 qnodes 是 Per-CPU 变量，也就是说，每个 CPU 自旋在自己的 mcs lock 上
+    // 而不是公共的 spinlock 上
 	node = this_cpu_ptr(&qnodes[0].mcs);
-	idx = node->count++;
-	tail = encode_tail(smp_processor_id(), idx);
+	idx = node->count++; // 该 mcs 锁的嵌套次数
+	tail = encode_tail(smp_processor_id(), idx); // 根据 CPU id 和申请者个数构造 tail
 
 	/*
 	 * 4 nodes are allocated based on the assumption that there will
 	 * not be nested NMIs taking spinlocks. That may not be true in
 	 * some architectures even though the chance of needing more than
-	 * 4 nodes will still be extremely unlikely. When that happens,
+	 * 4  nodes will still be extremely unlikely. When that happens,
 	 * we fall back to spinning on the lock directly without using
 	 * any MCS node. This is not the most elegant solution, but is
 	 * simple enough.
 	 */
+    // 如果获得的节点下标大于等于 4，表示当前 CPU 上自旋锁嵌套层数已经超过了 4
+    // 这种情况极少出现，要么就是哪里用错了，要么就是当前平台上还支持不可屏蔽（NMI）中断的嵌套调用
+    // 这个嵌套次数有点难以理解
+    // 首先由于 spinlock 是忙等，所以在自选等待的时候该 CPU 不会有其他的进程来竞争该锁
+    // 忙等，禁止睡眠，其他的进程不会得到调度
+    // 但是中断的优先级比进程高，而 spinlock 可以在中断上下文使用
+    // 所以该 CPU 上某个进程在 msc lock 上自旋等待的时候会被中断抢占
+    // 中断有 3 种：软中断上下文、硬中断上下文和不可屏蔽中断上下文
+    // 加上进程上下文，总共 4 种，所以这里 MAX_NODES = 4
 	if (unlikely(idx >= MAX_NODES)) {
 		lockevent_inc(lock_no_node);
+        // 如果自旋锁嵌套层数操作 4 层，退化成普通自旋锁
+        // 不断调用 queued_spin_trylock，直到获取该锁
+        // 那为何嵌套 4 次就需要退化成普通自旋锁呢？
 		while (!queued_spin_trylock(lock))
 			cpu_relax();
 		goto release;
 	}
 
-	node = grab_mcs_node(node, idx);
+	node = grab_mcs_node(node, idx); // 根据 idx 获得对应的 msc 锁，qnodes 是指针数组，里面有 4 个元素
+	// 重排到这后面累加，计数出错
 
 	/*
 	 * Keep counts of non-zero index values:
@@ -817,17 +896,29 @@ pv_queue:
 	 * the actual node. If the compiler is kind enough to reorder these
 	 * stores, then an IRQ could overwrite our assignments.
 	 */
+    // 在同一个 CPU 上，最多可以有 4 个不同的自旋锁嵌套调用，嵌套的层数是由 CPU 上第一个节点的 count 域记录的
+    // 这个域会在队列模式开头进行读取和累加操作，这个操作虽然写在一行代码里，但却不是一步就会完成了
+    // 而是可以分解为读取和累加两个操作。读取操作会读出节点下标值，这个值后面会用来计算 tail 的值
+    // 和后面的操作相关，因此编译器不会对其进行重排序。但是，累加操作就不一样了，它和后面的操作没有什么相关性
+    // 很有可能被编译器优化到任何位置，因此如果没有编译屏障的话，代码可能被重排
+    // 重排之后可能在获取新的 node 之后再累加，这样计数就出错了
 	barrier();
 
+    // 获得当前 CPU 上对应的节点后，要将其初始化，locked 域设置成 0（会自旋等待其变成 1）
+    // 设置为 0 表示当前 CPU 的 mcs_lock 没有持有锁
+    // next 域设置成 NULL（表示是最后一个节点）
 	node->locked = 0;
 	node->next = NULL;
-	pv_init_node(node);
+	pv_init_node(node); // NOP
 
 	/*
 	 * We touched a (possibly) cold cacheline in the per-cpu queue node;
 	 * attempt the trylock once more in the hope someone let go while we
 	 * weren't watching.
 	 */
+    // 先再尝试一下获得自旋锁，因为当前经过上面这些操作后，有可能获得和等待该自旋锁的 CPU 都已经释放了
+    // 当前的自旋锁是空闲的状态。这种情况下，当前 CPU 就可以轻易获得自旋锁，可以一定程度上提高效率
+    // 这是一个优化，当然也可以坚持走队列模式，功能上说也是正常的
 	if (queued_spin_trylock(lock))
 		goto release;
 
@@ -836,6 +927,8 @@ pv_queue:
 	 * publish the updated tail via xchg_tail() and potentially link
 	 * @node into the waitqueue via WRITE_ONCE(prev->next, node) below.
 	 */
+    // 保证将当前节点更新到自旋锁之前，一定要保证这个自旋锁节点已经完成了初始化
+    // 也就是说，可以保证，当本 CPU 通过 xchg_tail 函数读到上一个节点的时候，它一定已经初始化好了
 	smp_wmb();
 
 	/*
@@ -845,6 +938,8 @@ pv_queue:
 	 *
 	 * p,*,* -> n,*,*
 	 */
+    // 原子的读取自旋锁的 tail 域，并将自己节点更新上去
+    // tail 表示最新添加得锁竞争者，可用于后续判断是否有新的竞争者
 	old = xchg_tail(lock, tail);
 	next = NULL;
 
@@ -852,14 +947,19 @@ pv_queue:
 	 * if there was a previous node; link it and wait until reaching the
 	 * head of the waitqueue.
 	 */
-	if (old & _Q_TAIL_MASK) {
+	if (old & _Q_TAIL_MASK) { // 如果之前队列不为空
+        // 获取前一个节点
+        // 如果当前 CPU 发现在将自己的节点更新到自选锁之前，自旋锁值的 tail 域不是 0 的话
+        // 那么说明当前节点前面应该还有别的 CPU 上的节点也在等待自旋锁，这时候就需要更新前一个节点的 next 域
+        // 让其指向本节点，从而将队列链接完整。要获得前一个节点的指针，需要对锁的 16 位 tail 域的值进行“解码”
 		prev = decode_tail(old);
 
 		/* Link @node into the waitqueue. */
-		WRITE_ONCE(prev->next, node);
+		WRITE_ONCE(prev->next, node); // 将当前节点连接到等待队列中
 
 		pv_wait_node(node, prev);
-		arch_mcs_spin_lock_contended(&node->locked);
+        // 自旋等待在自己的 mcs lock 上，等待本节点的 lock 域变为 1
+		arch_mcs_spin_lock_contended(&node->locked); // CPU3 自旋等待 mcs lock 的 locked 域被置 1
 
 		/*
 		 * While waiting for the MCS lock, the next pointer may have
@@ -867,7 +967,10 @@ pv_queue:
 		 * the next pointer & prefetch the cacheline for writing
 		 * to reduce latency in the upcoming MCS unlock operation.
 		 */
-		next = READ_ONCE(node->next);
+        // 执行到这里，说明我们已经获得了 mcs lock，处于队首
+        // 在等待的过程中，其他的申请者也加入到链表中
+        // 更新 next，把 msc lock 让给下一个申请者
+		next = READ_ONCE(node->next); // 尝试读取下一个节点
 		if (next)
 			prefetchw(next);
 	}
@@ -896,8 +999,13 @@ pv_queue:
 	if ((val = pv_wait_head_or_lock(lock, node)))
 		goto locked;
 
+    // 在 spinlock 上自旋等待
+    // CPU2 自旋等待 locked 和 pending 域清零
+    // 这里三元组为 {x,1,1}
 	val = atomic_cond_read_acquire(&lock->val, !(VAL & _Q_LOCKED_PENDING_MASK));
 
+// 当前 CPU 已经等到了前面所有 CPU 都释放了自旋锁，可以合法占有自旋锁
+// 这里三元组为 {n,0,0}
 locked:
 	/*
 	 * claim the lock:
@@ -920,7 +1028,17 @@ locked:
 	 *       above wait condition, therefore any concurrent setting of
 	 *       PENDING will make the uncontended transition fail.
 	 */
+    // 如果当前节点已经是队列中的最后一个节点
 	if ((val & _Q_TAIL_MASK) == tail) {
+        // 尝试将自旋锁的值修改成(0, 0, 1)
+    	// 返回 1 表示没有竞争发生，修改成功，直接撤销该节点就行了；
+    	// 如果返回 0，表示有竞争的情况发生，也就是说从上面自旋等待锁(n, 0, 0)，
+        // 到正式将其修改为(0, 0, 1)之间，有别的 CPU 已经修改了自旋锁的状态（哪怕只隔了一行代码）
+        // 代码还要接着往下走
+        // 正常来说，val 是上面 atomic_cond_read_acquire 命令读出来的，也就是 lock->val
+        // 这里 cmpxchg 里面两者应该相等
+        // 不相等说明有人更新了 tail，即有新的竞争者申请锁
+        // 这样还不能立即持有锁
 		if (atomic_try_cmpxchg_relaxed(&lock->val, &val, _Q_LOCKED_VAL))
 			goto release; /* No contention */
 	}
@@ -930,14 +1048,20 @@ locked:
 	 * which will then detect the remaining tail and queue behind us
 	 * ensuring we'll see a @next.
 	 */
+    // 将自旋锁的 locked 域变成 1，表示当前 CPU 已经占有了这个自旋锁
 	set_locked(lock);
 
 	/*
 	 * contended path; wait for next if not observed yet, release.
 	 */
+    // 自旋等待当前节点的 next 域变为非 NULL，等待下一个节点“出现”。因为如果发生了竞争
+    // 就一定意味着有一个新节点会“出现”在后面
 	if (!next)
 		next = smp_cond_load_relaxed(&node->next, (VAL));
 
+    // 将下一个节点的 locked 域设置成 1
+    // 这样上面的 arch_mcs_spin_lock_contended(&node->locked); 在自己的 mcs lock 上自选等待的申请者
+    // 就可以继续往下走了
 	arch_mcs_spin_unlock_contended(&next->locked);
 	pv_kick_node(lock, next);
 
@@ -964,6 +1088,8 @@ static __always_inline void queued_spin_unlock(struct qspinlock *lock)
 	smp_store_release(&lock->locked, 0);
 }
 ```
+
+我们来看看内核是怎样使用 spin_lock 的。
 
 ### 信号量
 
@@ -1139,7 +1265,7 @@ void __sched mutex_lock(struct mutex *lock)
 
 #### 慢速申请通道
 
-这部分不是很懂！我们结合流程图看，加深印象。
+我们结合流程图看，加深印象。
 
 ![acquire_mutex_slow.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/acquire_mutex_slow.png?raw=true)
 
@@ -1361,6 +1487,14 @@ static noinline void __sched __mutex_unlock_slowpath(struct mutex *lock, unsigne
 
 在中断上下半部可以使用自旋锁；而如果临界区有睡眠、隐含睡眠的动作以内核接口函数（？），应避免使用自旋锁；而信号量和互斥锁的选择，除非使用环境不符合上述任何一条，否则优先使用互斥锁（怪不得互斥锁更为常见）。
 
+在开发过程中遇到了 spinlock 和 mutex 使用的问题，这里进一步描述两者使用场景的区别。
+
+- mutex 适合对锁操作非常频繁的场景，并且具有更好的适应性。尽管相比 spin lock 它会花费更多的开销（主要是上下文切换，因为它要去睡眠，虽然实现了乐观自旋，但是只有在没有更高优先级进程的调度时才会自旋等待，所以它还是有可能会睡眠的），但是它能适合实际开发中复杂的应用场景，在保证一定性能的前提下提供更大的灵活度；
+
+- spin lock 的 lock/unlock 性能更好(花费更少的 cpu 指令)，但是它**只适应用于临界区运行时间很短的场景**。而在实际软件开发中，除非程序员对自己的程序的锁操作行为非常的了解，否则使用 spinlock 不是一个好主意(通常一个多线程程序中对锁的操作有数以万次，如果失败的锁操作(contended lock requests)过多的话就会浪费很多的时间进行空等待)；
+
+- 更保险的方法或许是先（保守的）使用 mutex，然后如果对性能还有进一步的需求，可以尝试使用 spin lock 进行调优；
+
 ### 读写锁
 
 信号量的 PV 操作很清晰明了，持有锁的进程能够睡眠（还没有进一步去看内核哪些地方会使用到 semaphore，这个是之后的工作）。但是其**没有区分临界区的读写属性**，为了进一步提高并发性能，社区又提出了读写锁，允许多个读者同时访问临界资源，但写者不允许，其具有如下特性：
@@ -1539,6 +1673,7 @@ count 可以理解为一个二元数，其含义可以这样理解，
 /*
  * lock for reading
  */
+// 如果一个进程持有读者锁，那么允许继续申请多个读者锁，如果持有写着锁，则要等待
 extern void down_read(struct rw_semaphore *sem);
 extern int __must_check down_read_interruptible(struct rw_semaphore *sem);
 extern int __must_check down_read_killable(struct rw_semaphore *sem);
@@ -1551,6 +1686,7 @@ extern int down_read_trylock(struct rw_semaphore *sem);
 /*
  * lock for writing
  */
+// 如果一个进程持有写者锁，那么第二个进程申请写者锁就要自旋等待，申请读者锁要等待（忙等和睡眠等待么）
 extern void down_write(struct rw_semaphore *sem);
 extern int __must_check down_write_killable(struct rw_semaphore *sem);
 
@@ -1562,6 +1698,7 @@ extern int down_write_trylock(struct rw_semaphore *sem);
 /*
  * release a read lock
  */
+// 如果等待队列中第一个成员是写者，那么唤醒该写者，否则唤醒等待队列最前面连续的几个读者
 extern void up_read(struct rw_semaphore *sem);
 
 /*
@@ -2022,3 +2159,5 @@ RCU 中有两个重要概念：
 [1] 《奔跑吧 Linux 内核》卷 2 苯叔.
 
 [2] https://zhuanlan.zhihu.com/p/405965784
+
+[3] [spinlock 变体的区别](https://www.byteisland.com/%E8%87%AA%E6%97%8B%E9%94%81-spin_lock%E3%80%81-spin_lock_irq-%E4%BB%A5%E5%8F%8A-spin_lock_irqsave-%E7%9A%84%E5%8C%BA%E5%88%AB/)

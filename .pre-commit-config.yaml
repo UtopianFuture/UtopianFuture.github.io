@@ -3,11 +3,11 @@
 repos:
 -   repo: local
     hooks:
-      # -   id: lint-md
-      #     name: lint-md
-      #     description: check Chinese doc
-      #     entry: script/hook/lint-md.sh
-      #     language: script
+    -   id: lint-md
+        name: lint-md
+        description: check Chinese doc
+        entry: script/hook/lint-md.sh
+        language: script
 
     -   id: format-code
         name: format code
