@@ -80,7 +80,7 @@ struct task_struct {
 	 */
 	struct thread_info		thread_info; // 这个好像还有些复杂，之后再分析
 #endif
-	unsigned int			__state // 表示进程的状态
+	unsigned int			__state; // 表示进程的状态
 
     ...
 
@@ -90,7 +90,7 @@ struct task_struct {
 	 */
 	randomized_struct_fields_start
 
-	void				*stack; // 内核栈的位置么
+	void				*stack; // 内核栈的位置么，在哪里初始化的
 	refcount_t			usage;
 	/* Per task flags (PF_*), defined further below: */
 	unsigned int			flags; // 进程属性标志位。如进程退出时会设置 PF_EXITING
@@ -513,13 +513,16 @@ void setup_initial_init_mm(void *start_code, void *end_code,
 ```c
 static __always_inline struct task_struct *get_current(void)
 {
-	return this_cpu_read_stable(current_task);
+	unsigned long sp_el0;
+
+    // sp_el0 是系统寄存器，用来存放当前 task 的 task_struct 指针
+	asm ("mrs %0, sp_el0" : "=r" (sp_el0));
+
+	return (struct task_struct *)sp_el0;
 }
 
 #define current get_current()
 ```
-
-好吧，这个我不懂。X86 中有专门的指针来指向 `task_struct` 么？
 
 #### 内核线程
 
@@ -577,6 +580,8 @@ SYSCALL_DEFINE0(vfork)
 #endif
 ```
 
+什么场景适合使用 vfork？
+
 ##### clone
 
 `clone` 可以传递众多参数，有选择的继承父进程的资源。
@@ -619,7 +624,7 @@ SYSCALL_DEFINE5(clone, unsigned long, clone_flags, unsigned long, newsp,
 
 ##### 关键函数 kernel_clone
 
-在 5.15 的内核中，这些创建用户态进程和内核线程的接口最后都是调用 `kernel_clone`，只是传入的参数不一样。和书中介绍的不一样，5.15 的内核传入 `kernel_clone` 的参数是 `kernel_clone_args`，而不是之前的多个形参。
+在 5.15 的内核中，这些创建用户态进程和内核线程的接口最后都是调用 `kernel_clone`，
 
 ```c
 struct kernel_clone_args {
@@ -1320,7 +1325,7 @@ int copy_thread(unsigned long clone_flags, unsigned long sp, unsigned long arg,
   - 进程在内核态执行时产生一个异常；
   - 进程收到 SIGKILL （ctrl + c）等终止信号；
 
-当一个进程终止时，内核会释放它所有占用的资源（`task_struct` 视情况而定），并把这个消息传递给父进程。
+当一个进程终止时，内核会释放它所有占用的资源（`task_struct` 视情况而定），并把这个消息传递给父进程。如果父进程先于子进程消亡，那么子进程就变成“孤儿”进程，内核会将它”托孤“给 1 号进程（init）。
 
 ### 进程调度
 
@@ -1332,7 +1337,7 @@ int copy_thread(unsigned long clone_flags, unsigned long sp, unsigned long arg,
 | :------: | :-------------------------------------: | :------------------------------------------: | :----------------------------------------------------------: |
 |   stop   |                   无                    | 最高优先级的进程，比 deadline 进程的优先级高 | 『1』可以抢占任何进程；『2』在每个 CPU 上实现一个名为 “migration/N” 的内核线程（这不就是迁移线程么）。该内核线程的优先级最高，可以抢占任何进程的运行，一般用来运行特殊的功能；『3』用于负载均衡机制中的进程迁移、softlockup 检测、CPU 热拔插、RCU 等 |
 | deadline |             SCHED_DEADLINE              |      最高优先级的实时进程。优先级为 -1       |     用于调度有严格时间要求的实时进程，如视频编码/译码等      |
-| realtime |          SCHED_FIFO、SCHED_RR           |        普通实时进程。优先级为 0 ~ 99         |           用于普通的实时进程，如 IRQ 线程化（？）            |
+| realtime |          SCHED_FIFO、SCHED_RR           |        普通实时进程。优先级为 0 ~ 99         |  用于普通的实时进程，如 IRQ 线程化（应该就是中断上下半部）   |
 |   CFS    | SCHED_NORMAL、 SCHED_BATCH、 SCHED_IDLE |         普通进程。优先级为 100 ~ 139         |                        由 CFS 来调度                         |
 |   idle   |                   无                    |               最低优先级的进程               | 当继续队列中没有其他进程时进入 idle 调度类。idle 调度类会让 CPU 进入低功耗模式 |
 
@@ -1713,7 +1718,7 @@ struct cfs_rq {
 
 ![process_schedule.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/process_schedule.png?raw=true)
 
-除了这 3 个重要的数据结构，内核还为每中调度类定义了各自的方法集，这里先给出 CFS 的方法集，其定义在 `kernel/sched/fair.c` 中，idle 调度类的方法集在 	`kernel/sched/idle.c` 中，其他的应该差不多。
+除了这 3 个重要的数据结构，内核还为每种调度类定义了各自的方法集，这里先给出 CFS 的方法集，其定义在 `kernel/sched/fair.c` 中，idle 调度类的方法集在 `kernel/sched/idle.c` 中，其他的应该差不多。
 
 ##### sched_class
 
@@ -2979,6 +2984,10 @@ static struct rq *finish_task_switch(struct task_struct *prev)
 }
 ```
 
+### PREEMPT_RT
+
+
+
 ### 负载计算
 
 这章的内容是探究如何更好的描述一个调度实体和就绪队列的工作负载。大部分内容都是从[这里](#http://www.wowotech.net/process_management/450.html)复制过来的，它讲的很清楚，我就省的再敲一遍。然后对于计算公式我能够理解，然后内核代码也贴出来了，可以说对于 PELT 算法我知道怎样算工作负载，但对于其要怎样使用还不懂，比如  `sched_avg` 中的 `load_avg`, `runnable_avg`, `util_avg` 变量我就不知道怎么用。这里就当个记录吧，之后有需要再深入理解。
@@ -3274,57 +3283,57 @@ struct sched_avg {
 
 1. 为什么要设置优先级、nice 值、权重、实际运行时间（runtime）、虚拟运行时间（vruntime）？它们之间的关系是什么？
 
-   我们来看一个函数，
+我们来看一个函数，
 
-   ```c
-   static void set_load_weight(struct task_struct *p, bool update_load)
-   {
-   	int prio = p->static_prio - MAX_RT_PRIO; // MAX_RT_PRIO = 100
-   	struct load_weight *load = &p->se.load;
+```c
+static void set_load_weight(struct task_struct *p, bool update_load)
+{
+	int prio = p->static_prio - MAX_RT_PRIO; // MAX_RT_PRIO = 100
+	struct load_weight *load = &p->se.load;
 
-   	/*
-   	 * SCHED_IDLE tasks get minimal weight:
-   	 */
-   	if (task_has_idle_policy(p)) {
-   		load->weight = scale_load(WEIGHT_IDLEPRIO);
-   		load->inv_weight = WMULT_IDLEPRIO;
-   		return;
-   	}
+	/*
+	 * SCHED_IDLE tasks get minimal weight:
+	 */
+	if (task_has_idle_policy(p)) {
+		load->weight = scale_load(WEIGHT_IDLEPRIO);
+		load->inv_weight = WMULT_IDLEPRIO;
+		return;
+	}
 
-   	/*
-   	 * SCHED_OTHER tasks have to update their load when changing their
-   	 * weight
-   	 */
-   	if (update_load && p->sched_class == &fair_sched_class) {
-   		reweight_task(p, prio);
-   	} else {
-   		load->weight = scale_load(sched_prio_to_weight[prio]);
-   		load->inv_weight = sched_prio_to_wmult[prio];
-   	}
-   }
-   ```
+	/*
+	 * SCHED_OTHER tasks have to update their load when changing their
+	 * weight
+	 */
+	if (update_load && p->sched_class == &fair_sched_class) {
+		reweight_task(p, prio);
+	} else {
+		load->weight = scale_load(sched_prio_to_weight[prio]);
+		load->inv_weight = sched_prio_to_wmult[prio];
+	}
+}
+```
 
-   从这个函数中我们可以清晰的确定 nice 其实就是优先级，而每个优先级对应一个权重，这个对应关系只有普通进程，即优先级 100 ~ 139 的进程才有。也就是说实时进程没有权重这一说法，直接按照优先级顺序执行么？
+从这个函数中我们可以清晰的确定 nice 其实就是优先级，而每个优先级对应一个权重，这个对应关系只有普通进程，即优先级 100 ~ 139 的进程才有。也就是说实时进程没有权重这一说法，直接按照优先级顺序执行么？
 
-   在 `task_struct` 中有一个和优先级相关的变量，
+在 `task_struct` 中有一个和优先级相关的变量，
 
-   ```c
-   struct task_struct {
-       ...
+```c
+struct task_struct {
+    ...
 
-   	// 进程的动态优先级。这是调度类考虑的优先级，即 nice 值，
-       // 它是 static_prio - MAX_RT_PRIO(100)得到的，范围是 100 ~ 139
-   	int				prio;
-   	int				static_prio; // 静态优先级，在进程启动时分配。它的范围是 0 ~ 139
-   	int				normal_prio; // 基于 static_prio 和调度策略计算出来的优先级，子进程初始化时继承该优先级
-   	unsigned int	rt_priority; // 实时进程的优先级
+	// 进程的动态优先级。这是调度类考虑的优先级，即 nice 值，
+    // 它是 static_prio - MAX_RT_PRIO(100)得到的，范围是 100 ~ 139
+	int				prio;
+	int				static_prio; // 静态优先级，在进程启动时分配。它的范围是 0 ~ 139
+	int				normal_prio; // 基于 static_prio 和调度策略计算出来的优先级，子进程初始化时继承该优先级
+	unsigned int	rt_priority; // 实时进程的优先级
 
-       ...
+    ...
 
-   }
-   ```
+}
+```
 
-   而 `vruntime` 则是根据 `runtime` 和进程权重计算出来的，进程的权重又由 nice（优先级）确定。
+而 `vruntime` 则是根据 `runtime` 和进程权重计算出来的，进程的权重又由 nice（优先级）确定。
 
 2. 为什么要根据 vruntime 决定调度顺序？
 
@@ -3335,6 +3344,8 @@ struct sched_avg {
    其实这些信息的保存在[关键函数 copy_thread](#关键函数copy_thread)中已经保存了。
 
 5. [关键函数 copy_thread](#关键函数copy_thread)进程创建过程还涉及到很多模块的初始化不懂，之后需要不断深入理解。
+6. 系统中是怎样做到 CFS 和 RR 调度类共存的？
+7. 这个领域，最常遇到什么问题？
 
 ### Reference
 

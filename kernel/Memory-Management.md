@@ -2535,8 +2535,6 @@ vmalloc 和 vmap 的操作，大部分的逻辑操作是一样的，比如从 `V
 |		-> flush_cache_vmap // 正常来说解映射之后需要 clean cache，防止后续 dirty data 导致 DDR 中数据被踩，但这里是空函数
 ```
 
-### zsmalloc
-
 ### CMA[^7]
 
 CMA(Contiguous Memory Allocator)负责**物理地址连续的内存分配**。一般系统会在启动过程中，从整个 memory 中配置一段连续内存用于 CMA，然后内核其他的模块可以通过 CMA 的接口 API 进行连续内存的分配。CMA 的核心并不是设计精巧的算法来管理地址连续的内存块，实际上它的**底层还是依赖内核伙伴系统这样的内存管理机制**。
@@ -4919,7 +4917,9 @@ retry_pud:
 }
 ```
 
-- 这里 pgd, p4d 等是 5 级页表的名称。五级分页每级命名分别为页全局目录(PGD)、页 4 级目录(P4D)、页上级目录(PUD)、页中间目录(PMD)、页表(PTE)。
+- 这里 pgd, p4d 等是 5 级页表的名称。五级分页每级命名分别为页全局目录(PGD)、页 4 级目录(P4D)、页上级目录(PUD)、页中间目录(PMD)、页表(PTE)；
+- 页表级数增加，页表本身占用的内存就少了；
+- 寻址范围不单单要关注 DDR，还要关注整个系统的地址排布，一般要比 DDR 容量大很多；
 
 #### 关键函数 handle_pte_fault
 
@@ -8514,7 +8514,7 @@ static isolate_migrate_t isolate_migratepages(struct compact_control *cc)
 - 传统的 LRU 页面，如匿名页和文件页；
 - 非 LRU 页面，即特殊的可迁移页面，如根据 zsmalloc 机制和 virtio-balloon 机制分配的页面（？）；
 
-### KSM
+### KSM[^13]
 
 KSM 指 Kernel SamePage Merging，即内核同页合并，用于合并内容相同的页面。KSM 的出现是**为了优化虚拟化中产生的冗余页面**。KSM 允许合并同一个进程或不同进程之间内容相同的匿名页面，这对应用程序来说是不可见的。把这些相同的页面合并成一个只读的页面，从而释放出多余的物理页面，当应用程序需要改变页面内容时，**会发生写时复制**。
 
@@ -9111,17 +9111,19 @@ bpftrace -e 'tracepoint:mmap_lock:mmap_lock_start_locking /args->write == true/{
 
 #### footprint
 
-#### zRAM[^8]
+#### zsmalloc/zRAM[^8]
 
 当系统内存紧张的时候，会将文件页丢弃或写回磁盘（如果是脏页），还可能会触发 LMK 杀进程进行内存回收。这些被回收的内存如果再次使用都需要重新从磁盘读取，而这个过程涉及到较多的 IO 操作。频繁地做 IO 操作，会影响 flash 使用寿命和系统性能。内存压缩能够尽量减少由于内存紧张导致的 IO，提升性能。
 目前内核主流的内存压缩技术主要有 3 种：zSwap, zRAM, zCache，这里主要介绍 zRAM。
 
 ##### 原理
 
-zRAM 是 memory reclaim 的一部分，它的本质是时间环空间，通过 CPU 压缩、解压缩的开销换取更大的可用空间。
+zRAM 是 memory reclaim 的一部分，它的本质是时间换空间，通过 CPU 压缩、解压缩的开销换取更大的可用空间。
 
-在如下时机会进行内存压缩：
-- Kswapd 场景；
+进行内存压缩的时机：
+
+- Kswapd 场景：kswapd 是内核内存回收线程， 当内存 watermark 低于 low 水线时会被唤醒工作，其到内存 watermark 不小于 high 水线；
+
 - Direct reclaim 场景：内存分配过程进入 slowpath，进行直接行内存回收。
 
 #### Compound Page
@@ -9315,6 +9317,7 @@ static inline unsigned int compound_order(struct page *page)
 [^10]: [arm64 memory](https://www.kernel.org/doc/Documentation/arm64/memory.rst)
 [^11]: [mmap](https://www.cnblogs.com/binlovetech/p/17754173.html)
 [^12]: [memcg](https://blog.csdn.net/bin_linux96/article/details/84328294)
+[^13]: [ksm](https://lwn.net/Articles/953141/)
 
 ### 些许感想
 

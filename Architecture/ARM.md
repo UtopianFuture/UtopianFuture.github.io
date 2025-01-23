@@ -73,7 +73,7 @@ ARM 中的总线协议多种多样，我看的头昏眼花，这里系统的总�
 
 #### ACE
 
-ACE 协议是 AXI4 协议的扩展，将一致性监听 snoop 协议和 AXI4 总线相结合。ACE 在 AXI 基础上增加了三个通道，snoop 地址通道（snoop address channel，AC），snoop 响应通道（snoop response channel，CR）和 snoop 数据通道（snoop data channel，CD）ACE 通道仍是基于 ready/valid 握手的方式来完成。
+ACE 协议是 AXI4 协议的扩展，**将一致性监听 snoop 协议和 AXI4 总线相结合**。ACE 在 AXI 基础上增加了三个通道，snoop 地址通道（snoop address channel，AC），snoop 响应通道（snoop response channel，CR）和 snoop 数据通道（snoop data channel，CD）ACE 通道仍是基于 ready/valid 握手的方式来完成。
 
 #### CHI
 
