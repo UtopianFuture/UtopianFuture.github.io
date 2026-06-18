@@ -482,9 +482,9 @@ EXPORT_SYMBOL(alloc_pages);
    	unsigned int alloc_flags = ALLOC_WMARK_LOW;
    	gfp_t alloc_gfp; /* The gfp_t that was actually used for allocation */ // 分配掩码，确定页面属性等
    	struct alloc_context ac = { }; // 用于保存相关参数
-
+   
    	...
-
+   
    	gfp &= gfp_allowed_mask;
    	/*
    	 * Apply scoped allocation constraints. This is mainly about GFP_NOFS
@@ -498,38 +498,38 @@ EXPORT_SYMBOL(alloc_pages);
    	if (!prepare_alloc_pages(gfp, order, preferred_nid, nodemask, &ac,
    			&alloc_gfp, &alloc_flags)) // 从代码来看就是保存 zonelist 等相关信息到 ac 中
    		return NULL;
-
+   
    	/*
    	 * Forbid the first pass from falling back to types that fragment
    	 * memory until all local zones are considered.
    	 */
    	alloc_flags |= alloc_flags_nofragment(ac.preferred_zoneref->zone, gfp); // 用于内存碎片化方面的优化
-
+   
    	/* First allocation attempt */
    	page = get_page_from_freelist(alloc_gfp, order, alloc_flags, &ac); // 从空闲链表中分配内存，并返回第一个 																	   // page 的地址
    	if (likely(page))
    		goto out;
-
+   
    	alloc_gfp = gfp;
    	ac.spread_dirty_pages = false;
-
+   
    	/*
    	 * Restore the original nodemask if it was potentially replaced with
    	 * &cpuset_current_mems_allowed to optimize the fast-path attempt.
    	 */
    	ac.nodemask = nodemask;
-
+   
    	page = __alloc_pages_slowpath(alloc_gfp, order, &ac); // 若分配不成功，则通过慢路径分配，这个之后再分析
-
+   
    out:
    	if (memcg_kmem_enabled() && (gfp & __GFP_ACCOUNT) && page &&
    	    unlikely(__memcg_kmem_charge_page(page, gfp, order) != 0)) {
    		__free_pages(page, order);
    		page = NULL;
    	}
-
+   
    	trace_mm_page_alloc(page, order, alloc_gfp, ac.migratetype);
-
+   
    	return page;
    }
    EXPORT_SYMBOL(__alloc_pages); // 该函数可被驱动使用
@@ -613,7 +613,7 @@ EXPORT_SYMBOL(alloc_pages);
      {
      	enum zone_type z;
      	int bit = (__force int) (flags & GFP_ZONEMASK);
-
+      
      	z = (GFP_ZONE_TABLE >> (bit * GFP_ZONES_SHIFT)) &
      					 ((1 << GFP_ZONES_SHIFT) - 1);
      	VM_BUG_ON((GFP_ZONE_BAD >> bit) & 1);
@@ -631,12 +631,12 @@ EXPORT_SYMBOL(alloc_pages);
      #ifdef CONFIG_ZONE_DMA32
      	ZONE_DMA32,
      #endif
-
+      
      	ZONE_NORMAL,
      #ifdef CONFIG_HIGHMEM
      	ZONE_HIGHMEM, // 优先从 ZONE_HIGHMEM 中分配内存
      #endif
-
+      
      	ZONE_MOVABLE, // 页面可以被迁移或者回收，如用于内存规整机制
      #ifdef CONFIG_ZONE_DEVICE
      	ZONE_DEVICE,
@@ -660,7 +660,7 @@ EXPORT_SYMBOL(alloc_pages);
    	struct zone *zone;
    	struct pglist_data *last_pgdat_dirty_limit = NULL;
    	bool no_fallback;
-
+   
    retry:
    	/*
    	 * Scan zonelist, looking for a zone with enough free.
@@ -672,9 +672,9 @@ EXPORT_SYMBOL(alloc_pages);
    					ac->nodemask) { // 从最喜欢的 zone 开始遍历所有的 zone
    		struct page *page;
    		unsigned long mark;
-
+   
    		...
-
+   
         	// 计算 zone 中某个水位的页面大小（？）
         	// 计算当前 zone 的空闲页面是否满足 WMARK_LOW
         	// 同时根据 order 计算是否有足够大的空闲内存块
@@ -684,19 +684,19 @@ EXPORT_SYMBOL(alloc_pages);
    				       ac->highest_zoneidx, alloc_flags,
    				       gfp_mask)) {
    			int ret;
-
+   
                ...
-
+   
             	// 返回 false，进行处理
    			/* Checked here to keep the fast path fast */
    			BUILD_BUG_ON(ALLOC_NO_WATERMARKS < NR_WMARK);
    			if (alloc_flags & ALLOC_NO_WATERMARKS)
    				goto try_this_zone;
-
+   
    			if (!node_reclaim_enabled() ||
    			    !zone_allows_reclaim(ac->preferred_zoneref->zone, zone))
    				continue;
-
+   
    			ret = node_reclaim(zone->zone_pgdat, gfp_mask, order); // 尝试进行回收
    			switch (ret) {
    			case NODE_RECLAIM_NOSCAN:
@@ -710,30 +710,30 @@ EXPORT_SYMBOL(alloc_pages);
    				if (zone_watermark_ok(zone, order, mark,
    					ac->highest_zoneidx, alloc_flags))
    					goto try_this_zone;
-
+   
    				continue;
    			}
    		}
-
+   
    try_this_zone: // 显而易见，从当前 zone 分配内存（应该就是第一个 zone）
    		page = rmqueue(ac->preferred_zoneref->zone, zone, order,
    				gfp_mask, alloc_flags, ac->migratetype); // 从伙伴系统分配页面，核心函数，后面分析
    		if (page) { // 分配成功后设置必要的属性和检查
    			prep_new_page(page, order, gfp_mask, alloc_flags);
-
+   
    			/*
    			 * If this is a high-order atomic allocation then check
    			 * if the pageblock should be reserved for the future
    			 */
    			if (unlikely(order && (alloc_flags & ALLOC_HARDER)))
    				reserve_highatomic_pageblock(page, zone, order);
-
+   
    			return page;
    		}
            ...
-
+   
    	}
-
+   
    	/*
    	 * It's possible on a UMA machine to get through all zones that are
    	 * fragmented. If avoiding fragmentation, reset and try again.
@@ -742,7 +742,7 @@ EXPORT_SYMBOL(alloc_pages);
    		alloc_flags &= ~ALLOC_NOFRAGMENT;
    		goto retry;
    	}
-
+   
    	return NULL;
    }
    ```
@@ -947,7 +947,7 @@ EXPORT_SYMBOL(alloc_pages);
    	unsigned int current_order;
    	struct free_area *area;
    	struct page *page;
-
+   
    	/* Find a page of the appropriate size in the preferred list */
    	for (current_order = order; current_order < MAX_ORDER; ++current_order) {
    		area = &(zone->free_area[current_order]);
@@ -959,7 +959,7 @@ EXPORT_SYMBOL(alloc_pages);
    		set_pcppage_migratetype(page, migratetype);
    		return page;
    	}
-
+   
    	return NULL;
    }
    ```
@@ -999,15 +999,15 @@ EXPORT_SYMBOL(alloc_pages);
    						unsigned int alloc_flags)
    {
    	struct page *page;
-
+   
    	...
-
+   
    retry:
    	page = __rmqueue_smallest(zone, order, migratetype);
    	if (unlikely(!page)) {
    		if (alloc_flags & ALLOC_CMA)
    			page = __rmqueue_cma_fallback(zone, order);
-
+   
    		if (!page && __rmqueue_fallback(zone, order, migratetype,
    								alloc_flags))
    			goto retry;
@@ -1117,11 +1117,11 @@ static inline void free_the_page(struct page *page, unsigned int order)
    	unsigned int max_order;
    	struct page *buddy;
    	bool to_tail;
-
+   
    	max_order = min_t(unsigned int, MAX_ORDER - 1, pageblock_order);
-
+   
    	...
-
+   
    continue_merging:
    	while (order < max_order) {
    		if (compaction_capture(capc, page, order, migratetype)) {
@@ -1131,7 +1131,7 @@ static inline void free_the_page(struct page *page, unsigned int order)
    		}
    		buddy_pfn = __find_buddy_pfn(pfn, order);
    		buddy = page + (buddy_pfn - pfn); // 计算相邻的内存块
-
+   
    		if (!page_is_buddy(page, buddy, order)) // 检查该相邻块能否合并
    			goto done_merging;
    		/*
@@ -1148,28 +1148,28 @@ static inline void free_the_page(struct page *page, unsigned int order)
    		order++;
    	}
    	if (order < MAX_ORDER - 1) {
-
+   
            ...
-
+   
    		max_order = order + 1;
    		goto continue_merging;
    	}
-
+   
    done_merging: // 合并两内存块
    	set_buddy_order(page, order);
-
+   
    	if (fpi_flags & FPI_TO_TAIL)
    		to_tail = true;
    	else if (is_shuffle_order(order))
    		to_tail = shuffle_pick_tail();
    	else
    		to_tail = buddy_merge_likely(pfn, buddy_pfn, page, order);
-
+   
    	if (to_tail)
    		add_to_free_list_tail(page, zone, order, migratetype);
    	else
    		add_to_free_list(page, zone, order, migratetype);
-
+   
    	/* Notify page reporting subsystem of freed page */
    	if (!(fpi_flags & FPI_SKIP_REPORT_NOTIFY))
    		page_reporting_notify_free(order);
@@ -1188,19 +1188,19 @@ static inline void free_the_page(struct page *page, unsigned int order)
   {
   	if (!page_is_guard(buddy) && !PageBuddy(buddy)) //（1）
   		return false;
-
+  
   	if (buddy_order(buddy) != order) //（2）
   		return false;
-
+  
   	/*
   	 * zone check is done late to avoid uselessly calculating
   	 * zone/node ids for pages that could never merge.
   	 */
   	if (page_zone_id(page) != page_zone_id(buddy)) //（3）
   		return false;
-
+  
   	VM_BUG_ON_PAGE(page_count(buddy) != 0, buddy);
-
+  
   	return true;
   }
   ```
@@ -1549,47 +1549,47 @@ slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure
    {
    	size_t left_over = 0;
    	int gfporder;
-
+   
        // 找到合适的 gfporder，这就解决了第一个问题
    	for (gfporder = 0; gfporder <= KMALLOC_MAX_ORDER; gfporder++) { // 从 0 开始计算最合适（最小）的 gfporder
    		unsigned int num;
    		size_t remainder;
-
+   
            // 2^gfporder/size，这就解决了第二个问题
    		num = cache_estimate(gfporder, size, flags, &remainder); // 计算该 gfporder 下能容纳多少个 slab 对象
    		if (!num) // 不能容纳对象，显然不行
    			continue;
-
+   
    		/* Can't handle number of objects more than SLAB_OBJ_MAX_NUM */
    		if (num > SLAB_OBJ_MAX_NUM) // SLAB_OBJ_MAX_NUM 是一个 slab 分配器能容纳的最多的对象数
    			break;
-
+   
    		if (flags & CFLGS_OFF_SLAB) {
    			struct kmem_cache *freelist_cache;
    			size_t freelist_size;
-
+   
    			freelist_size = num * sizeof(freelist_idx_t);
    			freelist_cache = kmalloc_slab(freelist_size, 0u);
    			if (!freelist_cache)
    				continue;
-
+   
    			/*
    			 * Needed to avoid possible looping condition
    			 * in cache_grow_begin()
    			 */
    			if (OFF_SLAB(freelist_cache))
    				continue;
-
+   
    			/* check if off slab has enough benefit */
    			if (freelist_cache->size > cachep->size / 2)
    				continue;
    		}
-
+   
    		/* Found something acceptable - save it away */
    		cachep->num = num; // 不大不小，先保存下来，之后有更好的再换
    		cachep->gfporder = gfporder;
    		left_over = remainder; // remainder 是剩余空间
-
+   
    		/*
    		 * A VFS-reclaimable slab tends to have most allocations
    		 * as GFP_NOFS and we really don't want to have to be allocating
@@ -1597,14 +1597,14 @@ slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure
    		 */
    		if (flags & SLAB_RECLAIM_ACCOUNT)
    			break;
-
+   
    		/*
    		 * Large number of objects is good, but very large slabs are
    		 * currently bad for the gfp()s.
    		 */
    		if (gfporder >= slab_max_order)
    			break;
-
+   
    		/*
    		 * Acceptable internal fragmentation?
    		 */
@@ -1751,24 +1751,24 @@ slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure
 		struct array_cache *new_shared = NULL;
 		struct alien_cache **new_alien = NULL;
 		LIST_HEAD(list);
-
+	
 		if (use_alien_caches) {
 			new_alien = alloc_alien_cache(node, cachep->limit, gfp);
 			if (!new_alien)
 			goto fail;
 		}
-
+	
 		if (cachep->shared) {
 			new_shared = alloc_arraycache(node,
 				cachep->shared * cachep->batchcount, 0xbaadf00d, gfp);
 			if (!new_shared)
 			goto fail;
 		}
-
+	
 		ret = init_cache_node(cachep, node, gfp);
 		if (ret)
 			goto fail;
-
+	
 		n = get_node(cachep, node);
 		spin_lock_irq(&n->list_lock);
 		if (n->shared && force_change) {
@@ -1776,21 +1776,21 @@ slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure
 					n->shared->avail, node, &list);
 		n->shared->avail = 0;
 		}
-
+	
 		if (!n->shared || force_change) {
 			old_shared = n->shared;
 			n->shared = new_shared;
 		new_shared = NULL;
 		}
-
+	
 		if (!n->alien) {
 			n->alien = new_alien;
 		new_alien = NULL;
 		}
-
+	
 		spin_unlock_irq(&n->list_lock);
 		slabs_destroy(cachep, &list);
-
+	
 		/*
 		 * To protect lockless access to n->shared during irq disabled context.
 		 * If n->shared isn't NULL in irq disabled context, accessing to it is
@@ -1799,12 +1799,12 @@ slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure
 		 */
 		if (old_shared && force_change)
 			synchronize_rcu();
-
+	
 	fail:
 		kfree(old_shared);
 		kfree(new_shared);
 		free_alien_cache(new_alien);
-
+	
 		return ret;
 	}
 
@@ -2018,21 +2018,21 @@ slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure
    	int page_node;
    	struct kmem_cache_node *n;
    	struct page *page;
-
+   
    	/*
    	 * Be lazy and only check for valid flags here,  keeping it out of the
    	 * critical path in kmem_cache_alloc().
    	 */
    	if (unlikely(flags & GFP_SLAB_BUG_MASK))
    		flags = kmalloc_fix_flags(flags);
-
+   
    	WARN_ON_ONCE(cachep->ctor && (flags & __GFP_ZERO));
    	local_flags = flags & (GFP_CONSTRAINT_MASK|GFP_RECLAIM_MASK);
-
+   
    	check_irq_off();
    	if (gfpflags_allow_blocking(local_flags))
    		local_irq_enable();
-
+   
    	/*
    	 * Get mem for the objs.  Attempt to allocate a physical page from
    	 * 'nodeid'.
@@ -2040,36 +2040,36 @@ slab 分配器的内存布局通常由 3 个部分组成，见图 slab_structure
    	page = kmem_getpages(cachep, local_flags, nodeid); // 分配 slab 分配器需要的物理页面
    	if (!page)
    		goto failed;
-
+   
    	page_node = page_to_nid(page);
    	n = get_node(cachep, page_node);
-
+   
    	/* Get colour for the slab, and cal the next value. */
    	n->colour_next++; // 下一个 slab 分配器应该包括的着色区数目
    	if (n->colour_next >= cachep->colour) // 重新计算
    		n->colour_next = 0;
-
+   
    	offset = n->colour_next;
    	if (offset >= cachep->colour)
    		offset = 0;
-
+   
    	offset *= cachep->colour_off; // 这是什么操作？ colour_off 表示高速缓存行的大小
-
+   
    	...
-
+   
    	/* Get slab management. */
    	freelist = alloc_slabmgmt(cachep, page, offset, // 计算管理区的起始地址
    			local_flags & ~GFP_CONSTRAINT_MASK, page_node);
    	if (OFF_SLAB(cachep) && !freelist)
    		goto opps1;
-
+   
    	slab_map_pages(cachep, page, freelist);
-
+   
    	cache_init_objs(cachep, page); // 初始化 slab 分配器中的对象
-
+   
    	if (gfpflags_allow_blocking(local_flags))
    		local_irq_disable();
-
+   
    	return page;
    }
    ```
@@ -3374,7 +3374,7 @@ bool cma_release(struct cma *cma, const struct page *pages,
 EXPORT_SYMBOL_GPL(cma_release);
 ```
 
-##### **问题**
+##### 问题
 
 - cma 如何初始化；
   先在 memblock 初始化时通过 RESERVEDMEM_OF_DECLARE(cma, "shared-dma-pool", rmem_cma_setup); 回调到 rmem_cma_setup 进行初始化，然后在 rest_init 函数中通过 core_initcall(cma_init_reserved_areas); 将每一块 CMA 内存释放到 buddy 系统，后续可以从 buddy 中 fallback 申请；
@@ -4720,6 +4720,7 @@ static int vmap_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
 
 前面介绍到 malloc 和 mmap 都是只分配了虚拟地址，但是**没有分配物理内存，也没有建立虚拟地址和物理地址之间的映射**。当进程访问这些还没有建立映射关系的虚拟地址时，CPU 自动触发一个缺页异常。缺页异常的处理是内存管理的重要部分，需要考虑多种情况以及实现细节，包括匿名页面、KSM 页面、页面高速缓存、写时复制（COW）、私有映射和共享映射等等，需要了解各个标志位的意义。这里先看看大概的执行流程，然后再详细分析每种情况的实现。
 ![page_fault.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/page_fault.png?raw=true)
+
 从触发缺页异常到 CPU 根据中断号跳转到对应的处理函数这个过程在之前做项目时已经跟踪过，就不再分析，这里主要分析 `handle_mm_fault` 相关的处理函数。先来看看调用栈（该调用栈为 ARM64 架构)，
 
 ```c
@@ -5098,19 +5099,19 @@ oom:
   ```c
   #define alloc_zeroed_user_highpage_movable(vma, vaddr) \
   	alloc_page_vma(GFP_HIGHUSER_MOVABLE | __GFP_ZERO, vma, vaddr)
-
+  
   #define alloc_page_vma(gfp_mask, vma, addr)			\
   	alloc_pages_vma(gfp_mask, 0, vma, addr, numa_node_id(), false)
-
+  
   // alloc_pages_vma - Allocate a page for a VMA.
   struct page *alloc_pages_vma(gfp_t gfp, int order, struct vm_area_struct *vma,
   		unsigned long addr, int node, bool hugepage)
   {
   	...
-
+  
   	page = __alloc_pages(gfp, order, preferred_nid, nmask);
   	...
-
+  
   }
   ```
 
@@ -5244,38 +5245,38 @@ static vm_fault_t do_fault(struct vm_fault *vmf)
      	struct page *head, *page;
      	unsigned int mmap_miss = READ_ONCE(file->f_ra.mmap_miss);
      	vm_fault_t ret = 0;
-
+      
      	rcu_read_lock();
      	head = first_map_page(mapping, &xas, end_pgoff); // 该 file 映射到内存的第一个 page 地址？
      	if (!head)
      		goto out;
-
+      
      	if (filemap_map_pmd(vmf, head)) {
      		ret = VM_FAULT_NOPAGE;
      		goto out;
      	}
-
+      
      	addr = vma->vm_start + ((start_pgoff - vma->vm_pgoff) << PAGE_SHIFT); // 虚拟地址
      	vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd, addr, &vmf->ptl);
      	do {
      		page = find_subpage(head, xas.xa_index); // 找到对应的 page
      		if (PageHWPoison(page))
      			goto unlock;
-
+      
      		if (mmap_miss > 0)
      			mmap_miss--;
-
+      
      		addr += (xas.xa_index - last_pgoff) << PAGE_SHIFT; // 加上该 page 的偏移量
      		vmf->pte += xas.xa_index - last_pgoff; // pte 也要更新为该 page 对应的
      		last_pgoff = xas.xa_index;
-
+      
      		if (!pte_none(*vmf->pte))
      			goto unlock;
-
+      
      		/* We're about to handle the fault */
      		if (vmf->address == addr)
      			ret = VM_FAULT_NOPAGE;
-
+      
      		do_set_pte(vmf, page, addr); // 建立映射
      		/* no need to invalidate: a not-present page won't be cached */
      		update_mmu_cache(vma, addr, vmf->pte);
@@ -5331,12 +5332,12 @@ static vm_fault_t do_fault(struct vm_fault *vmf)
    {
    	struct vm_area_struct *vma = vmf->vma;
    	vm_fault_t ret, tmp;
-
+   
        // 不需要像上面那样分配新的物理页，因为这个共享页，内容已经存在了，只需要将其读取到 vmf->page 中即可
    	ret = __do_fault(vmf);
    	if (unlikely(ret & (VM_FAULT_ERROR | VM_FAULT_NOPAGE | VM_FAULT_RETRY)))
    		return ret;
-
+   
    	/*
    	 * Check if the backing address space wants to know that the page is
    	 * about to become writable
@@ -5350,11 +5351,11 @@ static vm_fault_t do_fault(struct vm_fault *vmf)
    			return tmp;
    		}
    	}
-
+   
    	ret |= finish_fault(vmf);
-
+   
        ...
-
+   
    	ret |= fault_dirty_shared_page(vmf);
    	return ret;
    }

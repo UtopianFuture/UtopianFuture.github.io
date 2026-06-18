@@ -8,22 +8,31 @@
 - [原子操作](#原子操作)
   - [原子交换函数](#原子交换函数)
   - [內联原子操作函数](#內联原子操作函数)
-
 - [内存屏障](#内存屏障)
 - [经典自旋锁](#经典自旋锁)
   - [spinlock](#spinlock)
   - [关键函数 spin_lock](#关键函数 spin_lock)
 - [MCS 锁](#MCS 锁)
   - [optimistic_spin_node](#optimistic_spin_node)
+  - [快速申请通道](#快速申请通道)
+  - [中速申请通道](#中速申请通道)
+  - [慢速申请通道](#慢速申请通道)
+  - [释放锁](#释放锁)
 - [排队自旋锁](#排队自旋锁)
   - [qspinlock](#qspinlock)
+  - [快速申请通道](#快速申请通道)
+  - [中速申请通道](#中速申请通道)
+  - [慢速申请通道](#慢速申请通道)
+  - [释放锁](#释放锁)
 - [信号量](#信号量)
   - [semaphore](#semaphore)
   - [关键函数 down](#关键函数 down)
   - [关键函数 up](#关键函数 up)
-
 - [互斥锁](#互斥锁)
   - [mutex](#mutex)
+  - [快速申请通道](#快速申请通道)
+  - [慢速申请通道](#慢速申请通道)
+  - [释放锁](#释放锁)
 - [读写锁](#读写锁)
   - [读写自旋锁](#读写自旋锁)
     - [rwlock_t](#rwlock_t)
@@ -34,6 +43,8 @@
     - [申请写者类型信号量](#申请写者类型信号量)
     - [释放写者类型信号量](#释放写者类型信号量)
 - [RCU](#RCU)
+- [问题](#问题)
+- [Reference](#Reference)
 
 ### 锁机制
 
@@ -1073,8 +1084,6 @@ release:
 }
 ```
 
-好吧，这个对我而言有点复杂，之后再分析。
-
 #### 释放锁
 
 释放锁很简单，只要原子的将 locked 域清零。
@@ -1090,6 +1099,33 @@ static __always_inline void queued_spin_unlock(struct qspinlock *lock)
 ```
 
 我们来看看内核是怎样使用 spin_lock 的。
+
+关于 qspinlock 貌似还有个[坑](https://zhuanlan.zhihu.com/p/3661545891)，可以深入研究一下。
+
+```c
+#define __CMPWAIT_CASE(w, sfx, sz)					\
+static inline void __cmpwait_case_##sz(volatile void *ptr,		\
+				       unsigned long val)		\
+{									\
+	unsigned long tmp;						\
+									\
+	asm volatile(							\
+	"	sevl\n"							\
+	"	wfe\n"							\
+	"	ldxr" #sfx "\t%" #w "[tmp], %[v]\n"			\
+	"	eor	%" #w "[tmp], %" #w "[tmp], %" #w "[val]\n"	\
+	"	cbnz	%" #w "[tmp], 1f\n"				\
+	"	wfe\n"							\
+	"1:"								\
+	: [tmp] "=&r" (tmp), [v] "+Q" (*(unsigned long *)ptr)		\
+	: [val] "r" (val));						\
+}
+
+__CMPWAIT_CASE(w, b, 8);
+__CMPWAIT_CASE(w, h, 16);
+__CMPWAIT_CASE(w,  , 32);
+__CMPWAIT_CASE( ,  , 64);
+```
 
 ### 信号量
 
@@ -1479,7 +1515,7 @@ static noinline void __sched __mutex_unlock_slowpath(struct mutex *lock, unsigne
 - 同一时刻时只有一个线程可以持有互斥锁，而信号量的 `count` 可以不为 1，即计数信号量；
 - 只有锁持有者可以解锁，因此其不适用于内核和用户空间复杂的同步场景；
 - 不允许递归的加锁解锁；
-- 当进程持有互斥锁时，进程不能退出（？）；
+- 当进程持有互斥锁时，进程不能退出；
 - 互斥锁必须使用官方接口来初始化；
 - 互斥锁可以睡眠，所以不能在中断上下半部使用；
 
@@ -2127,37 +2163,1048 @@ static inline void __up_write(struct rw_semaphore *sem)
 
 ### RCU
 
-之前总听到师兄说 RCU 很复杂，很难，这里开始啃吧！
-
 RCU 全称 Read-Copy-Update，首先我们需要考虑一个问题，前面介绍到内核中已有很多锁机制，那为何还要设计复杂的 RCU 机制。
 
-因为内存屏障、自旋锁、信号量、读写信号量等都需要使用原子操作，而多 CPU 争用共享变量时会让 **cache 一致性协议性能很低**（确实，因为需要不断更新不同 CPU 中 cache 的内容）。以读写信号量为例，除了上述问题，**其只允许多个读者存在，但是读者和写者不能同时存在**。
+因为内存屏障、自旋锁、信号量、读写信号量等都需要使用原子操作，而多 CPU 争用共享变量时会让 **cache 一致性协议性能很低**。以读写信号量为例，除了上述问题，**其只允许多个读者存在，但是读者和写者不能同时存在**。
 
 RCU 的目标是**使读者线程没有同步开销，或者同步开销很小，不需要额外的锁，也不需要原子操作和内存屏障即可快速的访问**；而将同步任务交给写者线程，写者线程会创建一个副本，在副本中进行修改，之后等待所有读者线程完成后才将旧数据销毁，使指针指向新数据。
 
 RCU 提供的接口如下：
 
 - `rcu_read_lock`/`rcu_read_unlock`：构成一个读者临界区；
-- `rcu_dereference`：用于获取被 RCU 保护的指针，读者线程要访问 RCU 保护的贡献数据，需要使用该函数创建一个新指针，指向被 RCU 保护的指针？
+- `rcu_dereference`：用于获取被 RCU 保护的指针，读者线程要访问 RCU 保护的共享数据，需要使用该函数创建一个新指针，指向被 RCU 保护的指针？
 - `rcu_assign_pointer`：在写者线程完成数据更新后，调用该接口可以让被 RCU 保护的指针指向新建数据；
 - `synchronize_rcu`：同步所有的读者进程；
 - `call_rcu`：注册一个回调函数，当所有现存的读访问完成后，调用这个函数销毁旧数据。
 
-关于这些接口的使用以及更详细的说明，可以看 Documents/RCU/whatisRCU.rst。书中该章节有一个简单的例子，看看他可以加深对这些接口的理解。
-
 RCU 中有两个重要概念：
 
-- 宽限期（Grace Period, GP）。GP 有生命周期，有开始和结束之分，从 GP 开始算起，如果所有处于读者临界区的 CPU 都离开了临界区，也就是经历了一次 QS，那么认为一个 GP 结束了。GP 结束后，RCU 会调用注册的回调函数，如销毁旧数据等。
+- 宽限期（Grace Period, GP）。GP 有生命周期，有开始和结束之分，从 GP 开始算起，如果所有处于读者临界区的 CPU 都离开了临界区，也就是经历了一次 QS，那么认为一个 GP 结束了。GP 结束后，RCU 会调用注册的回调函数，如销毁旧数据等；
 - 静止状态（Quiescent State）。如果一个 CPU 处于读者临界区，那么认为它是活跃的，如果时钟周期中检测到该 CPU 处于用户模式或空闲状态，说明该 CPU 已经离开了读者临界区，那么它是 QS 的。
+
+在 linux 2.6.29 之前的 rcu 实现被称为经典 RCU，不过它在大型系统中遇到了问题，这里就不再分析。下面分析现在内核使用的实现，Tree RCU，也被称为 Hierarchical RCU。
+
+#### 基本原理
+
+rcu 的实现很复杂，但是底层逻辑却很清晰。算法有三个基本要素：
+
+- Reader
+
+  - 使用 `rcu_read_lock` 和 `rcu_read_unlock` 来界定读者的临界区，访问受 RCU 保护的数据时，需要始终在该临界区域内访问；
+
+  - 在访问受保护的数据之前，需要使用 `rcu_dereference` 来获取 `RCU-protected` 指针；
+
+  - 当使用不可抢占的 RCU 时，`rcu_read_lock/rcu_read_unlock` 之间不能使用可以睡眠的代码；
+
+- Updater
+
+  - 多个 Updater 更新数据时，需要使用互斥机制进行保护（怎样保护？）；
+
+  - Updater 使用 `rcu_assign_pointer` 来移除旧的指针指向，指向更新后的临界资源；
+
+  - Updater 使用 `synchronize_rcu`（同步）或 `call_rcu`（异步）来启动 Reclaimer，对旧的临界资源进行回收；
+
+- Reclaimer
+
+  - Reclaimer 回收的是旧的临界资源；
+
+  - 为了确保没有读者正在访问要回收的临界资源，Reclaimer 需要等待所有的读者退出临界区，**这个等待的时间叫做宽限期（Grace Period）**；
+
+![rcu_basic](D:\gitlab\UtopianFuture.github.io\image\rcu_basic.svg)
+
+##### Grace Period
+
+我们来进一步看看 Grace Period 是怎样划定的，
+
+![grace_period](D:\gitlab\UtopianFuture.github.io\image\grace_period.svg)
+
+- 图中 Readers 和 Updater 并发执行；
+- 当 Updater 执行 Removal 操作后，调用 `synchronize_rcu`，标志着更新结束并开始进入回收阶段；
+- 在 `synchronize_rcu` 调用后，此时可能还有新的读者来读取临界资源（更新后的内容），但是 `Grace Period` 只等待 `Pre-Existing` 的读者，也就是在图中的 Reader-3, Reader-4。只要这些之前就存在的 RCU 读者退出临界区后，意味着宽限期的结束，因此就进行回收处理工作了；
+- `synchronize_rcu` 并不是在最后一个 `Pre-Existing` RCU 读者离开临界区后立马就返回，它可能存在一个调度延迟；
+
+##### Quiescent State
+
+- 普通的 QS：**CPU 发生进程切换，或是运行在用户态都标志着它进入了 QS**；
+
+- Extended QS：CPU 执行 idle 进程、进入中断、运行在用户态的 tickless 模式下，都标志这它进入了 QS（暂不深入）；
+- Deferred QS：调用 `rcu_read_unlock` 退出最外层 RCU 读临界区时若抢占是关的、或软中断是关的、或中断是关的三种情况之一都会导致读端临界区被延长，致使当前 CPU 的 QS 推迟上报。被推迟的 QS 会在读临界区以外的中断、软中断、进程切换中被上报（暂不深入）；
+
+##### 时钟中断
+
+在时钟中断的处理程序中，不仅包含进程调度，定时器等相关操作，也包含了 RCU 的部分任务。会在中断处理函数中检查是否有存在待处理的事情（**如需要上报的 QS，callback 过载等？**），有的话则唤醒 RCU 软中断/kthread 进行处理。
+
+##### RCU 软中断/kthread
+
+RT 内核中使用的是 rcu_cpu_kthread。其会执行如下几项操作，
+
+- 处理本 CPU 上以已经进入 DONE 状态的 callback；
+- 检测并更新本 CPU 的 gp 编号；
+- 检测并上报本 CPU 的 QS；
+- 有需要则唤醒 gp 线程；
+
+##### GP 内核线程
+
+rcu_gp_kthread，主要功能是处理宽限期相关的事务，包括开启新的宽限期、处理 forcing QS、清理已结束的宽限期。
+
+#### 相关数据结构
+
+tree RCU 通过 rcu_state, rcu_node, rcu_data 三种数据结构组成了整颗 RCU tree，它们分别代表树根、树干、树叶。
+
+##### rcu_state
+
+描述 rcu 全局状态，内核为每种 RCU 定义了一个 rcu_state 实例。
+
+```c
+struct rcu_state {
+	struct rcu_node node[NUM_RCU_NODES]; // 存放了所有 rcu_node
+	struct rcu_node *level[RCU_NUM_LVLS + 1];
+						/* Hierarchy levels (+1 to */
+						/*  shut bogus gcc warning) */
+	int ncpus; // 系统中总的 cpu 数量
+
+	/* The following fields are guarded by the root rcu_node's lock. */
+
+	u8	boost ____cacheline_internodealigned_in_smp;
+						/* Subject to priority boost. */
+	unsigned long gp_seq; // 当前宽限期的编号，低两位表示状态
+	unsigned long gp_max; // 当前系统上经历过最长的 gp 耗时
+	struct task_struct *gp_kthread; // 指向 rcu_gp_kthread 内核线程
+	struct swait_queue_head gp_wq;		/* Where GP task waits. */
+	short gp_flags; // 用来控制 gp 线程行为的标志位，可以通知进行 FQS 或开启新的 GP
+	short gp_state;	// rcu_gp_kthread 线程的状态
+	unsigned long gp_wake_time;		/* Last GP kthread wake. */
+	unsigned long gp_wake_seq;		/* ->gp_seq at ^^^. */
+
+	/* End of fields guarded by root rcu_node's lock. */
+
+	struct mutex barrier_mutex;		/* Guards barrier fields. */
+	atomic_t barrier_cpu_count;		/* # CPUs waiting on. */
+	struct completion barrier_completion;	/* Wake at barrier end. */
+	unsigned long barrier_sequence;		/* ++ at start and end of */
+	/* End of fields guarded by barrier_mutex. */
+
+	struct mutex exp_mutex;			/* Serialize expedited GP. */
+	struct mutex exp_wake_mutex;		/* Serialize wakeup. */
+	unsigned long expedited_sequence;	/* Take a ticket. */
+	atomic_t expedited_need_qs;		/* # CPUs left to check in. */
+	struct swait_queue_head expedited_wq;	/* Wait for check-ins. */
+	int ncpus_snap;				/* # CPUs seen last time. */
+	u8 cbovld; // 当前系统 callback 是否堆积过多？
+	u8 cbovldnext;
+
+	...
+};
+```
+
+##### rcu_node
+
+描述一个处理器分组的 rcu 状态，是 Tree RCU 中的组织节点。
+
+```c
+struct rcu_node {
+	raw_spinlock_t __private lock; // 保护此 node 的 spinlock
+	unsigned long gp_seq; // 本节点当前宽限期的编号，低两位表示状态
+	unsigned long gp_seq_needed; /* Track furthest future GP request. */
+	unsigned long completedqs; // 当前 node 已经度过所有的 QS，且 gp_tasks 指针为 NULL
+	unsigned long qsmask; // 记录当前 node 中的 cpu 或子 node 的 QS 情况，经历过为 0
+	unsigned long rcu_gp_init_mask;	/* Mask of offline CPUs at GP init. */
+	unsigned long qsmaskinit; // 每个 GP 开始时的初值，从 qsmaskinitnext 中获取，用来赋给 qsmask
+	unsigned long qsmaskinitnext; // 下一个宽限期开始时的静止态位图，因为可能有些 cpu 下线了
+	unsigned long expmask; // 类似于 qsmask，用来记录加速宽限期的位图
+	unsigned long expmaskinit;
+	unsigned long expmaskinitnext;
+	unsigned long cbovldmask;
+				/* CPUs experiencing callback overload. */
+	unsigned long ffmask;	/* Fully functional CPUs. */
+	unsigned long grpmask; // 此 node 对应父 node 的 qsmask 的哪个 bit
+	int	grplo; // node 中最小的处理器编号
+	int	grphi; // node 中最大的处理器编号
+	u8	grpnum; // node 在上一层 node 中的编号
+	u8	level; // node 在 tree 中的 level，root node 为 0
+	bool	wait_blkd_tasks;
+	struct rcu_node *parent; // 指向父节点
+	struct list_head blkd_tasks; // 读临界区中被抢占的进程，都会被挂在此链表
+    // 指向 blkd_tasks 中阻塞当前宽限期的第一个进程，当前 node 度过 qs 时，此成员必须为 NULL
+	struct list_head *gp_tasks;
+	
+    ...
+        
+} ____cacheline_internodealigned_in_smp;
+```
+
+##### rcu_data
+
+描述一个 CPU 的 rcu 状态，每个 CPU 对应一个 rcu_data 实例。每个 CPU 对于自己正在经历的宽限期会有自己的视角，不一定是全局统一的，这是因为有些 CPU可能经历了停止 TICK、长时间的 IDLE、甚至是 offline/online 等操作，这会带来与其他 CPU 之间的差异；此外，可能某些 CPU 的宽限期比较长，也会导致其宽限期落后于其他 CPU。
+
+```c
+struct rcu_data {
+	unsigned long	gp_seq; // cpu 当前的 gp 编号，以及低两位表示 gp 的状态
+	unsigned long	gp_seq_needed;	/* Track furthest future GP request. */
+	union rcu_noqs	cpu_no_qs; // 表示 cpu 是否未度过 norm 或 exp 静止态
+	bool		core_needs_qs; // 表示 RCU 是否需要此 cpu 上报 QS 状态
+	bool		beenonline; // cpu 最近的一次状态是 online
+	bool		gpwrap; // gp_seq 溢出后，此变量会置为 true
+	bool		exp_deferred_qs; // 当前 cpu 是否在等待一个 deferred QS
+	bool		cpu_started;	/* RCU watching this onlining CPU. */
+	struct rcu_node *mynode; // 指向该 cpu 对应的 rcu_node
+	unsigned long grpmask;		/*Mask to apply to leaf qsmask. */
+    // 当前 gp 已经历过多少个 tick 中断，每个 tick 中断中都会对它加 1
+	unsigned long	ticks_this_gp;
+	struct irq_work defer_qs_iw;	/* Obtain later scheduler attention. */
+	bool defer_qs_iw_pending;	/* Scheduler attention pending? */
+	struct work_struct strict_work;	/* Schedule readers for strict GPs. */
+
+	struct rcu_segcblist cblist; // 分段链表，存放当前cpu上的callback
+	long		qlen_last_fqs_check;
+					/* qlen at last check for QS forcing */
+	unsigned long	n_cbs_invoked;	/* # callbacks invoked since boot. */
+	unsigned long	n_force_qs_snap;
+					/* did other CPU force QS recently? */
+	long		blimit;		/* Upper limit on a processed batch */
+
+	/* 3) dynticks interface. */
+	int dynticks_snap;		/* Per-GP tracking for dynticks. */
+	long dynticks_nesting;		/* Track process nesting level. */
+	long dynticks_nmi_nesting;	/* Track irq/NMI nesting level. */
+	atomic_t dynticks;		/* Even value for idle, else odd. */
+	bool rcu_need_heavy_qs;		/* GP old, so heavy quiescent state! */
+	bool rcu_urgent_qs;		/* GP old need light quiescent state. */
+	bool rcu_forced_tick;		/* Forced tick to provide QS. */
+	bool rcu_forced_tick_exp;	/*   ... provide QS to expedited GP. */
+
+	...
+
+	int cpu;
+};
+```
+
+#### 如何度过静止态
+
+##### 进程切换
+
+```c
+| schedule
+|	-> __schedule
+|		-> rcu_note_context_switch
+```
+
+**关键函数 rcu_note_context_switch**
+
+```c
+void rcu_note_context_switch(bool preempt)
+{
+	struct task_struct *t = current;
+	struct rcu_data *rdp = this_cpu_ptr(&rcu_data);
+	struct rcu_node *rnp;
+
+    // rcu 只允许抢占
+    // 如果是主动调度，且处于读临界区，那么打印 WARNNING
+    // 判断是否处于读临界区很简单，current->rcu_read_lock_nesting 大于 0
+    // 在 __rcu_read_lock 时会累加
+	WARN_ON_ONCE(!preempt && rcu_preempt_depth() > 0);
+    // 在读临界区，且是首次抢占
+	if (rcu_preempt_depth() > 0 &&
+	    !t->rcu_read_unlock_special.b.blocked) {
+
+		/* Possibly blocking in an RCU read-side critical section. */
+		rnp = rdp->mynode;
+		raw_spin_lock_rcu_node(rnp);
+        // 标记当前进程的 rcu 读临界区被抢占，并记录目前进程属于哪个 rcu node
+		t->rcu_read_unlock_special.b.blocked = true;
+		t->rcu_blocked_node = rnp;
+
+		...
+            
+        // 将被抢占的进程加入 rcu node 中的被抢占进程链表
+		rcu_preempt_ctxt_queue(rnp, rdp);
+	} else { // 检测是否有适合且存在 pending 的 deferred QS 需要上报，有则上报
+		rcu_preempt_deferred_qs(t);
+	}
+
+    // 记录本 CPU 已经度过 QS，但只是记录，上报会在后续的 RCU 软中断 kthread 中进行
+    // 主要就是将 rcu_data.cpu_no_qs 写成 false
+	rcu_qs();
+	if (rdp->exp_deferred_qs)
+		rcu_report_exp_rdp(rdp);
+	rcu_tasks_qs(current, preempt);
+}
+```
+
+##### CPU 进入 EQS
+
+为什么要有 EQS 呢？
+
+主要是为了动态时钟的场景，若系统开启了 NO_HZ_IDLE，在运行 idle 进程的情况下 CPU 是不响应 tick 中断的；若开启 NO_HZ_FULL，不仅 CPU Idle 时不响应 tick，在 CPU 只有一个 running 状态的进程时也不响应 tick 中断。
+
+前面我们讲 tick 中断时已经说到它的功能包括检查 QS，以及唤醒 RCU 软中断。**那在没有的 tick 的情况下 CPU 如何上报 QS 呢？**
+
+通过分析 `rcu_eqs_enter` 可知，进入 EQS 时会调用 `rcu_dynticks_eqs_enter` 将当前 CPU 的 `rdp->dynticks` 的 bit1 加 1 变为奇数，表示处于动态时钟模式，而 **gp 线程在处理强制静止态 force qs 的操作中会搜集所有的处于 EQS 的 CPU，并替它们上报 QS**。
+
+既然有进入，那就会有退出，退出 EQS 模式时会将 rdp->dynticks 的 bit1 减 1，变为偶数。对应函数 `rcu_eqs_exit`，场景包括退出 idle 进程、进入中断。
+
+- CPU 运行 Idle 进程
+
+```c
+| do_idle
+|	-> cpu_idle_poll
+|		-> rcu_idle_enter
+|			->rcu_eqs_enter
+|				->rcu_prepare_for_idle // 空函数
+|				->rcu_preempt_deferred_qs // 判断是否有 deferred qs 需要上报，有则上报
+|				// rdp->dynticks 加 0x10，gp 线程的 fqs 处理中通过判断 bit1 的奇偶
+|				// 来判断 eqs，用 bit1 的原因是，bit0 被另做它用了
+|				->rcu_dynticks_eqs_enter
+|		-> cpu_relax
+|		-> rcu_idle_exit
+|			-> rcu_eqs_exit
+```
+
+**关键函数 rcu_eqs_enter**
+
+```c
+static noinstr void rcu_eqs_enter(bool user)
+{
+	struct rcu_data *rdp = this_cpu_ptr(&rcu_data);
+
+	...
+
+	rdp = this_cpu_ptr(&rcu_data);
+	rcu_prepare_for_idle();
+	rcu_preempt_deferred_qs(current);
+
+	// instrumentation for the noinstr rcu_dynticks_eqs_enter()
+	instrument_atomic_write(&rdp->dynticks, sizeof(rdp->dynticks));
+
+	instrumentation_end();
+	WRITE_ONCE(rdp->dynticks_nesting, 0); /* Avoid irq-access tearing. */
+	// RCU is watching here ...
+	rcu_dynticks_eqs_enter();
+	// ... but is no longer watching here.
+	rcu_dynticks_task_enter();
+}
+```
+
+**关键函数 rcu_dynticks_eqs_enter**
+
+```c
+static noinstr void rcu_dynticks_eqs_enter(void)
+{
+	struct rcu_data *rdp = this_cpu_ptr(&rcu_data);
+	int seq;
+
+	...
+       
+    // RCU_DYNTICK_CTRL_CTR = 2，即 bit1 加 1
+	seq = arch_atomic_add_return(RCU_DYNTICK_CTRL_CTR, &rdp->dynticks);
+	
+    ...
+}
+```
+
+- CPU 返回用户空间
+
+```c
+| ret_to_user
+|	-> user_enter_irqoff
+|		-> exit_to_user_mode
+|    		-> __context_tracking_enter
+|	    		-> rcu_user_enter
+|        			-> rcu_eqs_enter
+```
+
+#### 宽限期的创建、处理、结束
+
+##### 关键函数 rcu_gp_kthread
+
+宽限期的处理由内核线程 `rcu_gp_kthread` 全权负责，现在一起来分析下此线程的逻辑。
+
+```
+| rcu_gp_kthread
+|	-> swait_event_idle_exclusive
+|	-> rcu_gp_torture_wait
+|	-> rcu_gp_init
+|	-> rcu_gp_fqs_loop
+|	-> rcu_gp_cleanup
+```
+
+```c
+static int __noreturn rcu_gp_kthread(void *unused)
+{
+	rcu_bind_gp_kthread();
+	for (;;) {
+
+		/* Handle grace-period start. */
+		for (;;) {
+			rcu_state.gp_state = RCU_GP_WAIT_GPS; // 将 rcu 状态设为 RCU_GP_WAIT_GPS
+			swait_event_idle_exclusive(rcu_state.gp_wq,
+					 READ_ONCE(rcu_state.gp_flags) &
+					 RCU_GP_FLAG_INIT); // 线程进入 idle 状态等待 RCU_GP_FLAG_INIT 被设置
+			rcu_gp_torture_wait();
+			rcu_state.gp_state = RCU_GP_DONE_GPS; // 此时线程已被唤醒，准备开启新的 gp
+			/* Locking provides needed memory barrier. */
+			if (rcu_gp_init()) // 初始化一个新的 gp
+				break;
+			cond_resched_tasks_rcu_qs();
+			WRITE_ONCE(rcu_state.gp_activity, jiffies);
+            
+            ...
+		}
+
+        // 等待宽限期结束
+		/* Handle quiescent-state forcing. */
+		rcu_gp_fqs_loop();
+
+        // 宽限期结束，做最后的清理
+		/* Handle grace-period end. */
+		rcu_state.gp_state = RCU_GP_CLEANUP;
+		rcu_gp_cleanup();
+		rcu_state.gp_state = RCU_GP_CLEANED; // GP 结束了
+	}
+}
+```
+
+此线程大部分时间是在睡眠，等待唤醒。那么谁会唤醒 gp 线程呢？地方挺多，例如 `call_rcu` 注册回调时，若发现 CPU 上的 callback 过载了，就唤醒 gp 线程进行一次 fqs；比较通用的唤醒位置则是在 RCU 软中断里，RCU 软中断又是被 tick 中断触发，下面会分析 tick 中断和 RCU 软中断。
+
+##### 关键函数 rcu_gp_init
+
+第一阶段，初始化一个新的 gp，成功则进入下一个阶段，处理强制静止状态。
+
+```c
+static bool rcu_gp_init(void)
+{
+	unsigned long flags;
+	unsigned long oldmask;
+	unsigned long mask;
+	struct rcu_data *rdp;
+	struct rcu_node *rnp = rcu_get_root();
+
+    // 记录新的宽限期开始时间
+	WRITE_ONCE(rcu_state.gp_activity, jiffies);
+	raw_spin_lock_irq_rcu_node(rnp);
+	if (!READ_ONCE(rcu_state.gp_flags)) {
+		/* Spurious wakeup, tell caller to go back to sleep.  */
+		raw_spin_unlock_irq_rcu_node(rnp);
+		return false;
+	}
+	WRITE_ONCE(rcu_state.gp_flags, 0); /* Clear all flags: New GP. */
+
+    // 如果当前 CPU 仍处于宽限期，那报 WARNNING，返回
+	if (WARN_ON_ONCE(rcu_gp_in_progress())) {
+		/*
+		 * Grace period already in progress, don't start another.
+		 * Not supposed to be able to happen.
+		 */
+		raw_spin_unlock_irq_rcu_node(rnp);
+		return false;
+	}
+
+    // 这个就是更新 rcu_state.gp_start，跟 gp_acitvity 有什么区别？
+	/* Advance to a new grace period and initialize state. */
+	record_gp_stall_check_time();
+	/* Record GP times before starting GP, hence rcu_seq_start(). */
+	rcu_seq_start(&rcu_state.gp_seq); // gp_seq++
+	ASSERT_EXCLUSIVE_WRITER(rcu_state.gp_seq);
+	trace_rcu_grace_period(rcu_state.name, rcu_state.gp_seq, TPS("start"));
+	raw_spin_unlock_irq_rcu_node(rnp);
+
+	rcu_state.gp_state = RCU_GP_ONOFF;
+	rcu_for_each_leaf_node(rnp) {
+		raw_spin_lock(&rcu_state.ofl_lock);
+		raw_spin_lock_irq_rcu_node(rnp);
+		if (rnp->qsmaskinit == rnp->qsmaskinitnext &&
+		    !rnp->wait_blkd_tasks) {
+			/* Nothing to do on this leaf rcu_node structure. */
+			raw_spin_unlock_irq_rcu_node(rnp);
+			raw_spin_unlock(&rcu_state.ofl_lock);
+			continue;
+		}
+
+		/* Record old state, apply changes to ->qsmaskinit field. */
+		oldmask = rnp->qsmaskinit;
+		rnp->qsmaskinit = rnp->qsmaskinitnext;
+
+		/* If zero-ness of ->qsmaskinit changed, propagate up tree. */
+		if (!oldmask != !rnp->qsmaskinit) {
+			if (!oldmask) { /* First online CPU for rcu_node. */
+				if (!rnp->wait_blkd_tasks) /* Ever offline? */
+					rcu_init_new_rnp(rnp);
+			} else if (rcu_preempt_has_tasks(rnp)) {
+				rnp->wait_blkd_tasks = true; /* blocked tasks */
+			} else { /* Last offline CPU and can propagate. */
+				rcu_cleanup_dead_rnp(rnp);
+			}
+		}
+
+		if (rnp->wait_blkd_tasks &&
+		    (!rcu_preempt_has_tasks(rnp) || rnp->qsmaskinit)) {
+			rnp->wait_blkd_tasks = false;
+			if (!rnp->qsmaskinit)
+				rcu_cleanup_dead_rnp(rnp);
+		}
+
+		raw_spin_unlock_irq_rcu_node(rnp);
+		raw_spin_unlock(&rcu_state.ofl_lock);
+	}
+	rcu_gp_slow(gp_preinit_delay); /* Races with CPU hotplug. */
+
+	rcu_state.gp_state = RCU_GP_INIT; // 初始化完成
+	rcu_for_each_node_breadth_first(rnp) {
+		rcu_gp_slow(gp_init_delay);
+		raw_spin_lock_irqsave_rcu_node(rnp, flags);
+		rdp = this_cpu_ptr(&rcu_data);
+		rcu_preempt_check_blocked_tasks(rnp);
+		rnp->qsmask = rnp->qsmaskinit;
+		WRITE_ONCE(rnp->gp_seq, rcu_state.gp_seq);
+		if (rnp == rdp->mynode)
+			(void)__note_gp_changes(rnp, rdp);
+		rcu_preempt_boost_start_gp(rnp);
+		trace_rcu_grace_period_init(rcu_state.name, rnp->gp_seq,
+					    rnp->level, rnp->grplo,
+					    rnp->grphi, rnp->qsmask);
+		/* Quiescent states for tasks on any now-offline CPUs. */
+		mask = rnp->qsmask & ~rnp->qsmaskinitnext;
+		rnp->rcu_gp_init_mask = mask;
+		if ((mask || rnp->wait_blkd_tasks) && rcu_is_leaf_node(rnp))
+			rcu_report_qs_rnp(mask, rnp, rnp->gp_seq, flags);
+		else
+			raw_spin_unlock_irq_rcu_node(rnp);
+		cond_resched_tasks_rcu_qs();
+		WRITE_ONCE(rcu_state.gp_activity, jiffies);
+	}
+
+	// If strict, make all CPUs aware of new grace period.
+	if (IS_ENABLED(CONFIG_RCU_STRICT_GRACE_PERIOD))
+		on_each_cpu(rcu_strict_gp_boundary, NULL, 0);
+
+	return true;
+}
+```
+
+##### 关键函数 rcu_gp_fqs_loop
+
+上面初始化新的 gp 之后，就会 break 到这里， `rcu_state.gp_state = RCU_GP_WAIT_FQS;`，等待所有进程进入静止态，才好继续处理，结束本次宽限期。
+
+```c
+static void rcu_gp_fqs_loop(void)
+{
+	bool first_gp_fqs;
+	int gf = 0;
+	unsigned long j;
+	int ret = 0;
+	struct rcu_node *rnp = rcu_get_root();
+
+	...
+
+	for (;;) {
+
+        ...
+
+		rcu_state.gp_state = RCU_GP_WAIT_FQS;
+        // RCU_GP_WAIT_FQS 状态，开始等待
+        // 唤醒情况：
+        // 1. callback 过载
+        // 2. FQS flag 被设置
+        // 3. root rcu node 的 qsmask 为 0 且无 block 进程
+		ret = swait_event_idle_timeout_exclusive(
+				rcu_state.gp_wq, rcu_gp_fqs_check_wake(&gf), j);
+		rcu_gp_torture_wait();
+		rcu_state.gp_state = RCU_GP_DOING_FQS;
+		/* Locking provides needed memory barriers. */
+		/* If grace period done, leave loop. */
+        // 所有进程都进入静止状态了，结束等待，可以进入下一步了
+        // 结束宽限期
+		if (!READ_ONCE(rnp->qsmask) &&
+		    !rcu_preempt_blocked_readers_cgp(rnp))
+			break;
+		/* If time for quiescent-state forcing, do it. */
+        // 如果 rnp->qsmask 不为 0，或 gp_tasks 不为 0
+        // 说明可能是 callback 过载设置了 FQS
+        // 或是 gp 超时，gp 未结束，调用 rcu_gp_fqs 进行一次 fqs
+		if (!time_after(rcu_state.jiffies_force_qs, jiffies) ||
+		    (gf & (RCU_GP_FLAG_FQS | RCU_GP_FLAG_OVLD))) {
+			rcu_gp_fqs(first_gp_fqs);
+			gf = 0;
+			if (first_gp_fqs) {
+				first_gp_fqs = false;
+				gf = rcu_state.cbovld ? RCU_GP_FLAG_OVLD : 0;
+			}
+			cond_resched_tasks_rcu_qs();
+			WRITE_ONCE(rcu_state.gp_activity, jiffies);
+			ret = 0; /* Force full wait till next FQS. */
+			j = READ_ONCE(jiffies_till_next_fqs);
+            // 若是等待事件超时，则调整睡眠时长重新进入 swait_event 等待
+            // 若经过若干次的超时都未结束 gp，进行一次强制静止态 force_qs_rnp
+		} else {
+			/* Deal with stray signal. */
+			cond_resched_tasks_rcu_qs();
+			WRITE_ONCE(rcu_state.gp_activity, jiffies);
+			WARN_ON(signal_pending(current));
+			trace_rcu_grace_period(rcu_state.name, rcu_state.gp_seq,
+					       TPS("fqswaitsig"));
+			ret = 1; /* Keep old FQS timing. */
+			j = jiffies;
+			if (time_after(jiffies, rcu_state.jiffies_force_qs))
+				j = 1;
+			else
+				j = rcu_state.jiffies_force_qs - j;
+			gf = 0;
+		}
+	}
+}
+```
+
+##### 关键函数 rcu_gp_cleanup
+
+上面如果所有进程都进入了静止状态，那么结束宽限期。
+
+```c
+static void rcu_gp_cleanup(void)
+{
+	int cpu;
+	bool needgp = false;
+	unsigned long gp_duration;
+	unsigned long new_gp_seq;
+	bool offloaded;
+	struct rcu_data *rdp;
+	struct rcu_node *rnp = rcu_get_root();
+	struct swait_queue_head *sq;
+
+	WRITE_ONCE(rcu_state.gp_activity, jiffies);
+	raw_spin_lock_irq_rcu_node(rnp);
+	rcu_state.gp_end = jiffies;
+	gp_duration = rcu_state.gp_end - rcu_state.gp_start;
+	if (gp_duration > rcu_state.gp_max) // 更新时间最长的 gp 耗时
+		rcu_state.gp_max = gp_duration;
+	raw_spin_unlock_irq_rcu_node(rnp);
+
+	new_gp_seq = rcu_state.gp_seq;
+    // 当前宽限期的编号，低两位表示状态
+    // 这里将最低位 +1，表示当前宽限期结束
+	rcu_seq_end(&new_gp_seq);
+    // 从 root node 向下逐个初始化 node
+	rcu_for_each_node_breadth_first(rnp) {
+		raw_spin_lock_irq_rcu_node(rnp);
+		if (WARN_ON_ONCE(rcu_preempt_blocked_readers_cgp(rnp)))
+			dump_blkd_tasks(rnp, 10);
+		WARN_ON_ONCE(rnp->qsmask);
+		WRITE_ONCE(rnp->gp_seq, new_gp_seq); // 更新 rcu_node 中的 gp_seq
+		rdp = this_cpu_ptr(&rcu_data);
+		if (rnp == rdp->mynode)
+			needgp = __note_gp_changes(rnp, rdp) || needgp;
+		/* smp_mb() provided by prior unlock-lock pair. */
+		needgp = rcu_future_gp_cleanup(rnp) || needgp;
+		// Reset overload indication for CPUs no longer overloaded
+		if (rcu_is_leaf_node(rnp))
+			for_each_leaf_node_cpu_mask(rnp, cpu, rnp->cbovldmask) {
+				rdp = per_cpu_ptr(&rcu_data, cpu);
+				check_cb_ovld_locked(rdp, rnp);
+			}
+		sq = rcu_nocb_gp_get(rnp);
+		raw_spin_unlock_irq_rcu_node(rnp);
+		rcu_nocb_gp_cleanup(sq);
+		cond_resched_tasks_rcu_qs();
+		WRITE_ONCE(rcu_state.gp_activity, jiffies);
+		rcu_gp_slow(gp_cleanup_delay);
+	}
+	rnp = rcu_get_root();
+	raw_spin_lock_irq_rcu_node(rnp); /* GP before ->gp_seq update. */
+
+	/* Declare grace period done, trace first to use old GP number. */
+	rcu_seq_end(&rcu_state.gp_seq); // 再更新 rcu_state 的 seq
+	ASSERT_EXCLUSIVE_WRITER(rcu_state.gp_seq);
+	rcu_state.gp_state = RCU_GP_IDLE;
+	/* Check for GP requests since above loop. */
+	rdp = this_cpu_ptr(&rcu_data);
+	if (!needgp && ULONG_CMP_LT(rnp->gp_seq, rnp->gp_seq_needed)) {
+		needgp = true;
+	}
+	/* Advance CBs to reduce false positives below. */
+	offloaded = IS_ENABLED(CONFIG_RCU_NOCB_CPU) &&
+		    rcu_segcblist_is_offloaded(&rdp->cblist);
+	if ((offloaded || !rcu_accelerate_cbs(rnp, rdp)) && needgp) {
+		WRITE_ONCE(rcu_state.gp_flags, RCU_GP_FLAG_INIT);
+		WRITE_ONCE(rcu_state.gp_req_activity, jiffies);
+	} else {
+		WRITE_ONCE(rcu_state.gp_flags,
+			   rcu_state.gp_flags & RCU_GP_FLAG_INIT);
+	}
+	raw_spin_unlock_irq_rcu_node(rnp);
+
+	...
+}
+```
+
+从下图中能直观看到宽限期的执行流程，
+
+![rcu_flow](D:\gitlab\UtopianFuture.github.io\image\rcu_flow.svg)
+
+#### 时钟中断 tick_handle_periodic
+
+```c
+| tick_handle_periodic
+|	-> tick_periodic
+|		-> update_process_times
+|			-> rcu_sched_clock_irq
+|				-> rcu_flavor_sched_clock_irq
+|					-> rcu_qs // rcu_preempt_depth() == 0，标记本 CPU 已经经历了 QS
+|				// 1. 检查是否发生了 cpu stall
+|		        // 2. 检查当前 CPU 是否需要上报 QS
+|				// 3. 检查是否有 done 状态的 callback 需要执行
+|				-> rcu_pending
+|				-> invoke_rcu_core
+|					-> invoke_rcu_core_kthread
+|						-> rcu_wake_cond // 唤醒 rcu_cpu_kthread
+```
+
+#### 关键函数 rcu_cpu_kthread
+
+```c
+| rcu_cpu_kthread
+|	-> rcu_core
+|		-> rcu_check_quiescent_state
+|			-> note_gp_changes
+|				-> rdp->gp_seq == rnp->gp_seq // 未产生新的 gp，无需同步，直接 return
+|				-> __note_gp_changes
+|			-> rcu_report_qs_rdp
+|				// 说明已经当前 cpu 已经经历过 qs，直接返回
+|				-> if(rdp->cpu_no_qs.b.norm==ture || rdp->gp_seq!=rnp->gp_seq)
+|				-> if ((rnp->qsmask & mask) == 0) // 说明上报过 qs，无需再上报
+|				// 如果是最后进入静止状态的 cpu，就会给 gp_flags 置上 RCU_GP_FLAG_FQS 位
+|				// 然后唤醒 rcu_gp_kthread
+|				-> rcu_report_qs_rsp
+```
+
+```c
+static void rcu_cpu_kthread(unsigned int cpu)
+{
+	unsigned int *statusp = this_cpu_ptr(&rcu_data.rcu_cpu_kthread_status);
+	char work, *workp = this_cpu_ptr(&rcu_data.rcu_cpu_has_work);
+	int spincnt;
+
+	for (spincnt = 0; spincnt < 10; spincnt++) {
+		work = *workp;
+		*workp = 0;
+		if (work)
+			rcu_core(); // 上报该 CPU 进入静止状态
+		if (*workp == 0) {
+			return;
+		}
+	}
+	schedule_timeout_idle(2);
+}
+```
+
+#### 关键函数 rcu_dereference
+
+```c
+#define rcu_dereference(p) rcu_dereference_check(p, 0)
+
+#define rcu_dereference_check(p, c) \
+	__rcu_dereference_check((p), (c) || rcu_read_lock_held(), __rcu)
+
+#define __rcu_dereference_check(p, c, space) \
+({ \
+	/* Dependency order vs. p above. */ \
+	typeof(*p) *________p1 = (typeof(*p) *__force)READ_ONCE(p); \
+	RCU_LOCKDEP_WARN(!(c), "suspicious rcu_dereference_check() usage"); \
+	rcu_check_sparse(p, space); \
+	((typeof(*p) __force __kernel *)(________p1)); \
+})
+```
+
+#### 关键函数 rcu_assign_pointer
+
+```c
+#define rcu_assign_pointer(p, v)					      \
+do {									      \
+	uintptr_t _r_a_p__v = (uintptr_t)(v);				      \
+	rcu_check_sparse(p, __rcu);					      \
+									      \
+	if (__builtin_constant_p(v) && (_r_a_p__v) == (uintptr_t)NULL)	      \
+		WRITE_ONCE((p), (typeof(p))(_r_a_p__v));		      \
+	else								      \
+		smp_store_release(&p, RCU_INITIALIZER((typeof(p))_r_a_p__v)); \
+} while (0)
+```
+
+#### 关键函数 synchronize_rcu
+
+```c
+| synchronize_rcu
+|	-> rcu_blocking_is_gp
+|	-> rcu_gp_is_expedited
+|	// 向其他 CPU 发送 IPI，强制宽限期快速结束
+|	-> synchronize_rcu_expedited
+|		-> wait_rcu_exp_gp // 放在 queue_work 中执行
+|			-> rcu_exp_sel_wait_wake
+|				-> sync_rcu_exp_select_cpus
+|					-> sync_exp_reset_tree
+|					-> sync_rcu_exp_select_node_cpus // queue_work_on
+|						-> rcu_exp_handler
+|				-> rcu_exp_wait_wake
+|					-> synchronize_rcu_expedited_wait
+|		// 等待 expedited gp 完成，当前进程才能继续执行
+|		-> wait_event(rnp->exp_wq[rcu_seq_ctr(s) & 0x3], sync_exp_work_done(s));
+|			-> rcu_exp_gp_seq_done // 检查 rcu_state.expedited_sequence，看是否都完成了
+|	-> wait_rcu_gp
+|		-> call_rcu
+```
+
+```c
+void synchronize_rcu(void)
+{
+	...
+
+	if (rcu_blocking_is_gp())
+		return;
+	if (rcu_gp_is_expedited())
+        // 该函数会向其他处理器发送处理器间中断（Inter-Processor Interrupt，IPI）请求
+        // 强制宽限期快速结束。我们把强制快速结束的宽限期称为加速宽限期（expedited grace period）
+        // 把没有强制快速结束的宽限期称为正常宽限期（normal grace period）
+		synchronize_rcu_expedited();
+	else
+        // 等待宽限期结束，即所有读者退出读端临界区，然后写者执行下一步操作
+		wait_rcu_gp(call_rcu);
+}
+```
+
+#### 关键函数 wait_rcu_exp_gp
+
+```c
+static void wait_rcu_exp_gp(struct work_struct *wp)
+{
+	struct rcu_exp_work *rewp;
+
+	rewp = container_of(wp, struct rcu_exp_work, rew_work);
+	rcu_exp_sel_wait_wake(rewp->rew_s);
+}
+
+static void rcu_exp_sel_wait_wake(unsigned long s)
+{
+	/* Initialize the rcu_node tree in preparation for the wait. */
+	sync_rcu_exp_select_cpus();
+
+	/* Wait and clean up, including waking everyone. */
+	rcu_exp_wait_wake(s);
+}
+```
+
+#### 关键函数 sync_rcu_exp_select_cpus
+
+```c
+static void sync_rcu_exp_select_cpus(void)
+{
+	int cpu;
+	struct rcu_node *rnp;
+
+	trace_rcu_exp_grace_period(rcu_state.name, rcu_exp_gp_seq_endval(), TPS("reset"));
+	sync_exp_reset_tree();
+	trace_rcu_exp_grace_period(rcu_state.name, rcu_exp_gp_seq_endval(), TPS("select"));
+
+	/* Schedule work for each leaf rcu_node structure. */
+	rcu_for_each_leaf_node(rnp) {
+		rnp->exp_need_flush = false;
+		if (!READ_ONCE(rnp->expmask))
+			continue; /* Avoid early boot non-existent wq. */
+		if (!READ_ONCE(rcu_par_gp_wq) ||
+		    rcu_scheduler_active != RCU_SCHEDULER_RUNNING ||
+		    rcu_is_last_leaf_node(rnp)) {
+			/* No workqueues yet or last leaf, do direct call. */
+			sync_rcu_exp_select_node_cpus(&rnp->rew.rew_work);
+			continue;
+		}
+		INIT_WORK(&rnp->rew.rew_work, sync_rcu_exp_select_node_cpus);
+		cpu = find_next_bit(&rnp->ffmask, BITS_PER_LONG, -1);
+		/* If all offline, queue the work on an unbound CPU. */
+		if (unlikely(cpu > rnp->grphi - rnp->grplo))
+			cpu = WORK_CPU_UNBOUND;
+		else
+			cpu += rnp->grplo;
+		queue_work_on(cpu, rcu_par_gp_wq, &rnp->rew.rew_work);
+		rnp->exp_need_flush = true;
+	}
+
+	/* Wait for workqueue jobs (if any) to complete. */
+	rcu_for_each_leaf_node(rnp)
+		if (rnp->exp_need_flush)
+			flush_work(&rnp->rew.rew_work);
+}
+```
+
+#### 关键函数 call_rcu
+
+```
+
+```
+
+
+
+```c
+static void
+__call_rcu(struct rcu_head *head, rcu_callback_t func)
+{
+	unsigned long flags;
+	struct rcu_data *rdp;
+	bool was_alldone;
+
+	...
+
+	head->func = func;
+	head->next = NULL;
+	local_irq_save(flags);
+	kasan_record_aux_stack_noalloc(head);
+	rdp = this_cpu_ptr(&rcu_data);
+
+	/* Add the callback to our list. */
+	if (unlikely(!rcu_segcblist_is_enabled(&rdp->cblist))) {
+		// This can trigger due to call_rcu() from offline CPU:
+		WARN_ON_ONCE(rcu_scheduler_active != RCU_SCHEDULER_INACTIVE);
+		WARN_ON_ONCE(!rcu_is_watching());
+		// Very early boot, before rcu_init().  Initialize if needed
+		// and then drop through to queue the callback.
+		if (rcu_segcblist_empty(&rdp->cblist))
+			rcu_segcblist_init(&rdp->cblist);
+	}
+
+	check_cb_ovld(rdp);
+	if (rcu_nocb_try_bypass(rdp, head, &was_alldone, flags))
+		return; // Enqueued onto ->nocb_bypass, so just leave.
+	// If no-CBs CPU gets here, rcu_nocb_try_bypass() acquired ->nocb_lock.
+	rcu_segcblist_enqueue(&rdp->cblist, head);
+	if (__is_kvfree_rcu_offset((unsigned long)func))
+		trace_rcu_kvfree_callback(rcu_state.name, head,
+					 (unsigned long)func,
+					 rcu_segcblist_n_cbs(&rdp->cblist));
+	else
+		trace_rcu_callback(rcu_state.name, head,
+				   rcu_segcblist_n_cbs(&rdp->cblist));
+
+	/* Go handle any RCU core processing required. */
+	if (IS_ENABLED(CONFIG_RCU_NOCB_CPU) &&
+	    unlikely(rcu_segcblist_is_offloaded(&rdp->cblist))) {
+		__call_rcu_nocb_wake(rdp, was_alldone, flags); /* unlocks */
+	} else {
+		__call_rcu_core(rdp, head, flags);
+		local_irq_restore(flags);
+	}
+}
+```
+
+#### RCU STALL 分析
+
+##### 检测原理
+
+RCU stall检测机制的核⼼思想是监控宽限期的进展。当宽限期持续时间超过预定阈值时，内核会认为发生了 RCU stall，并输出警告信息。这个阈值由内核配置选项 CONFIG_RCU_CPU_STALL_TIMEOUT 定义，默认为 21s。
+
+检测过程大致如下：
+
+- 宽限期开始时，记录开始时间；
+
+- 周期性检查是否所有 CPU 都报告了静止状态；
+
+- 如果宽限期持续时间超过阈值，触发 stall 警告；
+
+- 收集并打印相关调试信息，如堆栈跟踪；
+
+##### 关键函数 check_cpu_stall
+
+```c
+static void check_cpu_stall(struct rcu_data *rdp)
+{
+	unsigned long gs1;
+	unsigned long gs2;
+	unsigned long gps;
+	unsigned long j;
+	unsigned long jn;
+	unsigned long js;
+	struct rcu_node *rnp;
+
+	...
+        
+    // 获取当前时间和宽限期开始时间
+	j = jiffies;
+	gs1 = READ_ONCE(rcu_state.gp_seq);
+	smp_rmb(); /* Pick up ->gp_seq first... */
+	js = READ_ONCE(rcu_state.jiffies_stall);
+	smp_rmb(); /* ...then ->jiffies_stall before the rest... */
+	gps = READ_ONCE(rcu_state.gp_start);
+	smp_rmb(); /* ...and finally ->gp_start before ->gp_seq again. */
+	gs2 = READ_ONCE(rcu_state.gp_seq);
+    /* No stall or GP completed since entering function. */
+    // 宽限期已结束或还没到检查时间，直接返回
+	if (gs1 != gs2 ||
+	    ULONG_CMP_LT(j, js) ||
+	    ULONG_CMP_GE(gps, js))
+		return;
+
+	rnp = rdp->mynode;
+	jn = jiffies + 3 * rcu_jiffies_till_stall_check() + 3;
+	if (rcu_gp_in_progress() &&
+	    (READ_ONCE(rnp->qsmask) & rdp->grpmask) &&
+	    cmpxchg(&rcu_state.jiffies_stall, js, jn) == js) {
+
+		...
+
+		/* We haven't checked in, so go dump stack. */
+		print_cpu_stall(gps); // 打印堆栈信息
+		if (READ_ONCE(rcu_cpu_stall_ftrace_dump))
+			rcu_ftrace_dump(DUMP_ALL);
+
+	} else if (rcu_gp_in_progress() &&
+		   ULONG_CMP_GE(j, js + RCU_STALL_RAT_DELAY) &&
+		   cmpxchg(&rcu_state.jiffies_stall, js, jn) == js) {
+
+		...
+
+		/* They had a few time units to dump stack, so complain. */
+		print_other_cpu_stall(gs2, gps); // 打印堆栈信息
+		if (READ_ONCE(rcu_cpu_stall_ftrace_dump))
+			rcu_ftrace_dump(DUMP_ALL);
+	}
+}
+```
+
+```c
+2025-04-16T13:46:17.886608+08:00 XP5 kernel: [  114.753469@16][       in:imklog][   C16] rcu: INFO: rcu_preempt detected stalls on CPUs/tasks:
+2025-04-16T13:46:17.886610+08:00 XP5 kernel: [  114.753472@16][       in:imklog][   C16] rcu:   Tasks blocked on level-1 rcu_node (CPUs 10-19): P6132/1:b..l
+2025-04-16T13:46:17.886611+08:00 XP5 kernel: [  114.753478@16][       in:imklog][   C16]    (detected by 16, t=7502 jiffies, g=18517, q=394831)
+2025-04-16T13:46:17.886612+08:00 XP5 kernel: [  114.753482@16][       in:imklog][   C16] task:rtps-writer1    state:S stack:    0 pid: 6132 ppid:  2839 flags:0x00000204
+2025-04-16T13:46:17.886622+08:00 XP5 kernel: [  114.753486@16][       in:imklog][   C16] Call trace:
+2025-04-16T13:46:17.886623+08:00 XP5 kernel: [  114.753487@16][       in:imklog][   C16]  __switch_to+0xb4/0x10c
+2025-04-16T13:46:17.886624+08:00 XP5 kernel: [  114.753498@16][       in:imklog][   C16]  __schedule+0x26c/0x670
+2025-04-16T13:46:17.886625+08:00 XP5 kernel: [  114.753503@16][       in:imklog][   C16]  schedule+0x84/0x100
+2025-04-16T13:46:17.886626+08:00 XP5 kernel: [  114.753504@16][       in:imklog][   C16]  futex_wait_queue_me+0xb4/0x114
+2025-04-16T13:46:17.886627+08:00 XP5 kernel: [  114.753509@16][       in:imklog][   C16]  futex_wait+0xd0/0x1e0
+2025-04-16T13:46:17.886628+08:00 XP5 kernel: [  114.753512@16][       in:imklog][   C16]  do_futex+0x14c/0xc54
+2025-04-16T13:46:17.886629+08:00 XP5 kernel: [  114.753515@16][       in:imklog][   C16]  __arm64_sys_futex+0xf8/0x18c
+2025-04-16T13:46:17.886630+08:00 XP5 kernel: [  114.753518@16][       in:imklog][   C16]  el0_svc_common.constprop.0+0x7c/0x1c0
+2025-04-16T13:46:17.886631+08:00 XP5 kernel: [  114.753521@16][       in:imklog][   C16]  do_el0_svc+0x28/0x84
+2025-04-16T13:46:17.886631+08:00 XP5 kernel: [  114.753524@16][       in:imklog][   C16]  el0_svc+0xc/0x14
+2025-04-16T13:46:17.886632+08:00 XP5 kernel: [  114.753527@16][       in:imklog][   C16]  el0_sync_handler+0x100/0x10c
+2025-04-16T13:46:17.886634+08:00 XP5 kernel: [  114.753530@16][       in:imklog][   C16]  el0_sync+0x168/0x180
+```
+
+
+
+#### 总结
+
+多个 reader 可以无锁访问临界资源，updater 在 update 动作前，需要先 copy 一份数据块的副本，在副本中修改完成后，再将新的副本再重新 assign 到链表中替代旧的数据块。
+
+那旧的数据块怎么办呢？当然是要回收了，那么什么时候回收呢？当然是要在没人访问它时再回收了，那怎么如何确定没人访问它了呢？当然是在宽限期（grace period）结束之后就可以确定了，那宽限期什么时候会结束呢？当然是在所有的 CPU 都经过一次静止态（Quiescent state）时就结束了，那 CPU 怎么才算度过一次静止态呢？
 
 ### 问题
 
 - 在[关键函数 spin_lock](#关键函数spin_lock) 中涉及到关闭内核抢占，关于内核抢占的东西可以看看[这篇](https://zhuanlan.zhihu.com/p/405965784)文章，讲的很全面。
+- rcu stall 原因：持锁后睡眠，cpu 卡住，looping；
+- 使用 spinlock 需要注意的是，如果中断上下文会和进程上下文持有同一把锁，那么要使用 raw_spin_lock_irqsave，即关中断持有锁；
+- 之后如果遇到在中断上下文等待锁，但是没有看到其他进程持有该锁，那么可以考虑是本 CPU 的进程持有了该锁；
 
 ### Reference
 
-[1] 《奔跑吧 Linux 内核》卷 2 苯叔.
+[^1]: 《奔跑吧 Linux 内核》卷 2 笨叔.
+[^2]: [内核抢占](https://zhuanlan.zhihu.com/p/405965784)
+[^3]: [spinlock 变体的区别](https://www.byteisland.com/%E8%87%AA%E6%97%8B%E9%94%81-spin_lock%E3%80%81-spin_lock_irq-%E4%BB%A5%E5%8F%8A-spin_lock_irqsave-%E7%9A%84%E5%8C%BA%E5%88%AB/)
+[^4]: [rcu-LoyenWang YYDS:sunny:](https://www.cnblogs.com/LoyenWang/p/12681494.html)
 
-[2] https://zhuanlan.zhihu.com/p/405965784
-
-[3] [spinlock 变体的区别](https://www.byteisland.com/%E8%87%AA%E6%97%8B%E9%94%81-spin_lock%E3%80%81-spin_lock_irq-%E4%BB%A5%E5%8F%8A-spin_lock_irqsave-%E7%9A%84%E5%8C%BA%E5%88%AB/)
+[^5]: [rcu_flow](https://zhuanlan.zhihu.com/p/374902282)

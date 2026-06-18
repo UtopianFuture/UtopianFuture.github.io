@@ -1,27 +1,29 @@
 ## WHAT I WANT
 
-- 大致看看 bios boot specification
-- optionrom
-- https://github.com/intel/nemu
-- https://github.com/cloud-hypervisor/cloud-hypervisor
-- 内存安全语言，如 Rust
-- fw_cfg
-- 将会用到的 kernel , qemu 等等命令行参数都收集起来
-- [IOMMU](http://pages.cs.wisc.edu/~basu/isca_iommu_tutorial/IOMMU_TUTORIAL_ASPLOS_2016.pdf)
-- 内核的信号
-- 重新配置 vim（将原来的 .spacevim.d 更新）
-- 内核，**文件系统**，[cgropu](https://tech.meituan.com/2015/03/31/cgroups.html)，RDT
-- qemu/KVM，热迁移，设备透传，virtio
-- [libvirt](https://www.cnblogs.com/sammyliu/p/4558638.html)
-- 容器：docker, gvisor, kata, rust vmm, firecracker
-- openstack
-- 内核的命名空间——namespace
-- 网络子系统
+- [ ] 负责操作系统项目的调研、设计、编码、调试等工作；——一直在和 OS 打交道，但可以借助 deepseek 翻译，总结能力，广泛了解其他 OS 的设计理念；
+  - [ ] OS 领域的论文，可以利用 deepseek 收集、阅读论文，周一晚阅读论文（先了解智驾领域哪些重要，再看相关的论文）；
+- [ ] 负责操作系统的生态链构建，技术交流，开源运作，行业影响力构建等等；
+  - [ ] 何为生态链构建？
+- [ ] 负责 android-kernel 产品内核调度策略、内存管理、文件系统及 IO 子系统等相关架构的设计和实现，优化 linux 内核性能，满足终端业务需求；——怎样利用 deepseek 提供内核学习效率；
+  - [ ] 性能分析方法论，25.02-25.03；
+  - [ ] 调度与能耗，25.02；
+  - [ ] rt preempt，25.03；
+  - [ ] 文件系统，25.07；
+- [ ] 负责解决智能终端产品中跨内核、驱动、HAL、FW 多层的复杂系统级问题，并提升系统监控和量化能力；——怎样利用 deepseek 提高解决复杂问题的能力；
+- [ ] 设计开发自动驾驶域控制器虚拟化软硬件一体化解决方案；
+  - [ ] 自动驾驶基础知识，主要就是 AI 领域，25.03-25.07，每周二晚以及周六；
+  - [ ] 智驾芯片架构，需要了解芯片为何这样设计，25.02-25.12，每周三晚；
+- [ ] 熟悉 ARM 或 X86 体系结构，熟悉处理器微架构、缓存单元、内存控制器、PCIE、文件系统等模块；
+  - [ ] 系统终究是硬件与用户之间的媒介，要多多关注硬件；
+  - [ ] ARM 微架构，熟悉当前使用的 A78ae 和 R52；
+  - [ ] 熟悉 mmu 微架构，怎样进行地址翻译的；
+
+- [ ] 熟悉 android/linux 性能量化和研究方法，具备实际的项目优化经验；
+- [ ] 熟悉虚拟化技术，有 KVM/VFIO/QEMU/Xen 等技术的实际开发部署调试经验；
+- [ ] 精通操作系统，对 linux kernel 中 CPU/内存/网络/文件系统中个一个或多个模块有细致深入的分析，或对主流 RTOS 有深入分析调优经验；
+  - [ ] 熟悉 zephyr 架构，了解 rtos 和 linux kernel 有何区别，25.02，日常工作；
+  - [ ] rtos 发展方向是否广阔，能够开辟副业，25.07，需要回答这个问题；
+- [ ] 做点开源的东西，让大家看看，提点意见；
+- [ ] 各个厂商，芯片、自动驾驶的进展；
 
 ### Reference
-
-[1] https://www.cnblogs.com/gnuemacs/p/14287120.html
-
-[2] https://www.pianshen.com/article/6740633461/
-
-[3] https://biscuitos.github.io/blog/MMU-seaBIOS_E820/

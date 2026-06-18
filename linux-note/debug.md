@@ -100,12 +100,6 @@
 
     即不使用标准库，仅使用 gcc 自带的`libgcc.a`。
 
-14. gcc 中的 -H
-
-    ```plain
-    除了其他普通的操作, GCC 显示引用过的头文件名.
-    ```
-
 15. gdb 中出现
 
     ![sig127.png](https://github.com/UtopianFuture/UtopianFuture.github.io/blob/master/image/sig127.png?raw=true)

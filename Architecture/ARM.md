@@ -17,7 +17,7 @@ AArch64 状态的异常等级确定了处理器当前运行的特权级别，包
 
 不同的异常等级由系统寄存器表示。
 
-### ARM idle managem	ent
+### ARM idle management
 
 降低功耗的方式通常有两种，电源门控和时钟门控(power-gating、clock-gating)。电源门控是指关闭电源，没有了动态和静态电流。时钟门控是指关闭时钟输入，移除了动态功耗，还存在静态功耗。 ARM core 通常支持几个级别的电源管理，如 Standby、Retention、Power down、Dormant mode、Hotplug。对于某些操作，需要在断电之前和之后保存和恢复状态。保存和恢复所花费的时间，以及所消耗的电力，这些额外的工作可以成为电源管理活动中软件选择适当状态的一个重要因素。
 

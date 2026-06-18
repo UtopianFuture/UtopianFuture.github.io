@@ -918,6 +918,8 @@ struct tasklet_struct
 
 软中断上下文的优先级高于进程上下文，如果执行软中断和 tasklet 时间很长，那么高优先级的进程就长时间得不到运行，会影响系统的实时性，所以引入了 workqueue。
 
+
+
 ### workqueue
 
 #### 问题
@@ -1416,6 +1418,10 @@ TIME IN MSECS	EVENT
  25		w2 sleeps
  35		w2 wakes up and finishes
 ```
+
+### 中断线程化
+
+
 
 ### 中断案例分析
 

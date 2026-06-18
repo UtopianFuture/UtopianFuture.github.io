@@ -50,22 +50,20 @@
 
    需要在用户目录下的.ssh/config 中添加
 
-
 ~/.ssh/config
 Host rd.loongson.cn
 HostName 10.2.5.20
 Port 29148
 KexAlgorithms +diffie-hellman-group14-sha1
-   ```plain
 
-   配置，如果访问其他的设备有问题则重新配置，会提示配置什么算法。
+配置，如果访问其他的设备有问题则重新配置，会提示配置什么算法。
 
 10. ssh 连接服务器掉线：
 
     将 etc/ssh/sshd_config 中的 ClientAliveInterval 900, ClientAliveCountMax 1 注释掉即可。
 
-    ```plain
-    rsync -avzP /home/guanshun/gitlab/latx guanshun:/home/guanshun/gitlab
+   ```plain
+rsync -avzP /home/guanshun/gitlab/latx guanshun:/home/guanshun/gitlab
    ```
 
 11. ​	Linux 中有三个标准流，在一个程序启动的时候它们会自动开启。它们分别是：
@@ -167,3 +165,37 @@ find .|xargs grep -ir "xxx"
 ```c
 mount -t debugfs none /sys/kernel/debug
 ```
+
+29. qemu 虚拟机与 host 共享文件夹
+
+    - 通过 9p VirtFS协议。qemu 虚拟机内核需要打开以下配置项
+
+      ```
+      CONFIG_NET_9P=y
+      CONFIG_NET_9P_VIRTIO=y
+      CONFIG_9P_FS=y
+      ```
+
+    - qemu启动命令行中增加以下内容 -fsdev local,security_model=passthrough,id=fsdev0,path=/home/haonan/workspace/kernel_study/linux_old1/kmodules -device virtio-9p-device,id=fs0,fsdev=fsdev0,mount_tag=hostshare
+
+      其中有几点需要解释：path=后的路径名即为待与虚拟机共享的文件路径，请自行指定；-device后不使用virtio-9p-pci，而是virtio-9p-device，这里感谢文章**[qemu模拟器错误9pnet_virtio: no channels available for device](https://link.zhihu.com/?target=https%3A//blog.csdn.net/lana2017/article/details/93974674)**。
+
+      完整qemu启动命令如下：
+
+      ```
+      ./qemu-10.1.0/build/qemu-system-aarch64 -machine virt -m size=8096M -cpu cortex-a72 -smp 1 -fsdev local,security_model=passthrough,id=fsdev0,path=/home/guanshun/gitlab/share_dir -device virtio-9p-device,id=fs0,fsdev=fsdev0,mount_tag=hostshare -kernel ~/gitlab/linux/arch/arm64/boot/Image -initrd ~/gitlab/busybox-1.37.0/initramfs.img -append "root=/dev/sda rw nokaslr" -nographic
+      ```
+
+    - 进入虚拟机后，执行以下命令：
+
+      ```
+      mkdir /mnt/shared
+      
+      mount -t 9p -o trans=virtio,version=9p2000.L hostshare /mnt/shared
+      ```
+
+      此时虚拟机中的 /mnt/shared 路径中的内容，即与主机的 ~/gitlab/share_dir 内容一致了。
+
+      可以将上面的命令写入 busybox-1.37.0/ramdisk/etc/init.d/rcS 文件中，开机挂载。
+
+    

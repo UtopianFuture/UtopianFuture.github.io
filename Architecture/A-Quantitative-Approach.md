@@ -140,15 +140,15 @@ Performance = 1 / execution time
 
 The enhancement is depends on two factors:
 
-Fractionenhanced. **The fraction of the computation time in the original computer that can be converted to take advantage of the enhancement**.
+Fraction enhanced. **The fraction of the computation time in the original computer that can be converted to take advantage of the enhancement**.
 
-Speedupenhanced. **The improvement gained by the enhanced execution mode, that is, how much faster the task would run if the enhanced mode were used for the entire program**.
+Speedup enhanced. **The improvement gained by the enhanced execution mode, that is, how much faster the task would run if the enhanced mode were used for the entire program**.
 
 The execution time using the original computer with the enhanced mode:
 
-Execution timenew = Execution timeold * ((1 - Fractionenhanced) + Fractionenhanced / Speedupenhanced)
+Execution timenew = Execution timeold * ((1 - Fraction enhanced) + Fraction enhanced / Speedup enhanced)
 
-Speedupoverall = Execution timeold / Execution timenew = 1 / ((1 - Fractionenhanced) + Fractionenhanced / Speedupenhanced)
+Speedup overall = Execution timeold / Execution timenew = 1 / ((1 - Fraction enhanced) + Fraction enhanced / Speedup enhanced)
 
 ### 2: Memory Hierarchy Design
 
@@ -194,7 +194,7 @@ There are five metrics to evaluating the performance of the 10 advanced cache op
 
 **Reducing the hit time**. Small and simple first-level caches and way-prediction.Both techniques also generally decrease power consumption.
 
-**Increasing cache bandwidth**. Pipelined caches, multibanked caches, and nonblocking caches. These techniques have varying impacts on power consumption.
+**Increasing cache bandwidth**. Pipelined caches, multi-banked caches, and nonblocking caches. These techniques have varying impacts on power consumption.
 
 **Reducing the miss penalty**. Critical word first and merging write buffers. These optimizations have little impact on power.
 
@@ -491,7 +491,7 @@ The pipeline may have not yet completed some instructions that are earlier in pr
 
 In a dynamically scheduled pipeline, all instructions pass through the issue stage in order (in-order issue); however, they can be stalled or can bypass each other in the second stage (read operands) and thus enter execution out of order.
 
-**Scoreboarding** is a technique for allowing instructions to execute out of order when there are sufficient resources and no data dependences.  Here we focus on a more sophisticated technique, called **Tomasulo****'****s algorithm**. The primary difference is that Tomasulo's algorithm handles antidependences and output dependences by effectively ***\*renaming the registers dynamically\****. Additionally, Tomasulo's algorithm can be extended to handle speculation, a technique to reduce the effect of control dependences by predicting the outcome of a branch, executing instructions at the predicted destination address, and taking corrective actions when the prediction was wrong.
+**Scoreboarding** is a technique for allowing instructions to execute out of order when there are sufficient resources and no data dependences.  Here we focus on a more sophisticated technique, called **Tomasulo's algorithm**. The primary difference is that Tomasulo's algorithm handles antidependences and output dependences by effectively ***\*renaming the registers dynamically\****. Additionally, Tomasulo's algorithm can be extended to handle speculation, a technique to reduce the effect of control dependences by predicting the outcome of a branch, executing instructions at the predicted destination address, and taking corrective actions when the prediction was wrong.
 
 **Dynamic Scheduling Using Tomasulos Approach**
 
@@ -670,6 +670,12 @@ In a high-performance pipeline, especially one with multiple issues, predicting 
 **The ARM Cortex-A53**
 
 **The Intel Core i7**
+
+### 4：Data-Level Parallelism in Vector, SIMD, and GPU Architectures
+
+#### 4.4 Graphics Processing Units
+
+NVIDIA decided that the unifying themem of all these forms of parallelism is the CUDA Thread. Using this lowest level of parallelism as the programming primitive, the compiler and the hardware can gang thousands of CUDA Threads together to utilize the various sytles of parallelism within a GPU: multithreading, MIMD, SIMD and instruction-level parallelism. Therefore NVIDIA classifies the CUDA programming model as single instruction, multiple thread(SIMT).
 
 ### Appendix A Instruction Set Principles
 

@@ -1269,3 +1269,17 @@ page table pages 是不可交换、不可移动的。
 对于 empty page table pages 来说，回收很简单，但是对于包含零页映射的 page table pages 来说，有些麻烦。内核能够通过扫描来发现这些 page table pages，但是扫描也有代价，所以扫描的时机是需要精确把握的，这个还需要实验。
 
 ### [The ongoing search for mmap_lock scalability](https://lwn.net/Articles/893906/)
+
+### [What's next for the SLUB allocator](https://lwn.net/Articles/974138/)
+
+在最新的 6.8 版本内核中，三种 slab 分配器只剩下 slub 了。下一步的工作要对 kfree_rcu 做些改进。
+
+### [The path to deprecating SPARSEMEM](https://lwn.net/Articles/974517/)
+
+内存模型就是从内存管理子系统的角度来看，系统中的物理内存是如何组织的。
+
+现在 maintainer 在考虑移除 SPARSEMEM 模型，因为新推出的 SPARSEMEM_VEMAP 模型能够完全取代原模型的工作。SPARSEMEM 似乎使得新的热拔插功能变得很复杂。
+
+### [Memory-allocation profiling for the kernel](https://lwn.net/Articles/974380/)
+
+memory-allocation profiling 的原理就是有一个额外的 `struct page_ext` 指针，用来存储一个指针，该指针用来指向哪一处代码申请的内存。如果在该代码处释放了该页表，那么计数值就会减少。该特性的主要性能开销就是 `struct page_ext` 指针占用的内存了，约占总内存的 0.2%，同时也会降低 40% 内存分配性能。

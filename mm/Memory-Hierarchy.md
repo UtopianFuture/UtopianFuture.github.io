@@ -1,4 +1,4 @@
-内存管理
+## 内存管理
 
 从社招角度来看，怎样才是一个 NB 的员工，就内存管理领域来看：
 
@@ -162,6 +162,8 @@ MESI 协议在总线上的操作分为本地读写和总线操作。本地读写
 
 ![img](https://raw.githubusercontent.com/UtopianFuture/UtopianFuture.github.io/3a55d7431904d9d6b3e16058f5652b405460a161/image/MESI.svg)
 
+
+
 ### cache 优化
 
 #### 3 种缺失率
@@ -288,7 +290,7 @@ L1 cache 访问的流水线化可以支持高时钟频率（也就是将一次�
           }
   	}
   }
-
+  
   /* After */
   for (jj = 0; jj < N; jj + jj + B){
   	for (kk = 0; kk < N; kk = kk + B){
